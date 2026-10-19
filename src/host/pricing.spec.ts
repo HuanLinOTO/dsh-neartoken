@@ -57,6 +57,25 @@ describe('declared capacities and surfaces', () => {
     expect(routes.map(route => route.endpoints)).toEqual([['anthropic', 'gemini'], ['anthropic', 'gemini']])
   })
 
+  it('reads the input modalities an operator maintained in the console', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], input_modalities: ['text', 'image'],
+    }] })
+    expect(pricing.models[0]?.input).toEqual(['text', 'image'])
+  })
+
+  it('drops modalities this harness does not understand and keeps the rest', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], input_modalities: ['text', 'audio', 7],
+    }] })
+    expect(pricing.models[0]?.input).toEqual(['text'])
+  })
+
+  it('treats an empty modality list as no declaration at all', () => {
+    const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], input_modalities: [] }] })
+    expect(pricing.models[0]?.input).toBeUndefined()
+  })
+
   it('treats an empty surface list as no declaration at all', () => {
     const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], supported_endpoint_types: [] }] })
     expect(pricing.models[0]?.endpoints).toBeUndefined()

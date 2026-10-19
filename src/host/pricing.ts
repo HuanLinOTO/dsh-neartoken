@@ -31,6 +31,8 @@ interface PricingModel {
   readonly maxTokens?: number
   /** Downstream surfaces the site declares for this model; absent when it declares none. */
   readonly endpoints?: readonly string[]
+  /** Input modalities the console states for this model; absent when unmaintained. */
+  readonly input?: readonly string[]
 }
 
 /** The parts of `/api/pricing` this adapter consumes. */
@@ -64,6 +66,8 @@ export interface NearTokenRoute {
   readonly maxTokens?: number
   /** Downstream surfaces the site declared for this model. */
   readonly endpoints?: readonly string[]
+  /** Input modalities the site declared for this model. */
+  readonly input?: readonly string[]
 }
 
 /**
@@ -83,6 +87,17 @@ function tokenCount(value: unknown): number | undefined {
 function endpointTypes(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined
   const names = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  return names.length === 0 ? undefined : names
+}
+
+/**
+ * Read one model's declared input modalities.
+ * @param value - the raw `input_modalities` member.
+ * @returns the modalities this harness understands, or undefined when the site declared none.
+ */
+function inputModalities(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = value.filter((entry): entry is string => entry === 'text' || entry === 'image')
   return names.length === 0 ? undefined : names
 }
 
@@ -107,6 +122,7 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
         ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
         ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
         ...model.endpoints === undefined ? {} : { endpoints: model.endpoints },
+        ...model.input === undefined ? {} : { input: model.input },
       })
     }
   }
@@ -132,12 +148,14 @@ export function parsePricing(value: unknown): NearTokenPricing {
     const contextWindow = tokenCount(row.context_window)
     const maxTokens = tokenCount(row.max_tokens)
     const endpoints = endpointTypes(row.supported_endpoint_types)
+    const input = inputModalities(row.input_modalities)
     models.push({
       model_name: name,
       enable_groups: groups.filter((group): group is string => typeof group === 'string'),
       ...contextWindow === undefined ? {} : { contextWindow },
       ...maxTokens === undefined ? {} : { maxTokens },
       ...endpoints === undefined ? {} : { endpoints },
+      ...input === undefined ? {} : { input },
     })
   }
   const ratio: Record<string, number> = {}

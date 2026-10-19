@@ -138,6 +138,14 @@ const DOCUMENTED_INPUT: Readonly<Record<string, readonly string[]>> = {
   'deepseek-flash': ['text'],
 }
 
+/** Everything that can answer one model's input modalities. */
+export interface ModalitySources {
+  /** What the site's console states for this exact model. */
+  reported?: readonly string[]
+  /** The operator's configuration for this bare model name. */
+  declared?: readonly string[]
+}
+
 /**
  * The input modalities one model accepts.
  *
@@ -145,14 +153,17 @@ const DOCUMENTED_INPUT: Readonly<Record<string, readonly string[]>> = {
  * has: the `read_image` tool refuses to load a file for a model without
  * `image`, and a request carrying an image is rejected before it is sent. So
  * this answers for every model — a name nothing describes is stated as text-only
- * rather than left unknown, which is what the site actually serves in practice
- * and keeps an image out of a request that would fail.
+ * rather than left unknown, which keeps an image out of a request that would fail.
+ *
+ * Priority: operator configuration, the site's own statement, the documented
+ * corrections, the deployment-measured models, then the generated catalog.
  * @param model - a bare model name.
- * @param declared - modalities configured for this exact model, which win when given.
+ * @param sources - the two candidates supplied at call time.
  * @returns the modalities, always including `text`.
  */
-export function inputModalitiesOf(model: string, declared?: readonly string[]): readonly string[] {
-  if (declared !== undefined && declared.length > 0) return declared
+export function inputModalitiesOf(model: string, sources: ModalitySources = {}): readonly string[] {
+  if (sources.declared !== undefined && sources.declared.length > 0) return sources.declared
+  if (sources.reported !== undefined && sources.reported.length > 0) return sources.reported
   if (Object.hasOwn(DOCUMENTED_INPUT, model)) return DOCUMENTED_INPUT[model] ?? ['text']
   if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.input ?? ['text']
   return MODEL_INPUT[model] ?? ['text']

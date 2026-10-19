@@ -87,8 +87,16 @@ describe('inputModalitiesOf', () => {
     expect(inputModalitiesOf('deepseek-flash')).toEqual(['text'])
   })
 
-  it('lets a configured list win over the catalog', () => {
-    expect(inputModalitiesOf('deepseek-v4-pro', ['text', 'image'])).toEqual(['text', 'image'])
+  it('lets the site state a model capability the plugin does not know', () => {
+    // This is what removes the release dependency: a model added to the site
+    // declares its modalities in the console and the next catalog fetch honours it.
+    expect(inputModalitiesOf('brand-new-model', { reported: ['text', 'image'] })).toEqual(['text', 'image'])
+    expect(inputModalitiesOf('deepseek-flash', { reported: ['image', 'text'] })).toEqual(['image', 'text'])
+  })
+
+  it('lets the operator override both the site and the catalog', () => {
+    expect(inputModalitiesOf('deepseek-v4-pro', { declared: ['text', 'image'], reported: ['text'] }))
+      .toEqual(['text', 'image'])
   })
 
   it('knows the deployment-measured model takes images', () => {

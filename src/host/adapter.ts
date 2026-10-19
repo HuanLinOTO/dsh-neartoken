@@ -24,6 +24,7 @@ import type { NearTokenRoute } from './pricing.ts'
 import {
   contextWindowOf, defaultReasoningLevel, inputModalitiesOf, maxTokensOf, reasoningLevelLabel, reasoningLevels,
 } from './model-caps.ts'
+import type { ModalitySources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
 import { selectedRoutes } from './whitelist.ts'
 
@@ -48,8 +49,8 @@ export interface NearTokenModelOverride {
  * @param declared - the operator's configured modalities for this model, if any.
  * @returns only the modalities this harness version understands.
  */
-function modalitiesOf(model: string, declared?: readonly string[]): readonly ModelModality[] {
-  return inputModalitiesOf(model, declared)
+function modalitiesOf(model: string, sources: ModalitySources): readonly ModelModality[] {
+  return inputModalitiesOf(model, sources)
     .filter((modality): modality is ModelModality => modality === 'text' || modality === 'image')
 }
 
@@ -140,7 +141,12 @@ export class NearTokenAdapter extends LlmAdapter {
       id: route.id,
       name: route.name,
       description: route.description,
-      inputModalities: modalitiesOf(route.model, this.deps.modelOverride(route.model)?.input),
+      inputModalities: modalitiesOf(route.model, {
+        ...route.input === undefined ? {} : { reported: route.input },
+        ...this.deps.modelOverride(route.model)?.input === undefined
+          ? {}
+          : { declared: this.deps.modelOverride(route.model)?.input },
+      }),
     }))
   }
 
@@ -165,7 +171,10 @@ export class NearTokenAdapter extends LlmAdapter {
     const maxTokens = maxTokensOf(route?.maxTokens, override?.maxTokens)
     const facts = {
       context: { contextWindow },
-      inputModalities: modalitiesOf(bare, override?.input),
+      inputModalities: modalitiesOf(bare, {
+        ...route?.input === undefined ? {} : { reported: route.input },
+        ...override?.input === undefined ? {} : { declared: override.input },
+      }),
       ...maxTokens === undefined ? {} : { defaultMaxTokens: maxTokens },
       ...reasoning === undefined ? {} : { reasoning },
     }

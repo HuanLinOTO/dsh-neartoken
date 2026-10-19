@@ -28,6 +28,13 @@ export declare function isChatOffering(model: string, endpoints?: readonly strin
  * @returns the level names, or undefined when nothing names any.
  */
 export declare function reasoningLevels(model: string, declared?: readonly string[]): readonly string[] | undefined;
+/** Everything that can answer one model's input modalities. */
+export interface ModalitySources {
+    /** What the site's console states for this exact model. */
+    reported?: readonly string[];
+    /** The operator's configuration for this bare model name. */
+    declared?: readonly string[];
+}
 /**
  * The input modalities one model accepts.
  *
@@ -35,13 +42,15 @@ export declare function reasoningLevels(model: string, declared?: readonly strin
  * has: the `read_image` tool refuses to load a file for a model without
  * `image`, and a request carrying an image is rejected before it is sent. So
  * this answers for every model — a name nothing describes is stated as text-only
- * rather than left unknown, which is what the site actually serves in practice
- * and keeps an image out of a request that would fail.
+ * rather than left unknown, which keeps an image out of a request that would fail.
+ *
+ * Priority: operator configuration, the site's own statement, the documented
+ * corrections, the deployment-measured models, then the generated catalog.
  * @param model - a bare model name.
- * @param declared - modalities configured for this exact model, which win when given.
+ * @param sources - the two candidates supplied at call time.
  * @returns the modalities, always including `text`.
  */
-export declare function inputModalitiesOf(model: string, declared?: readonly string[]): readonly string[];
+export declare function inputModalitiesOf(model: string, sources?: ModalitySources): readonly string[];
 /** Everything that can answer one model's context capacity. */
 export interface CapacitySources {
     /** What the site declared for this exact model, in tokens. */

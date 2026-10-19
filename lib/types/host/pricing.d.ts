@@ -21,6 +21,8 @@ interface PricingModel {
     readonly maxTokens?: number;
     /** Downstream surfaces the site declares for this model; absent when it declares none. */
     readonly endpoints?: readonly string[];
+    /** Input modalities the console states for this model; absent when unmaintained. */
+    readonly input?: readonly string[];
 }
 /** The parts of `/api/pricing` this adapter consumes. */
 export interface NearTokenPricing {
@@ -52,6 +54,8 @@ export interface NearTokenRoute {
     readonly maxTokens?: number;
     /** Downstream surfaces the site declared for this model. */
     readonly endpoints?: readonly string[];
+    /** Input modalities the site declared for this model. */
+    readonly input?: readonly string[];
 }
 /**
  * Expand one pricing payload into one route per (group, model) pair.

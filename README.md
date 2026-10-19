@@ -94,7 +94,11 @@
 
 最大输出（`max_tokens`）只在**站点或配置明确给出**时才写进请求；生成表里的 `maxTokens` 是厂商口径，站点可能把同一个名字路由到上限更低的渠道，照发会把「回答被截断」换成「请求被拒」，所以不用它。不给出该字段时由上游默认值决定。
 
-输入模态（`text` / `image`）同样有三层来源：`modelOverrides.*.input` > pi-ai 目录 > `['text']`。**未知模型一律声明为纯文本**，因为 harness 把「没有声明」当成「没有权限」：只有声明了 `image` 的模型才允许 `read_image` 和携带图片的请求，否则图片会在发出前被拦下。目录里有 729 个多模态模型，名字能对上的都会自动带上。
+输入模态（`text` / `image`）走同一条优先级链：`modelOverrides.*.input` > 站点 `/api/pricing` 的 `input_modalities` > 厂商文档核对表 > pi-ai 目录 > `['text']`。**未知模型一律声明为纯文本**，因为 harness 把「没有声明」当成「没有权限」：只有声明了 `image` 的模型才允许 `read_image` 和携带图片的请求，否则图片会在发出前被拦下。
+
+站点侧同样能声明模态（New API 后台「Input modalities」两个复选框），所以一个刚上架的多模态模型只要后台勾一下就能用图，不必等插件发版。目录里有 729 个多模态模型作为开箱默认。
+
+推理等级目前仍只来自插件内置表（站点不报），新模型带档位时需要发版或在 `modelOverrides.*.reasoning` 里写明。
 
 推理等级来自 `@earendil-works/pi-ai` 的模型目录（DSH 的 `llm-pi-ai` 用的同一份数据）。插件不在运行时依赖它：`scripts/gen-model-caps.mjs` 把目录生成成 `src/host/model-caps.generated.ts`（1101 个 chat 模型、486 个带推理档位、1101 个带上下文窗口），升级依赖后跑 `pnpm run gen:model-caps` 重建。同一模型 id 在不同 provider 下可能给出不同档位（网关常只列两档，厂商列六档），生成时取**最完整**的那份；上下文窗口取**最小**的那份。
 
