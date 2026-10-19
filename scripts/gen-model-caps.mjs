@@ -59,12 +59,15 @@ for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) 
       // complete level list wins and the smallest window wins, so the result
       // does not depend on which provider file happened to be read first and
       // never overstates a capacity.
-      // Image support is a property of the model, not of one provider's listing,
-      // and a gateway that omits it is the common case. Three model ids of 1101
-      // dissented, so the union wins here while the capacity below takes the
-      // smallest value.
-      const modalities = new Set(previous?.input ?? [])
-      for (const modality of entry.input ?? []) modalities.add(modality)
+      // Image support is a property of the model, so one listing that names it
+      // and nine that omit it means the model takes text only: a union let a
+      // single gateway's mistake claim vision for glm-5.3, whose vendor lists it
+      // as text-only. Majority wins, a tie stays text, and a listing that says
+      // nothing still votes text.
+      const votes = previous?.votes ?? { image: 0, text: 0 }
+      const lists = entry.input ?? ['text']
+      votes.image += lists.includes('image') ? 1 : 0
+      votes.text += lists.length === 0 || lists.includes('image') ? 0 : 1
       catalog.set(id, {
         levels: previous === undefined || previous.levels === null || (levels !== null && levels.length > previous.levels.length)
           ? levels
@@ -72,7 +75,7 @@ for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) 
         contextWindow: previous?.contextWindow === undefined
           ? contextWindow
           : contextWindow === undefined ? previous.contextWindow : Math.min(previous.contextWindow, contextWindow),
-        input: modalities,
+        votes,
       })
     }
   }
@@ -120,9 +123,9 @@ out.push('')
 out.push('/** Model id -> the input modalities the catalog states, for models that take images. */')
 out.push('export const MODEL_INPUT: Readonly<Record<string, readonly string[]>> = {')
 for (const model of models) {
-  const modalities = [...catalog.get(model).input].sort()
-  if (!modalities.includes('image')) continue
-  out.push("  '" + model + "': [" + modalities.map(m => "'" + m + "'").join(', ') + '],')
+  const { image, text } = catalog.get(model).votes
+  if (image <= text) continue
+  out.push("  '" + model + "': ['image', 'text'],")
 }
 out.push('}')
 out.push('')

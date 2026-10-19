@@ -64,6 +64,13 @@ describe('inputModalitiesOf', () => {
     expect(inputModalitiesOf('deepseek-v4-pro')).toEqual(['text'])
   })
 
+  it('splits a family whose members disagree, by majority of the listings', () => {
+    // One gateway claims vision for glm-5.3; its vendor, and every other
+    // listing, say text. The flash sibling is the vision model of the family.
+    expect(inputModalitiesOf('glm-5.3')).toEqual(['text'])
+    expect(inputModalitiesOf('glm-5.3-flash')).toContain('image')
+  })
+
   it('states a model nothing describes as text-only rather than unknown', () => {
     // An absent list is what the harness reads as "no permission", so a text
     // answer here is what keeps an image out of a request that cannot take one.

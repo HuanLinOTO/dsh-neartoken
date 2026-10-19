@@ -2329,7 +2329,6 @@ export const MODEL_INPUT: Readonly<Record<string, readonly string[]>> = {
   'z-ai/glm-5v-turbo': ['image', 'text'],
   'zai-org/GLM-4.5V': ['image', 'text'],
   'zai-org/GLM-4.6V-Flash': ['image', 'text'],
-  'zai-org/GLM-5.3': ['image', 'text'],
   'zai-org/GLM-5.3-Fast': ['image', 'text'],
   'zai-org/GLM-5.3-Flash': ['image', 'text'],
   'zai/glm-4.5v': ['image', 'text'],
