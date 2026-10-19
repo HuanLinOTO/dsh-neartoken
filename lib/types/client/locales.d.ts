@@ -68,6 +68,7 @@ export declare const zh: {
     'whitelist.autoSaved': string;
     'whitelist.hint': string;
     'whitelist.keepOne': string;
+    'whitelist.cleared': string;
 };
 /** The dictionary key union. */
 export type GroupKey = keyof typeof zh;
@@ -136,4 +137,5 @@ export declare const en: {
     'whitelist.autoSaved': string;
     'whitelist.hint': string;
     'whitelist.keepOne': string;
+    'whitelist.cleared': string;
 };

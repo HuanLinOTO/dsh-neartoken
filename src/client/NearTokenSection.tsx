@@ -295,14 +295,25 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
   const checkVisible = (): void => {
     edit(new Set([...selected, ...visible.map(entry => entry.model)]))
   }
+  /**
+   * Empty the boxes the filter is showing.
+   *
+   * An emptied selection cannot be saved as such: an empty stored list means
+   * "no whitelist", i.e. show every model, which is the opposite of the click.
+   * So the boxes empty at once and the saved list is left alone; the next check
+   * box saves the set the user actually wants, and "Show all" is the way back.
+   */
   const uncheckVisible = (): void => {
     const hidden = new Set(visible.map(entry => entry.model))
     const next = new Set([...selected].filter(model => !hidden.has(model)))
-    if (next.size === 0) {
-      setNotice(t('whitelist.keepOne'))
+    if (next.size > 0) {
+      edit(next)
       return
     }
-    edit(next)
+    cancelPending()
+    setSaved(false)
+    setSelected(next)
+    setNotice(t('whitelist.cleared'))
   }
 
   /**

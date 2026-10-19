@@ -69,6 +69,7 @@ export const zh = {
   'whitelist.autoSaved': '已自动保存，模型选择器已刷新',
   'whitelist.hint': '勾选即自动保存；没勾选的不会出现在模型选择器里。「全部显示」会清空白名单。',
   'whitelist.keepOne': '至少要保留一个模型；想放开全部请点「全部显示」。',
+  'whitelist.cleared': '已清空勾选；勾选要显示的模型后会立即保存。',
 } satisfies Record<string, string>
 
 /** The dictionary key union. */
@@ -139,4 +140,5 @@ export const en = {
   'whitelist.autoSaved': 'Saved; the model picker has been refreshed',
   'whitelist.hint': 'Every change saves itself; unchecked models stay out of the picker. "Show all" clears the whitelist.',
   'whitelist.keepOne': 'Keep at least one model; use "Show all" to offer everything again.',
+  'whitelist.cleared': 'Boxes cleared; checking a model saves the list you want.',
 } satisfies Record<GroupKey, string>
