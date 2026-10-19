@@ -135,3 +135,63 @@ describe('stream', () => {
     expect((body as { model?: string }).model).toBe('grok-4.6')
   })
 })
+
+describe('stream wire selection', () => {
+  /** The URL and body of the one request the adapter sent. */
+  interface Sent { url: string; body: Record<string, unknown>; headers: Record<string, string> }
+
+  /**
+   * Dispatch one call and capture where it went.
+   * @param routes - the catalog routes this adapter serves.
+   * @param id - the catalog id to dispatch.
+   * @returns the captured request.
+   */
+  async function capture(routes: readonly NearTokenRoute[], id: string): Promise<Sent> {
+    const one: Sent = { url: '', body: {}, headers: {} }
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      one.url = String(input)
+      one.body = JSON.parse(String(init?.body))
+      one.headers = { ...init?.headers as Record<string, string> }
+      return new Response('data: [DONE]\n\n', { status: 200 })
+    }) as typeof fetch
+    const adapter = new NearTokenAdapter({
+      routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+    })
+    await dispatch(adapter, id)
+    return one
+  }
+
+  const catalog = { data: [
+    { model_name: 'claude-sonnet-4.5', enable_groups: ['default'] },
+    { model_name: 'gemini-3.8-flash', enable_groups: ['default'] },
+    { model_name: 'gpt-5.2', enable_groups: ['default'] },
+    { model_name: 'grok-4.6', enable_groups: ['default'] },
+  ] }
+  const routes = expandRoutes(parsePricing(catalog))
+
+  it('sends Claude to the messages API', async () => {
+    const one = await capture(routes, 'default::claude-sonnet-4.5')
+    expect(one.url).toBe('https://example.test/v1/messages')
+    expect(one.body.messages).toBeDefined()
+    expect(one.headers['x-api-key']).toBe('test-key')
+  })
+
+  it('sends Gemini to generateContent', async () => {
+    const one = await capture(routes, 'default::gemini-3.8-flash')
+    expect(one.url).toBe('https://example.test/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse')
+    expect(one.body.contents).toBeDefined()
+  })
+
+  it('sends GPT to the Responses API', async () => {
+    const one = await capture(routes, 'default::gpt-5.2')
+    expect(one.url).toBe('https://example.test/v1/responses')
+    expect(one.body.input).toBeDefined()
+    expect(one.body.messages).toBeUndefined()
+  })
+
+  it('leaves everything else on chat completions', async () => {
+    const one = await capture(routes, 'default::grok-4.6')
+    expect(one.url).toBe('https://example.test/v1/chat/completions')
+    expect(one.body.messages).toBeDefined()
+  })
+})

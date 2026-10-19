@@ -30,7 +30,9 @@
 │   · listModels: GET /api/pricing → (group, model) 笛卡尔展开        │
 │     catalog id = "<group>::<model>"，name = "<model> @ <group>"     │
 │     再按「模型过滤」与白名单（裸模型名）过滤；stream 用同批路由找分组│
-│   · stream:     POST /v1/chat/completions（OpenAI 协议）            │
+│   · stream:     按模型自动选协议（protocol-router.ts）              │
+│     claude*→/v1/messages  gemini*→/v1beta/models/*:streamGenerate-  │
+│     Content  gpt*/o1·o3·o4*→/v1/responses  其余→/v1/chat/completions│
 │     body.model = 裸模型名                                           │
 │     header x-neartoken-group = 分组的 ref "#<id>"（不是分组名）      │
 └────────────────────────────────────────────────────────────────────┘
@@ -104,7 +106,7 @@
 
 ## 已知限制（原型）
 
-- wire 层图片/文件以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
+- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；图片与文件仍以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
 - pricing 加载失败时沿用上一次成功的结果，从未成功过则目录为空（失败不写缓存，下次调用会重试）。
 - 账号卡片不自动刷新：数字只来自授权那一刻 grant 里的 `user`（站点的 dashboard 接口认浏览器会话，不认本插件持有的 relay key），落盘到 profile 下的 `neartoken-account.json`，重启后从文件恢复。之后余额变化不会反映，需要重新连接一次。
 - 供应商是授权态驱动的：断开连接后，正在使用 NearToken 模型的会话需要重新选模型。
