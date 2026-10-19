@@ -1,0 +1,161 @@
+/**
+ * The NearToken LLM adapter: one provider route over a New API deployment,
+ * whose model catalog is the (group, model) expansion of the pricing endpoint.
+ *
+ * Catalog model ids are `"<group>::<model>"`; the adapter decodes them at
+ * dispatch and sends the bare model name in the OpenAI body.
+ *
+ * The group itself travels in the `x-neartoken-group` request header as the
+ * site's own ASCII reference (`"#7"`), never as the group name: a name is
+ * display text, and its non-latin1 characters are not a legal HTTP header
+ * value. A group the site published no reference for sends no header at all
+ * and routes by the token's own group (see HANDOFF).
+ */
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { attributionHeaders, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import type {
+  GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, ReasoningEffortId, StreamChunk,
+} from '@deepseek-ai/dsh-llm'
+import type { NearTokenRoute } from './pricing.ts'
+import { defaultReasoningLevel, reasoningLevelLabel, reasoningLevels } from './model-caps.ts'
+import { parseSse, serializeRequest } from './openai-wire.ts'
+import { selectedRoutes } from './whitelist.ts'
+
+/** Display name of the single provider route this adapter owns. */
+export const NEARTOKEN_PROVIDER_NAME = 'NearToken'
+
+/**
+ * The reasoning offering for one model, or nothing.
+ *
+ * Levels come from the catalog's own table; a model it does not describe is
+ * advertised without any, rather than with levels it may not have.
+ * @param model - the bare model name the route serves.
+ * @returns the reasoning metadata, or undefined for a model without levels.
+ */
+function reasoningOf(model: string): LlmModelReasoningInfo | undefined {
+  const levels = reasoningLevels(model)
+  if (levels === undefined) return undefined
+  return {
+    efforts: levels.map(level => ({
+      id: brandString<ReasoningEffortId>(level),
+      name: reasoningLevelLabel(level),
+    })),
+    defaultEffort: brandString<ReasoningEffortId>(defaultReasoningLevel(levels)),
+  }
+}
+
+/** External facts the adapter reads at call time. */
+export interface NearTokenDeps {
+  /** The expanded (group, model) routes, loaded and cached by the host entry. */
+  routes: () => Promise<readonly NearTokenRoute[]>
+  /**
+   * The model names the user keeps visible; empty advertises the whole catalog.
+   * Dispatch ignores it: a session already on a now-hidden model still routes.
+   */
+  enabled: () => readonly string[]
+  /** Resolves the bearer key; throws MISSING_CREDENTIAL when absent. */
+  apiKey: () => Promise<string>
+  /** Site root without a trailing slash. */
+  baseURL: () => string
+}
+
+/**
+ * Decode one catalog model id into its routing parts.
+ * @param id - a catalog id ("`[低价] Grok::grok-4.6`") or a bare model name.
+ * @returns the group (when the id carries one) and the real model name.
+ */
+export function decodeRoute(id: string): { group?: string; model: string } {
+  // Last, not first: a group name may itself contain '::', and the catalog id's
+  // own separator is the one closest to the model.
+  const at = id.lastIndexOf('::')
+  if (at <= 0) return { model: id }
+  return { group: id.slice(0, at), model: id.slice(at + 2) }
+}
+
+/** The NearToken provider adapter. */
+export class NearTokenAdapter extends LlmAdapter {
+  /**
+   * @param deps - routing, credential, and endpoint facts from the host entry.
+   */
+  constructor(private readonly deps: NearTokenDeps) {
+    super()
+  }
+
+  /**
+   * @param provider - the route this adapter registered (`neartoken`).
+   * @returns detached display metadata.
+   */
+  override providerInfo(provider: string): { id: string; name: string } {
+    return { id: provider, name: NEARTOKEN_PROVIDER_NAME }
+  }
+
+  /**
+   * Advertise the visible (group, model) routes as the provider catalog.
+   * @param provider - the route this adapter registered.
+   * @returns one model entry per group offering, in endpoint order.
+   */
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const routes = selectedRoutes(await this.deps.routes(), this.deps.enabled())
+    return routes.map(route => ({
+      provider,
+      id: route.id,
+      name: route.name,
+      description: route.description,
+    }))
+  }
+
+  /**
+   * Resolve one exact route's metadata from the same generation as dispatch.
+   * @param provider - the route this adapter registered.
+   * @param model - the catalog id passed to `GenerateOptions.model`.
+   * @returns route identity plus that model's real reasoning levels.
+   */
+  override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    // The same filter as the catalog: a hidden model has no metadata here either.
+    const routes = selectedRoutes(await this.deps.routes(), this.deps.enabled())
+    const route = routes.find(entry => entry.id === model)
+    const bare = route?.model ?? decodeRoute(model).model
+    const reasoning = reasoningOf(bare)
+    if (route === undefined) {
+      // An unlisted id (or one from a stale catalog) still routes: the harness
+      // contract keeps this query advisory.
+      return { provider, id: model, name: model, ...reasoning === undefined ? {} : { reasoning } }
+    }
+    return {
+      provider,
+      id: route.id,
+      name: route.name,
+      description: route.description,
+      ...reasoning === undefined ? {} : { reasoning },
+    }
+  }
+
+  /**
+   * Stream one model call through the OpenAI chat-completions endpoint.
+   * @param options - the fully-assembled request; the abort signal is honored.
+   * @returns the parsed chunk stream.
+   */
+  override async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
+    const key = await this.deps.apiKey()
+    const { model } = decodeRoute(options.model)
+    // The group travels as the site's own ASCII reference, never as the group
+    // name: a name is display text, and its non-latin1 characters are not a
+    // legal HTTP header value.
+    const route = (await this.deps.routes()).find(entry => entry.id === options.model)
+    const groupRef = route?.groupRef
+    const response = await fetch(`${this.deps.baseURL()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        ...attributionHeaders(),
+        authorization: `Bearer ${key}`,
+        'content-type': 'application/json',
+        // Group routing: a route whose group published no reference sends no
+        // header at all and falls back to the token's own group.
+        ...(groupRef !== undefined ? { 'x-neartoken-group': groupRef } : {}),
+      },
+      body: JSON.stringify(serializeRequest(options, model)),
+      signal: options.signal,
+    })
+    yield* parseSse(response, options.signal)
+  }
+}

@@ -1,0 +1,64 @@
+/* Group tags and ratio capsules, shared by the settings page and the model
+   seat. The site paints a group's leading [tags] as colour-coded capsules and
+   its multiplier as a capsule that reads green below the base price; these
+   mirror that reading with the console's own colour space. */
+
+.tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  /* The hue comes from the tone class; only lightness and alpha differ by theme. */
+  background: hsl(var(--tag-hue) 70% 45% / 12%);
+  color: hsl(var(--tag-hue) 62% 36%);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+:global(body[data-ds-dark-theme]) .tag {
+  background: hsl(var(--tag-hue) 70% 60% / 18%);
+  color: hsl(var(--tag-hue) 75% 76%);
+}
+
+/* Known tier tags keep a fixed hue; the names match the site's dictionary. */
+.toneRose { --tag-hue: 350; }
+.toneEmerald { --tag-hue: 160; }
+.toneViolet { --tag-hue: 258; }
+.toneSky { --tag-hue: 199; }
+.toneAmber { --tag-hue: 38; }
+.toneCyan { --tag-hue: 189; }
+.toneFuchsia { --tag-hue: 292; }
+.toneIndigo { --tag-hue: 239; }
+.toneTeal { --tag-hue: 173; }
+.toneLime { --tag-hue: 84; }
+.toneOrange { --tag-hue: 25; }
+.tonePink { --tag-hue: 330; }
+
+/* The multiplier capsule: below the base price reads as a discount, above it
+   as a warning, exactly as the pricing card does. */
+.ratioChip {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ratioCheap {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #1a7f37) 40%, transparent);
+  color: var(--dsw-alias-state-success-primary, #1a7f37);
+}
+
+.ratioPricey {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-label, #9a6700) 40%, transparent);
+  color: var(--dsw-alias-state-warn-label, #9a6700);
+}
+
+.ratioBase {
+  border-color: var(--dsw-alias-settings-card-stroke);
+  color: var(--dsw-alias-label-tertiary);
+}

@@ -1,0 +1,8 @@
+# One browser plugin row for the NearToken provider. The row joins the dshClient
+# roster so the modules node half serves lib/client.js into the boot graph; the
+# browser half renders the NearToken settings page and shadows the built-in
+# conversation.input.model seat at a lower slot priority to add the group
+# dimension on top of it.
+- insert:
+    - id: ui-neartoken-provider
+      name: 'dsh-neartoken'

@@ -1,0 +1,438 @@
+/**
+ * The NearToken settings page: connect the plugin to the site's account through
+ * the site's own device-authorization flow, show whose account is connected, and
+ * disconnect.
+ *
+ * The page never asks for a password. It shows the short code the site issued,
+ * offers the site's confirmation page, and re-reads the Host while the Host polls
+ * — the key and the provider insertion both happen on the Host side of a grant.
+ */
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { NearTokenModelEntry, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
+import type { NearTokenApi } from './api.ts'
+import { parseGroupLabel } from './groups.ts'
+import { GroupTag, RatioChip } from './group-tags.tsx'
+import type { GroupKey } from './locales.ts'
+import css from './NearTokenSection.module.css'
+
+/** How often the page re-reads the Host while an authorization is pending. */
+const PENDING_REFRESH_MS = 1_500
+
+/** How long a burst of checkbox clicks waits before one save is written. */
+const AUTOSAVE_DELAY_MS = 400
+
+/** What this section receives from its registration. */
+export interface NearTokenSectionInjected {
+  /** The Host's four routes. */
+  api: NearTokenApi
+  /** Bound translate for this plugin's dictionary. */
+  t: (key: GroupKey, vars?: Record<string, string>) => string
+}
+
+/** Full component props: the section owner share plus this section's injected face. */
+export type NearTokenSectionProps = PropsRuntime<'settings.section'> & NearTokenSectionInjected
+
+/**
+ * Render the NearToken settings page.
+ * @param props - the injected route carrier and translate, plus slot owner props.
+ * @returns the section element tree.
+ */
+export function NearTokenSection({ api, t }: NearTokenSectionProps) {
+  const [status, setStatus] = useState<NearTokenStatus | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  /** Re-read the Host state and publish it. */
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setStatus(await api.status())
+    } catch (failure: unknown) {
+      setError(t('account.failed', { message: messageOf(failure) }))
+    }
+  }, [api, t])
+
+  // The page opens on whatever the Host already knows, so a reload neither
+  // restarts a pending authorization nor forgets a finished one.
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const pendingCode = status?.pending?.userCode
+  const waiting = pendingCode !== undefined
+  // While the Host polls the site, the page polls the Host: the grant, the
+  // refusal, and the expiry all arrive as a changed status.
+  useEffect(() => {
+    if (!waiting) return
+    const timer = setInterval(() => { void refresh() }, PENDING_REFRESH_MS)
+    return () => { clearInterval(timer) }
+  }, [waiting, pendingCode, refresh])
+
+  /** Run one Host call with the busy flag and the error channel wired. */
+  const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
+    setBusy(true)
+    setError(undefined)
+    try {
+      await action()
+    } catch (failure: unknown) {
+      setError(t('account.failed', { message: messageOf(failure) }))
+    } finally {
+      setBusy(false)
+    }
+  }, [t])
+
+  const connect = (): void => {
+    void run(async () => {
+      const outcome = await api.begin()
+      if (outcome.status === 'failed') setError(t('account.failed', { message: outcome.message }))
+      await refresh()
+    })
+  }
+  const cancel = (): void => {
+    void run(async () => {
+      await api.cancel()
+      await refresh()
+    })
+  }
+  const signOut = (): void => {
+    void run(async () => {
+      await api.signOut()
+      await refresh()
+    })
+  }
+
+  const account = status?.account
+  const pending = status?.pending
+  const minutes = pending === undefined ? 0 : Math.max(1, Math.round((pending.expiresAt - Date.now()) / 60_000))
+  return (
+    <div className={css.section}>
+      <h2 className={css.title}>{t('account.title')}</h2>
+      <p className={css.intro}>{t('account.intro')}</p>
+      {status === undefined
+        ? <p className={css.hint}>{t('account.loading')}</p>
+        : status.configured
+          ? (
+            <section className={css.card}>
+              <div className={css.cardHead}>
+                <span className={css.name}>{account?.displayName ?? 'NearToken'}</span>
+                {account === undefined ? null : <span className={css.handle}>@{account.username}</span>}
+                <span className={`${css.badge} ${css.badgeOn}`}>{t('account.connected')}</span>
+              </div>
+              <dl className={css.facts}>
+                <div className={css.fact}>
+                  <dt className={css.factLabel}>{t('account.group')}</dt>
+                  <dd className={css.factValue}>{account?.group ?? '—'}</dd>
+                </div>
+                <div className={css.fact}>
+                  <dt className={css.factLabel}>{t('account.balance')}</dt>
+                  <dd className={css.factValue}>{account?.balance ?? '—'}</dd>
+                </div>
+                <div className={css.fact}>
+                  <dt className={css.factLabel}>{t('account.used')}</dt>
+                  <dd className={css.factValue}>{account?.used ?? '—'}</dd>
+                </div>
+                <div className={css.fact}>
+                  <dt className={css.factLabel}>{t('account.token')}</dt>
+                  <dd className={css.factValue}>{status.tokenName}</dd>
+                </div>
+              </dl>
+              <p className={css.hint}>{t('account.tokenHint')}</p>
+              <div className={css.actions}>
+                <button type="button" className={css.button} disabled={busy} onClick={signOut}>
+                  {busy ? t('account.signingOut') : t('account.signOut')}
+                </button>
+              </div>
+            </section>
+          )
+          : (
+            <section className={css.card}>
+              <div className={css.cardHead}>
+                <span className={css.name}>{t('account.title')}</span>
+                <span className={css.badge}>{t('account.disconnected')}</span>
+              </div>
+              <p className={css.hint}>{t('account.site')}：{status.baseURL}</p>
+              {pending === undefined
+                ? (
+                  <div className={css.actions}>
+                    <button
+                      type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={busy} onClick={connect}
+                    >
+                      {busy ? t('account.connecting') : t('account.connect')}
+                    </button>
+                  </div>
+                )
+                : (
+                  <div className={css.form}>
+                    <p className={css.hint}>{t('account.waiting')}</p>
+                    <div className={css.codeRow}>
+                      <span className={css.label}>{t('account.userCode')}</span>
+                      <code className={css.code}>{pending.userCode}</code>
+                    </div>
+                    <div className={css.actions}>
+                      <button
+                        type="button" className={`${css.button} ${css.buttonPrimary}`}
+                        onClick={() => { window.open(pending.verificationUriComplete, '_blank', 'noopener,noreferrer') }}
+                      >
+                        {t('account.openBrowser')}
+                      </button>
+                      <button type="button" className={css.button} disabled={busy} onClick={cancel}>
+                        {busy ? t('account.cancelling') : t('account.cancel')}
+                      </button>
+                    </div>
+                    <p className={css.hint}>{t('account.expiresIn', { minutes: String(minutes) })}</p>
+                  </div>
+                )}
+            </section>
+          )}
+      {error === undefined ? null : <p className={css.notice}>{error}</p>}
+      {status?.error === undefined ? null : <p className={css.notice}>{t('account.failed', { message: status.error })}</p>}
+      {status?.configured === true ? <ModelWhitelist api={api} t={t} /> : null}
+    </div>
+  )
+}
+
+/**
+ * The model whitelist block: which of the site's models the provider keeps in
+ * the model picker, edited through the same-origin models carrier.
+ *
+ * An empty stored list means "no whitelist", so the boxes start all checked —
+ * that is what the picker currently shows. Saving an empty list is refused
+ * here, because it would read as the same "no whitelist" state; "Show all"
+ * (which saves exactly that) is the explicit way back to the whole catalog.
+ * @param props - the injected route carrier and translate.
+ * @returns the whitelist block.
+ */
+function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
+  const [state, setState] = useState<NearTokenModelsState | undefined>(undefined)
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [query, setQuery] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [saved, setSaved] = useState(false)
+  /** Why the last edit could not be applied; cleared by the next one. */
+  const [notice, setNotice] = useState<string | undefined>(undefined)
+  /** The queued save, while a burst of clicks is still settling. */
+  const pending = useRef<number | undefined>(undefined)
+  // The row whose group detail is showing, positioned in viewport coordinates:
+  // the list scrolls, so the panel must escape its clip box rather than live in
+  // the row's flow.
+  const [tip, setTip] = useState<{ entry: NearTokenModelEntry; top: number; left: number } | undefined>(undefined)
+
+  /** Publish one host answer: the boxes show the stored list, or all when none is stored. */
+  const adopt = useCallback((next: NearTokenModelsState): void => {
+    setState(next)
+    setSelected(new Set(next.enabled.length === 0 ? next.models.map(entry => entry.model) : next.enabled))
+  }, [])
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      adopt(await api.models())
+    } catch (failure: unknown) {
+      setError(t('whitelist.failed', { message: messageOf(failure) }))
+    }
+  }, [adopt, api, t])
+
+  useEffect(() => { void load() }, [load])
+
+  const models = state?.models ?? []
+  const needle = query.trim().toLowerCase()
+  const visible = needle === ''
+    ? models
+    : models.filter(entry => entry.model.toLowerCase().includes(needle))
+
+  /** Cancel the pending save, if one is queued. */
+  const cancelPending = useCallback((): void => {
+    if (pending.current === undefined) return
+    window.clearTimeout(pending.current)
+    pending.current = undefined
+  }, [])
+
+  // A queued save must not outlive the page it belongs to.
+  useEffect(() => cancelPending, [cancelPending])
+
+  /**
+   * Apply an edit to the boxes and queue one save.
+   *
+   * The list is stored as it is edited — there is no Save button to forget —
+   * so the delay only coalesces a burst of clicks into one profile write.
+   */
+  const edit = (next: ReadonlySet<string>): void => {
+    setSaved(false)
+    setNotice(undefined)
+    setSelected(next)
+    cancelPending()
+    // Catalog order, not click order: the stored list reads like the picker.
+    const enabled = models.filter(entry => next.has(entry.model)).map(entry => entry.model)
+    pending.current = window.setTimeout(() => {
+      pending.current = undefined
+      void persist(enabled)
+    }, AUTOSAVE_DELAY_MS)
+  }
+
+  const toggle = (model: string): void => {
+    const next = new Set(selected)
+    if (next.has(model)) next.delete(model)
+    else next.add(model)
+    // An empty list means "no whitelist", i.e. show everything — the opposite
+    // of what unchecking the last box asks for.
+    if (next.size === 0) {
+      setNotice(t('whitelist.keepOne'))
+      return
+    }
+    edit(next)
+  }
+  /** Show one row's groups just below it, above it when there is no room. */
+  const showTip = (entry: NearTokenModelEntry, anchor: HTMLElement): void => {
+    const rect = anchor.getBoundingClientRect()
+    const height = Math.min(240, 34 + entry.groups.length * 20)
+    const below = rect.bottom + 6
+    setTip({
+      entry,
+      top: below + height > window.innerHeight ? Math.max(12, rect.top - height - 6) : below,
+      left: Math.max(12, Math.min(rect.left + 24, window.innerWidth - 292)),
+    })
+  }
+  const checkVisible = (): void => {
+    edit(new Set([...selected, ...visible.map(entry => entry.model)]))
+  }
+  const uncheckVisible = (): void => {
+    const hidden = new Set(visible.map(entry => entry.model))
+    const next = new Set([...selected].filter(model => !hidden.has(model)))
+    if (next.size === 0) {
+      setNotice(t('whitelist.keepOne'))
+      return
+    }
+    edit(next)
+  }
+
+  /**
+   * Write one list to the Host, which re-declares the provider route so the
+   * model picker refetches without a page reload.
+   * @param enabled - the model names to keep visible; empty restores everything.
+   */
+  const persist = useCallback(async (enabled: readonly string[]): Promise<void> => {
+    setSaving(true)
+    setError(undefined)
+    try {
+      await api.saveModels(enabled)
+      setSaved(true)
+    } catch (failure: unknown) {
+      setError(t('whitelist.failed', { message: messageOf(failure) }))
+    } finally {
+      setSaving(false)
+    }
+  }, [api, t])
+
+  /** Restore the whole catalog: nothing hidden, nothing stored. */
+  const showEverything = (): void => {
+    cancelPending()
+    setSelected(new Set(models.map(entry => entry.model)))
+    void persist([])
+  }
+
+  return (
+    <section className={css.card}>
+      <div className={css.cardHead}>
+        <span className={css.name}>{t('whitelist.title')}</span>
+        <span className={css.badge}>{t('whitelist.count', {
+          total: String(models.length), selected: String(selected.size),
+        })}
+        </span>
+      </div>
+      <p className={css.intro}>{t('whitelist.intro')}</p>
+      {state === undefined
+        ? (error === undefined ? <p className={css.hint}>{t('whitelist.loading')}</p> : null)
+        : (
+          <div className={css.form}>
+            <input
+              className={css.search}
+              type="search"
+              value={query}
+              placeholder={t('whitelist.search')}
+              aria-label={t('whitelist.search')}
+              onChange={(event) => { setQuery(event.target.value) }}
+            />
+            <div className={css.toolbar}>
+              <button type="button" className={css.button} disabled={saving || visible.length === 0} onClick={checkVisible}>
+                {t('whitelist.selectAll')}
+              </button>
+              <button type="button" className={css.button} disabled={saving || visible.length === 0} onClick={uncheckVisible}>
+                {t('whitelist.clear')}
+              </button>
+              <button type="button" className={css.button} disabled={saving} onClick={showEverything}>
+                {t('whitelist.reset')}
+              </button>
+              <span className={css.autosave} aria-live="polite">
+                {saving ? t('whitelist.saving') : saved ? t('whitelist.autoSaved') : ''}
+              </span>
+            </div>
+            {models.length === 0
+              ? <p className={css.hint}>{t('whitelist.empty')}</p>
+              : (
+                <div className={css.list} onScroll={() => { setTip(undefined) }}>
+                  {visible.length === 0
+                    ? <p className={css.hint}>{t('whitelist.noMatch')}</p>
+                    : visible.map(entry => (
+                      <label
+                        key={entry.model}
+                        className={css.row}
+                        onMouseEnter={(event) => { showTip(entry, event.currentTarget) }}
+                        onMouseLeave={() => { setTip(undefined) }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(entry.model)}
+                          onChange={() => { toggle(entry.model) }}
+                        />
+                        <span className={css.rowName}>{entry.model}</span>
+                        <span className={css.rowMeta}>
+                          {entry.groups.length === 0 ? null : (
+                            <span>{t('whitelist.groupsCount', { count: String(entry.groups.length) })}</span>
+                          )}
+                          {entry.minRatio === undefined ? null : (
+                            <>
+                              <span className={css.rowRatio}>{t('whitelist.minRatio')}</span>
+                              <RatioChip ratio={String(entry.minRatio) + 'x'} />
+                            </>
+                          )}
+                        </span>
+                      </label>
+                    ))}
+                  {tip === undefined ? null : (
+                    <div className={css.tip} style={{ top: tip.top, left: tip.left }} role="tooltip">
+                      <span className={css.tipTitle}>{t('whitelist.groupsTitle')}</span>
+                      {tip.entry.groups.map(group => {
+                        const parsed = parseGroupLabel(group.group)
+                        return (
+                          <span key={group.group} className={css.tipRow}>
+                            <span className={css.tipGroup}>
+                              {parsed.badges.map(badge => (
+                                <GroupTag key={badge.text} text={badge.text} tone={badge.tone} />
+                              ))}
+                              <span className={css.tipGroupName}>{parsed.label}</span>
+                            </span>
+                            {group.ratio === undefined ? null : <RatioChip ratio={group.ratio} />}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            <p className={css.hint}>{t('whitelist.hint')}</p>
+            {notice === undefined ? null : <p className={css.notice}>{notice}</p>}
+          </div>
+        )}
+      {error === undefined ? null : <p className={css.notice}>{error}</p>}
+    </section>
+  )
+}
+
+/**
+ * Render one thrown value as the message the page shows.
+ * @param error - whatever the call threw.
+ * @returns the error's message, or its text.
+ */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

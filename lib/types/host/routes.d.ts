@@ -1,0 +1,40 @@
+/**
+ * The settings page's HTTP carrier: four same-origin endpoints the `NearToken`
+ * section calls, because a plugin cannot extend the application's Remote
+ * namespaces and the browser cannot reach the site directly (CORS).
+ *
+ * Every route asks the composition's `connection` service for a rejection
+ * first — the same Host/Origin fence the application's own routes use — so no
+ * other page can start an authorization in the user's name.
+ *
+ * @module
+ */
+import type { Context } from '@deepseek-ai/cordis';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { NearTokenModelsState } from '../protocol.ts';
+import type { NearTokenAccount } from './account.ts';
+import type { JsonObject } from './new-api.ts';
+/** What the routes need from the plugin. */
+export interface NearTokenRouteDeps {
+    /** The account the authorization and the stored key live on. */
+    account: NearTokenAccount;
+    /** Runs after the stored key was removed, so the provider route can unmount. */
+    onDisconnect: () => void;
+    /** The site's catalog beside the stored whitelist. */
+    models: () => Promise<NearTokenModelsState>;
+    /** Persist a whitelist; an empty list restores the whole catalog. */
+    saveModels: (enabled: readonly string[]) => Promise<void>;
+}
+/**
+ * @param ctx - a context that carries `webServer`.
+ * @param deps - the account and the disconnect callback.
+ */
+export declare function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps): void;
+/**
+ * Collect a bounded JSON object request body.
+ * @param req - the request to read.
+ * @param res - the response to answer on when the body is unusable.
+ * @param limit - largest accepted body, in bytes.
+ * @returns the parsed object, or undefined once a refusal was sent.
+ */
+export declare function readJsonObject(req: IncomingMessage, res: ServerResponse, limit?: number): Promise<JsonObject | undefined>;

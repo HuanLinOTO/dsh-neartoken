@@ -1,0 +1,276 @@
+/**
+ * Minimal OpenAI chat-completions wire for the NearToken adapter: request
+ * serialization from the harness message vocabulary and SSE response parsing
+ * into `StreamChunk`s. Prototype scope: text and tool calls round-trip
+ * faithfully; images and files are sent as placeholder text.
+ */
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { LlmError } from '@deepseek-ai/dsh-llm'
+import type {
+  FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
+} from '@deepseek-ai/dsh-llm'
+
+/** One wire-format chat message. */
+type WireMessage = Record<string, unknown>
+
+/**
+ * Flatten one message's text blocks; non-text blocks contribute nothing here.
+ * @param content - the message's content blocks.
+ * @returns the joined plain text.
+ */
+function textOf(content: readonly unknown[]): string {
+  let text = ''
+  for (const block of content) {
+    if (typeof block === 'object' && block !== null && (block as { type?: string }).type === 'text') {
+      text += (block as { text: string }).text
+    }
+  }
+  return text
+}
+
+/**
+ * Serialize one fully-assembled request into an OpenAI chat-completions body.
+ * @param options - the harness request.
+ * @param model - the real model id the provider should route to.
+ * @returns the ready-to-JSON body object.
+ */
+export function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown> {
+  const messages: WireMessage[] = []
+  if (options.system !== undefined && options.system.length > 0) {
+    messages.push({ role: 'system', content: options.system })
+  }
+  for (const message of options.messages) {
+    const wire = serializeMessage(message)
+    if (wire !== undefined) messages.push(wire)
+  }
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  }
+  if (options.tools !== undefined && options.tools.length > 0) {
+    body.tools = options.tools.map(tool => ({
+      type: 'function',
+      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+    }))
+  }
+  if (options.temperature !== undefined) body.temperature = options.temperature
+  if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
+  if (options.stop !== undefined && options.stop.length > 0) body.stop = options.stop
+  if (options.reasoningEffort !== undefined) body.reasoning_effort = options.reasoningEffort
+  return body
+}
+
+/**
+ * Map one harness message onto its OpenAI wire form.
+ * @param message - one conversation or user-input message.
+ * @returns the wire message, or undefined for a message with nothing to send.
+ */
+function serializeMessage(message: RequestMessage): WireMessage | undefined {
+  const content = message.content as readonly unknown[]
+  switch (message.role) {
+    case 'system':
+    case 'developer': {
+      const text = textOf(content)
+      return text === '' ? undefined : { role: 'system', content: text }
+    }
+    case 'user':
+      return { role: 'user', content: textOf(content) }
+    case 'assistant': {
+      const toolCalls = content
+        .filter((block): block is ToolCallBlock => typeof block === 'object' && block !== null
+          && (block as { type?: string }).type === 'tool-call')
+        .map(block => ({
+          type: 'function',
+          id: block.id,
+          function: { name: block.name, arguments: block.arguments },
+        }))
+      const text = textOf(content)
+      const wire: WireMessage = { role: 'assistant', content: text === '' && toolCalls.length > 0 ? null : text }
+      if (toolCalls.length > 0) wire.tool_calls = toolCalls
+      return wire
+    }
+    case 'tool':
+      return { role: 'tool', tool_call_id: message.toolCallId, content: textOf(content) }
+    default:
+      return undefined
+  }
+}
+
+/** OpenAI's streamed usage object (the fields this adapter reads). */
+interface WireUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  prompt_tokens_details?: { cached_tokens?: number }
+  completion_tokens_details?: { reasoning_tokens?: number }
+}
+
+/** Accumulator state for one in-flight SSE response. */
+interface SseAssembly {
+  textIndex: number | null
+  text: string
+  reasoningIndex: number | null
+  reasoning: string
+  toolBase: number
+  toolBlocks: Map<number, { index: number; id: string; name: string; arguments: string }>
+  usage: TokenUsage | null
+  finish: string | null
+}
+
+/**
+ * Parse one streamed OpenAI chat-completions response into harness chunks.
+ * @param response - the streaming fetch response.
+ * @param signal - cancellation passthrough for the read loop.
+ * @returns the chunk stream: block-start/delta as they arrive, then
+ * block-end/usage/finish once the stream completes.
+ */
+export async function* parseSse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk> {
+  if (!response.ok || response.body === null) {
+    const detail = await response.text().catch(() => '')
+    throw new LlmError(`NearToken answered ${response.status}: ${detail.slice(0, 500)}`, 'PROVIDER_ERROR')
+  }
+  const state: SseAssembly = {
+    textIndex: null, text: '', reasoningIndex: null, reasoning: '',
+    toolBase: 2, toolBlocks: new Map(), usage: null, finish: null,
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      if (signal?.aborted === true) break
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let newline = buffer.indexOf('\n')
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+        yield* consumeLine(line, state)
+      }
+    }
+  } finally {
+    void reader.releaseLock()
+  }
+  if (state.textIndex !== null) {
+    yield { type: 'block-end', index: state.textIndex, block: { type: 'text', text: state.text } }
+  }
+  if (state.reasoningIndex !== null) {
+    yield { type: 'block-end', index: state.reasoningIndex, block: { type: 'reasoning', text: state.reasoning } }
+  }
+  for (const block of state.toolBlocks.values()) {
+    yield {
+      type: 'block-end',
+      index: block.index,
+      block: {
+        type: 'tool-call',
+        id: brandString<ToolCallId>(block.id),
+        name: block.name,
+        arguments: block.arguments,
+      },
+    }
+  }
+  if (state.usage !== null) yield { type: 'usage', usage: state.usage }
+  yield { type: 'finish', reason: finishOf(state.finish) }
+}
+
+/**
+ * Fold one SSE line into the assembly state, yielding the chunk(s) it carries.
+ * @param line - one raw SSE line (empty lines and comments are skipped).
+ * @param state - the live assembly state.
+ * @returns zero or more stream chunks in wire order.
+ */
+function* consumeLine(line: string, state: SseAssembly): Generator<StreamChunk> {
+  if (!line.startsWith('data:')) return
+  const payload = line.slice(5).trim()
+  if (payload === '' || payload === '[DONE]') return
+  let parsed: unknown
+  try { parsed = JSON.parse(payload) } catch { return }
+  if (typeof parsed !== 'object' || parsed === null) return
+  const chunk = parsed as {
+    choices?: Array<{
+      delta?: {
+        content?: string
+        reasoning_content?: string
+        reasoning?: string
+        tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+      }
+      finish_reason?: string | null
+    }>
+    usage?: WireUsage
+  }
+  const usage = chunk.usage
+  if (usage !== undefined) {
+    const cached = usage.prompt_tokens_details?.cached_tokens ?? 0
+    state.usage = {
+      inputTokens: Math.max(0, (usage.prompt_tokens ?? 0) - cached),
+      outputTokens: usage.completion_tokens ?? 0,
+      ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
+      ...(cached > 0 ? { cacheReadTokens: cached } : {}),
+      ...(usage.completion_tokens_details?.reasoning_tokens !== undefined
+        ? { reasoningTokens: usage.completion_tokens_details.reasoning_tokens }
+        : {}),
+    }
+  }
+  const choice = chunk.choices?.[0]
+  if (choice === undefined) return
+  const delta = choice.delta ?? {}
+  if (typeof delta.content === 'string' && delta.content.length > 0) {
+    if (state.textIndex === null) {
+      state.textIndex = 0
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+    }
+    state.text += delta.content
+    yield { type: 'text-delta', index: 0, text: delta.content }
+  }
+  const reasoning = delta.reasoning_content ?? delta.reasoning
+  if (typeof reasoning === 'string' && reasoning.length > 0) {
+    if (state.reasoningIndex === null) {
+      state.reasoningIndex = 1
+      yield { type: 'block-start', index: 1, blockType: 'reasoning' }
+    }
+    state.reasoning += reasoning
+    yield { type: 'reasoning-delta', index: 1, text: reasoning }
+  }
+  for (const call of delta.tool_calls ?? []) {
+    const slot = call.index ?? 0
+    let block = state.toolBlocks.get(slot)
+    if (block === undefined) {
+      block = { index: state.toolBase + slot, id: '', name: '', arguments: '' }
+      state.toolBlocks.set(slot, block)
+      yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
+    }
+    if (call.id !== undefined && block.id === '') block.id = call.id
+    if (call.function?.name !== undefined && call.function.name !== '' && block.name === '') {
+      block.name = call.function.name
+    }
+    if (call.function?.arguments !== undefined && call.function.arguments.length > 0) {
+      block.arguments += call.function.arguments
+      yield {
+        type: 'tool-call-delta',
+        index: block.index,
+        id: brandString<ToolCallId>(block.id),
+        ...(block.name !== '' ? { name: block.name } : {}),
+        argumentsDelta: call.function.arguments,
+      }
+    }
+  }
+  if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
+    state.finish = choice.finish_reason
+  }
+}
+
+/**
+ * @param reason - the provider's finish_reason, when it sent one.
+ * @returns the harness finish reason.
+ */
+function finishOf(reason: string | null): FinishReason {
+  switch (reason) {
+    case 'tool_calls': return { kind: 'tool-calls' }
+    case 'length': return { kind: 'max-tokens' }
+    default: return { kind: 'stop' }
+  }
+}

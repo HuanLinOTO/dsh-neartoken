@@ -1,0 +1,59 @@
+/**
+ * The pricing half's two contracts: `group_refs` decides whether a route can
+ * carry group intent at all, and the catalog id it mints is what the adapter
+ * decodes back at dispatch. Both are asserted against one payload shaped like
+ * the site's answer, including the non-latin1 group names it really uses.
+ */
+import { describe, expect, it } from 'vitest'
+import { expandRoutes, parsePricing } from './pricing.ts'
+
+/** One pricing answer with a referred group, an unreferred one, and a ratio table. */
+const payload = {
+  data: [{ model_name: 'grok-4.6', enable_groups: ['[低价] Grok', 'default'] }],
+  group_ratio: { '[低价] Grok': 0.1, default: 1 },
+  usable_group: { default: '默认分组' },
+  group_refs: { '[低价] Grok': '#7', default: 'default' },
+}
+
+describe('parsePricing', () => {
+  it('keeps only reference-shaped values out of group_refs', () => {
+    const pricing = parsePricing(payload)
+    expect(pricing.groupRefs['[低价] Grok']).toBe('#7')
+    expect(pricing.groupRefs.default).toBeUndefined()
+  })
+
+  it('reads the ratio and description tables it consumes', () => {
+    const pricing = parsePricing(payload)
+    expect(pricing.groupRatio['[低价] Grok']).toBe(0.1)
+    expect(pricing.groupDescription.default).toBe('默认分组')
+  })
+
+  it('ignores a payload whose rows are not model rows', () => {
+    const pricing = parsePricing({ data: [{ model_name: 1 }, { enable_groups: [] }, 'row'] })
+    expect(pricing.models).toEqual([])
+  })
+})
+
+describe('expandRoutes', () => {
+  it('carries the group reference on the routes whose group published one', () => {
+    const routes = expandRoutes(parsePricing(payload))
+    expect(routes.map(route => route.groupRef)).toEqual(['#7', undefined])
+  })
+
+  it('encodes the catalog id and display name from the group and the model', () => {
+    const [route] = expandRoutes(parsePricing(payload))
+    expect(route?.id).toBe('[低价] Grok::grok-4.6')
+    expect(route?.name).toBe('grok-4.6 @ [低价] Grok')
+    expect(route?.description).toBe('分组倍率 0.1x')
+  })
+
+  it('expands one route per (group, model) pair, group order preserved', () => {
+    const routes = expandRoutes(parsePricing({
+      data: [
+        { model_name: 'a', enable_groups: ['g1', 'g2'] },
+        { model_name: 'b', enable_groups: ['g2'] },
+      ],
+    }))
+    expect(routes.map(route => route.id)).toEqual(['g1::a', 'g2::a', 'g2::b'])
+  })
+})

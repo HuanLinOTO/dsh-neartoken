@@ -1,0 +1,5 @@
+# pi-ai's optional provider SDKs ship build scripts this plugin never runs: it
+# reads pi-ai's model data at generation time only, and nothing at runtime.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false
