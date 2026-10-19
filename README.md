@@ -7,45 +7,15 @@
 
 ## 架构
 
-```mermaid
-flowchart LR
-  subgraph site["New API 站点"]
-    pricing["/api/pricing<br/>模型 · 分组 · 倍率 · 容量 · 端点类型"]
-    device["/api/dsh/device/*<br/>设备授权"]
-    relay["/v1/messages · /v1beta · /v1/responses · /v1/chat/completions"]
-  end
+插件只在三条流向上说话，其余都是它们的支撑：
 
-  subgraph client["Client 半边 src/client"]
-    settings["设置页 NearTokenSection<br/>连接 / 账号卡片 / 模型白名单"]
-    picker["模型选择器 ModelGroupSelect<br/>模型 → 分组 → 推理等级"]
-  end
+| 流向 | 路径 |
+|---|---|
+| **登录** | 设置页 → `POST /neartoken/authorize` → 站点 `POST /api/dsh/device/authorize` 拿到确认码 → 用户在自己浏览器里批准 → 插件按 `interval` 轮询 `POST /api/dsh/device/token`（`authorization_pending` / `slow_down` 退避 +2s / `access_denied` / `expired_token` / `granted`）→ 把站点铸造的 key 写进 credentials 的 `NEARTOKEN_API_KEY` |
+| **目录** | `GET /api/pricing`（TTL 缓存）→ 按 (分组, 模型) 展开成 `"<组>::<模型>"` → 可见性过滤 → `listModels` 交给 DSH |
+| **出字** | `stream()` → 按模型选协议 → 站点 `/v1/messages`、`/v1beta/models/*:streamGenerateContent`、`/v1/responses`、`/v1/chat/completions`。`body.model` 是裸模型名，`x-neartoken-group` 头带分组的 `#<id>` |
 
-  subgraph host["Host 半边 src/host"]
-    routes["routes.ts<br/>GET/POST /neartoken/*"]
-    account["NearTokenAccount<br/>轮询设备授权"]
-    creds[("credentials<br/>NEARTOKEN_API_KEY")]
-    provider["NearTokenProvider<br/>注册 / 撤下路由"]
-    adapter["NearTokenAdapter<br/>listModels · resolveModel · stream"]
-    catalog["PricingDirectory<br/>TTL 缓存 + 可见性过滤"]
-    wire["wire 层<br/>openai · anthropic · genai · responses"]
-    caps["model-caps.ts<br/>可见性 · 容量 · 推理等级"]
-  end
-
-  settings --> routes
-  routes --> account
-  routes --> provider
-  account -->|"POST /api/dsh/device/token"| device
-  account -->|"授权成功写入"| creds
-  creds -->|"有 key 才挂路由"| provider
-  provider --> adapter
-  catalog -->|"GET /api/pricing"| pricing
-  catalog --> adapter
-  caps --> catalog
-  caps --> adapter
-  adapter --> wire
-  wire --> relay
-  adapter -.->|"经 ctx.llm 发布目录"| picker
-```
+一条实现约束：provider 只有在凭据存在时才挂载，且 `credentials` 服务可能晚于本插件就绪，所以启动时先同步一次、再用 `ctx.inject` 同步一次。
 
 | 文件 | 职责 |
 |---|---|
@@ -57,6 +27,8 @@ flowchart LR
 | `src/host/model-caps.ts` | 一个模型能不能聊、上下文窗口多大、可选的推理等级 |
 | `src/host/adapter.ts` | 目录、元数据、按模型选协议并流式解析 |
 | `src/host/*-wire.ts` | 四条上游协议各自的请求体与 SSE 解析 |
+| `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
+| `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
 | `src/client/` | 设置页、模型选择器、分组胶囊渲染 |
 
 ## 使用
