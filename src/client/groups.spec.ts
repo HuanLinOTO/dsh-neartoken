@@ -95,6 +95,9 @@ describe('displayModelName', () => {
     expect(displayModelName('gpt-6-astra')).toBe('GPT 6 Astra')
     expect(displayModelName('glm-5.3-flash')).toBe('GLM 5.3 Flash')
     expect(displayModelName('deepseek-v4-pro')).toBe('DeepSeek V4 Pro')
+    expect(displayModelName('minimax-m3')).toBe('MiniMax M3')
+    expect(displayModelName('mimo-v2.6-flash')).toBe('MiMo V2.6 Flash')
+    expect(displayModelName('grok-4.6-xhigh')).toBe('Grok 4.6 XHigh')
   })
 
   it('keeps the -c word, so a model stays distinguishable from its twin', () => {

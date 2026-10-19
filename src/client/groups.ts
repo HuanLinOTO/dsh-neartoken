@@ -116,12 +116,18 @@ function badgeOf(text: string): GroupBadge {
  * The capitals each vendor writes its own family name with.
  *
  * The catalog publishes ids in lowercase only, so the display name has to put
- * them back: GPT and GLM are acronyms, DeepSeek is camel case.
+ * them back: GPT and GLM are acronyms, DeepSeek is camel case, MiniMax and MiMo
+ * keep an inner capital, and the `xhigh` effort is spelled `XHigh` everywhere
+ * else in the product.
  */
 const BRAND_SPELLING: Readonly<Record<string, string>> = {
   gpt: 'GPT',
   glm: 'GLM',
   deepseek: 'DeepSeek',
+  minimax: 'MiniMax',
+  mimo: 'MiMo',
+  xhigh: 'XHigh',
+  tts: 'TTS',
 }
 
 /**
