@@ -113,8 +113,21 @@ function badgeOf(text: string): GroupBadge {
 }
 
 /**
+ * The capitals each vendor writes its own family name with.
+ *
+ * The catalog publishes ids in lowercase only, so the display name has to put
+ * them back: GPT and GLM are acronyms, DeepSeek is camel case.
+ */
+const BRAND_SPELLING: Readonly<Record<string, string>> = {
+  gpt: 'GPT',
+  glm: 'GLM',
+  deepseek: 'DeepSeek',
+}
+
+/**
  * Render a model name the way the pickers show it: hyphens become separators
  * and every word is capitalized, so `claude-opus-5-c` reads `Claude Opus 5 C`.
+ * A vendor's own spelling wins over that rule (`gpt-5.5` reads `GPT 5.5`).
  *
  * The trailing `-c` stays a word on purpose: the site pairs every such model
  * with a twin that lacks the suffix (`claude-opus-5` beside `claude-opus-5-c`),
@@ -128,7 +141,7 @@ export function displayModelName(model: string): string {
   return model
     .split('-')
     .filter(part => part.length > 0)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .map(part => BRAND_SPELLING[part.toLowerCase()] ?? part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
 }
 

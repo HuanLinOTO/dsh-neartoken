@@ -46,7 +46,7 @@
 │ conversation.input.model（priority -1 覆盖内置模型座）              │
 │   · name 按 " @ " 拆回 (模型, 分组)，同模型折叠成一行                │
 │   · 触发器显示 "Claude Opus 5 C @ NearToken"，不渲染分组             │
-│   · 列表项按 displayModelName 美化（- → 空格，逐词首字母大写）        │
+│   · 列表项按 displayModelName 美化（- → 空格，词首大写、品牌名）      │
 │   · 分组只在「分组」那一级里出现（"[低价][反重力] Claude" → tag 胶囊）│
 │   · 倍率从 catalog description（"分组倍率 0.4x"）解析显示            │
 │   · 数据仍走 ctx.modelDirectories（与 /model 弹窗同一份状态）        │

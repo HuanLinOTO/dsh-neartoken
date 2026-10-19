@@ -49,6 +49,7 @@ export declare function parseGroupLabel(name: string): ParsedGroup;
 /**
  * Render a model name the way the pickers show it: hyphens become separators
  * and every word is capitalized, so `claude-opus-5-c` reads `Claude Opus 5 C`.
+ * A vendor's own spelling wins over that rule (`gpt-5.5` reads `GPT 5.5`).
  *
  * The trailing `-c` stays a word on purpose: the site pairs every such model
  * with a twin that lacks the suffix (`claude-opus-5` beside `claude-opus-5-c`),

@@ -90,6 +90,13 @@ describe('displayModelName', () => {
     expect(displayModelName('claude-opus-5-c')).toBe('Claude Opus 5 C')
   })
 
+  it('keeps each vendor own spelling', () => {
+    expect(displayModelName('gpt-5.5')).toBe('GPT 5.5')
+    expect(displayModelName('gpt-6-astra')).toBe('GPT 6 Astra')
+    expect(displayModelName('glm-5.3-flash')).toBe('GLM 5.3 Flash')
+    expect(displayModelName('deepseek-v4-pro')).toBe('DeepSeek V4 Pro')
+  })
+
   it('keeps the -c word, so a model stays distinguishable from its twin', () => {
     expect(displayModelName('claude-opus-5')).not.toBe(displayModelName('claude-opus-5-c'))
   })
