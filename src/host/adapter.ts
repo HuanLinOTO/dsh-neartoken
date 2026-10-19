@@ -3,13 +3,17 @@
  * whose model catalog is the (group, model) expansion of the pricing endpoint.
  *
  * Catalog model ids are `"<group>::<model>"`; the adapter decodes them at
- * dispatch and sends the bare model name in the OpenAI body.
+ * dispatch and sends the bare model name in the request body.
  *
  * The group itself travels in the `x-neartoken-group` request header as the
  * site's own ASCII reference (`"#7"`), never as the group name: a name is
  * display text, and its non-latin1 characters are not a legal HTTP header
  * value. A group the site published no reference for sends no header at all
  * and routes by the token's own group (see HANDOFF).
+ *
+ * The wire is chosen per model (see `protocol-router.ts`): Claude goes to the
+ * messages API, Gemini to generateContent, GPT to the Responses API, and the
+ * rest of the catalog stays on chat completions.
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { attributionHeaders, LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -18,7 +22,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type { NearTokenRoute } from './pricing.ts'
 import { defaultReasoningLevel, reasoningLevelLabel, reasoningLevels } from './model-caps.ts'
-import { parseSse, serializeRequest } from './openai-wire.ts'
+import { wireFor } from './protocol-router.ts'
 import { selectedRoutes } from './whitelist.ts'
 
 /** Display name of the single provider route this adapter owns. */
@@ -131,7 +135,9 @@ export class NearTokenAdapter extends LlmAdapter {
   }
 
   /**
-   * Stream one model call through the OpenAI chat-completions endpoint.
+   * Stream one model call through the wire its model speaks: Claude's messages
+   * API, Gemini's generateContent, the Responses API for GPT, and chat
+   * completions for everything else.
    * @param options - the fully-assembled request; the abort signal is honored.
    * @returns the parsed chunk stream.
    */
@@ -143,19 +149,16 @@ export class NearTokenAdapter extends LlmAdapter {
     // legal HTTP header value.
     const route = (await this.deps.routes()).find(entry => entry.id === options.model)
     const groupRef = route?.groupRef
-    const response = await fetch(`${this.deps.baseURL()}/v1/chat/completions`, {
+    const wire = wireFor(model)
+    const response = await fetch(wire.url(this.deps.baseURL(), model), {
       method: 'POST',
       headers: {
         ...attributionHeaders(),
-        authorization: `Bearer ${key}`,
-        'content-type': 'application/json',
-        // Group routing: a route whose group published no reference sends no
-        // header at all and falls back to the token's own group.
-        ...(groupRef !== undefined ? { 'x-neartoken-group': groupRef } : {}),
+        ...wire.headers(key, groupRef),
       },
-      body: JSON.stringify(serializeRequest(options, model)),
+      body: JSON.stringify(wire.serialize(options, model)),
       signal: options.signal,
     })
-    yield* parseSse(response, options.signal)
+    yield* wire.parse(response, options.signal)
   }
 }

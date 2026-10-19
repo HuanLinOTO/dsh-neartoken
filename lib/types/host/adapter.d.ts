@@ -55,7 +55,9 @@ export declare class NearTokenAdapter extends LlmAdapter {
      */
     resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo>;
     /**
-     * Stream one model call through the OpenAI chat-completions endpoint.
+     * Stream one model call through the wire its model speaks: Claude's messages
+     * API, Gemini's generateContent, the Responses API for GPT, and chat
+     * completions for everything else.
      * @param options - the fully-assembled request; the abort signal is honored.
      * @returns the parsed chunk stream.
      */
