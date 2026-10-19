@@ -102,7 +102,8 @@ flowchart LR
 站点 `/api/pricing` 会列出它知道的所有模型，插件只提供会响应聊天请求的那部分：
 
 1. **站点自己声明的 `supported_endpoint_types` 优先**：含 `openai` / `openai-response` / `anthropic` / `gemini` 任一即可见。这是站点上新增模型当天就能出现在选择器里的原因 —— 不需要等插件发版。
-2. **站点没声明时**回退到名字规则：`-c` 后缀（站点给每个编码变体配了无后缀孪生）、含 image / tts / transcribe / asr 的媒体路由、以及 pi-ai 目录里没有的名字。
+2. 无论站点声明什么，`-c` 后缀与媒体名（image / tts / transcribe / asr）都不提供 —— 定价接口把这些路由也挂在 `openai` 这个 surface 下，只看声明会把生图和语音模型塞进聊天选择器。
+3. **站点没声明时**回退到名字规则：pi-ai 目录里没有的名字不提供。
 
 ## 容量与推理等级
 

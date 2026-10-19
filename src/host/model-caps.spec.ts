@@ -40,6 +40,12 @@ describe('isChatOffering', () => {
     expect(isChatOffering('brand-new-model', ['openai-response', 'gemini'])).toBe(true)
   })
 
+  it('hides a media route even when the site files it under a chat surface', () => {
+    expect(isChatOffering('gpt-image-2.5-flare', ['openai'])).toBe(false)
+    expect(isChatOffering('gemini-3.8-flash-tts', ['openai', 'gemini'])).toBe(false)
+    expect(isChatOffering('claude-opus-5-c', ['anthropic'])).toBe(false)
+  })
+
   it('hides a model whose declared surfaces never answer chat', () => {
     expect(isChatOffering('gpt-image-2.5-flare', ['image-generation'])).toBe(false)
     expect(isChatOffering('some-video', ['openai-video'])).toBe(false)

@@ -91,6 +91,10 @@ export function isOfferedModel(model: string): boolean {
  * @returns whether the model stays in the catalog.
  */
 export function isChatOffering(model: string, endpoints?: readonly string[]): boolean {
+  // A media or coding-twin name never answers a chat request, whatever the site
+  // declares for it: the pricing endpoint files image, TTS, and embedding routes
+  // under the same `openai` surface a chat model has.
+  if (NON_TEXT.test(model) || CODING_VARIANT.test(model)) return false
   if (endpoints === undefined || endpoints.length === 0) return isOfferedModel(model)
   return endpoints.some(endpoint => CHAT_ENDPOINTS.has(endpoint))
 }
