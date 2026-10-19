@@ -107,6 +107,10 @@
 ## 已知限制（原型）
 
 - 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；图片与文件仍以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
+- 四套 wire 的 SSE 解析都有「帧样本 → 期望 chunk 序列」回归测试（`src/host/wire-parse.spec.ts`），帧样本取自生产网关的真实响应。网关在内容帧上发 `"usage": null`，只有末帧带真值：任何一处把 `usage` 当对象直接读都会让整条流中途崩掉（曾导致 claude 模型全不可用）。
+- 推理等级映射到各协议的**固定 token 预算**：anthropic 发 `thinking.budget_tokens`（minimal 1024 → max 32000），genai 发 `thinkingConfig.thinkingBudget` 且带 `includeThoughts`（不带你拿不到思维链）。chat 与 responses 仍按原样发 `reasoning_effort` / `reasoning.effort`。
+- 思考历史**不回传**：harness 的 reasoning 块没有 signature 槽位，anthropic 的 `signature_delta` 与 gemini 的 `thoughtSignature` 都被丢弃。当前网关的转换层本身也会丢弃 thinking 块，所以多轮不会因此报错；接真正的 Anthropic / Gemini 直连渠道时这一条会变成硬限制。
+- anthropic 线不再硬编码 `max_tokens`：只在调用方给了上限、或开了 thinking 需要给它留出余量时才发。给死值会截断长回答。
 - pricing 加载失败时沿用上一次成功的结果，从未成功过则目录为空（失败不写缓存，下次调用会重试）。
 - 账号卡片不自动刷新：数字只来自授权那一刻 grant 里的 `user`（站点的 dashboard 接口认浏览器会话，不认本插件持有的 relay key），落盘到 profile 下的 `neartoken-account.json`，重启后从文件恢复。之后余额变化不会反映，需要重新连接一次。
 - 供应商是授权态驱动的：断开连接后，正在使用 NearToken 模型的会话需要重新选模型。

@@ -71,9 +71,22 @@ const ANTHROPIC: Wire = {
   parse: parseAnthropic,
 }
 
+/**
+ * Encode one model id as a URL path segment sequence.
+ *
+ * A catalog id may carry a `vendor/` prefix, which is part of the route the
+ * gateway matches on; percent-encoding the separators would fold the whole id
+ * into a single segment and miss it.
+ * @param model - the bare model id.
+ * @returns the path-safe form, separators preserved.
+ */
+function modelPath(model: string): string {
+  return model.split('/').map(segment => encodeURIComponent(segment)).join('/')
+}
+
 const GENAI: Wire = {
   protocol: 'genai',
-  url: (baseURL, model) => `${baseURL}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`,
+  url: (baseURL, model) => `${baseURL}/v1beta/models/${modelPath(model)}:streamGenerateContent?alt=sse`,
   headers: (key, groupRef) => ({
     'x-goog-api-key': key,
     authorization: `Bearer ${key}`,

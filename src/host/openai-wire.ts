@@ -9,6 +9,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
+import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 
 /** One wire-format chat message. */
 type WireMessage = Record<string, unknown>
@@ -98,15 +99,6 @@ function serializeMessage(message: RequestMessage): WireMessage | undefined {
   }
 }
 
-/** OpenAI's streamed usage object (the fields this adapter reads). */
-interface WireUsage {
-  prompt_tokens?: number
-  completion_tokens?: number
-  total_tokens?: number
-  prompt_tokens_details?: { cached_tokens?: number }
-  completion_tokens_details?: { reasoning_tokens?: number }
-}
-
 /** Accumulator state for one in-flight SSE response. */
 interface SseAssembly {
   textIndex: number | null
@@ -117,6 +109,96 @@ interface SseAssembly {
   toolBlocks: Map<number, { index: number; id: string; name: string; arguments: string }>
   usage: TokenUsage | null
   finish: string | null
+}
+
+/**
+ * Fold one chat-completions chunk into the assembly state.
+ *
+ * The gateway sends `"usage": null` on every content frame and the real numbers
+ * only on the last one, so the field must be read as `unknown` and discarded
+ * when it is not an object.
+ * @param payload - one SSE data payload.
+ * @param state - the live assembly state.
+ * @returns zero or more stream chunks in wire order.
+ */
+function* consume(payload: string, state: SseAssembly): Generator<StreamChunk> {
+  const chunk = parseJsonObject(payload)
+  if (chunk === undefined) return
+  const usage = asObject(chunk.usage)
+  if (usage !== undefined) {
+    const details = asObject(usage.prompt_tokens_details)
+    const cached = numberOf(details?.cached_tokens) ?? 0
+    const prompt = numberOf(usage.prompt_tokens) ?? 0
+    const completionDetails = asObject(usage.completion_tokens_details)
+    const reasoningTokens = numberOf(completionDetails?.reasoning_tokens)
+    const total = numberOf(usage.total_tokens)
+    state.usage = {
+      inputTokens: Math.max(0, prompt - cached),
+      outputTokens: numberOf(usage.completion_tokens) ?? 0,
+      ...(total !== undefined ? { totalTokens: total } : {}),
+      ...(cached > 0 ? { cacheReadTokens: cached } : {}),
+      ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    }
+  }
+  const choice = asObject(asArrayFirst(chunk.choices))
+  if (choice === undefined) return
+  const delta = asObject(choice.delta) ?? {}
+  const content = stringOf(delta.content)
+  if (content !== undefined && content.length > 0) {
+    if (state.textIndex === null) {
+      state.textIndex = 0
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+    }
+    state.text += content
+    yield { type: 'text-delta', index: 0, text: content }
+  }
+  const reasoning = stringOf(delta.reasoning_content) ?? stringOf(delta.reasoning)
+  if (reasoning !== undefined && reasoning.length > 0) {
+    if (state.reasoningIndex === null) {
+      state.reasoningIndex = 1
+      yield { type: 'block-start', index: 1, blockType: 'reasoning' }
+    }
+    state.reasoning += reasoning
+    yield { type: 'reasoning-delta', index: 1, text: reasoning }
+  }
+  for (const candidate of asArray(delta.tool_calls)) {
+    const call = asObject(candidate)
+    if (call === undefined) continue
+    const fn = asObject(call.function)
+    const slot = numberOf(call.index) ?? 0
+    let block = state.toolBlocks.get(slot)
+    if (block === undefined) {
+      block = { index: state.toolBase + slot, id: '', name: '', arguments: '' }
+      state.toolBlocks.set(slot, block)
+      yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
+    }
+    const id = stringOf(call.id)
+    if (id !== undefined && block.id === '') block.id = id
+    const name = stringOf(fn?.name)
+    if (name !== undefined && name !== '' && block.name === '') block.name = name
+    const argument = stringOf(fn?.arguments)
+    if (argument !== undefined && argument.length > 0) {
+      block.arguments += argument
+      yield {
+        type: 'tool-call-delta',
+        index: block.index,
+        id: brandString<ToolCallId>(block.id),
+        ...(block.name !== '' ? { name: block.name } : {}),
+        argumentsDelta: argument,
+      }
+    }
+  }
+  const finish = stringOf(choice.finish_reason)
+  if (finish !== undefined && finish.length > 0) state.finish = finish
+}
+
+/**
+ * First entry of a decoded array, as an object.
+ * @param value - any decoded JSON value.
+ * @returns the first object, or undefined when there is none.
+ */
+function asArrayFirst(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined
 }
 
 /**
@@ -135,26 +217,7 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     textIndex: null, text: '', reasoningIndex: null, reasoning: '',
     toolBase: 2, toolBlocks: new Map(), usage: null, finish: null,
   }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      if (signal?.aborted === true) break
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let newline = buffer.indexOf('\n')
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        newline = buffer.indexOf('\n')
-        yield* consumeLine(line, state)
-      }
-    }
-  } finally {
-    void reader.releaseLock()
-  }
+  for await (const payload of sseData(response, signal)) yield* consume(payload, state)
   if (state.textIndex !== null) {
     yield { type: 'block-end', index: state.textIndex, block: { type: 'text', text: state.text } }
   }
@@ -175,92 +238,6 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
   }
   if (state.usage !== null) yield { type: 'usage', usage: state.usage }
   yield { type: 'finish', reason: finishOf(state.finish) }
-}
-
-/**
- * Fold one SSE line into the assembly state, yielding the chunk(s) it carries.
- * @param line - one raw SSE line (empty lines and comments are skipped).
- * @param state - the live assembly state.
- * @returns zero or more stream chunks in wire order.
- */
-function* consumeLine(line: string, state: SseAssembly): Generator<StreamChunk> {
-  if (!line.startsWith('data:')) return
-  const payload = line.slice(5).trim()
-  if (payload === '' || payload === '[DONE]') return
-  let parsed: unknown
-  try { parsed = JSON.parse(payload) } catch { return }
-  if (typeof parsed !== 'object' || parsed === null) return
-  const chunk = parsed as {
-    choices?: Array<{
-      delta?: {
-        content?: string
-        reasoning_content?: string
-        reasoning?: string
-        tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
-      }
-      finish_reason?: string | null
-    }>
-    usage?: WireUsage
-  }
-  const usage = chunk.usage
-  if (usage !== undefined) {
-    const cached = usage.prompt_tokens_details?.cached_tokens ?? 0
-    state.usage = {
-      inputTokens: Math.max(0, (usage.prompt_tokens ?? 0) - cached),
-      outputTokens: usage.completion_tokens ?? 0,
-      ...(usage.total_tokens !== undefined ? { totalTokens: usage.total_tokens } : {}),
-      ...(cached > 0 ? { cacheReadTokens: cached } : {}),
-      ...(usage.completion_tokens_details?.reasoning_tokens !== undefined
-        ? { reasoningTokens: usage.completion_tokens_details.reasoning_tokens }
-        : {}),
-    }
-  }
-  const choice = chunk.choices?.[0]
-  if (choice === undefined) return
-  const delta = choice.delta ?? {}
-  if (typeof delta.content === 'string' && delta.content.length > 0) {
-    if (state.textIndex === null) {
-      state.textIndex = 0
-      yield { type: 'block-start', index: 0, blockType: 'text' }
-    }
-    state.text += delta.content
-    yield { type: 'text-delta', index: 0, text: delta.content }
-  }
-  const reasoning = delta.reasoning_content ?? delta.reasoning
-  if (typeof reasoning === 'string' && reasoning.length > 0) {
-    if (state.reasoningIndex === null) {
-      state.reasoningIndex = 1
-      yield { type: 'block-start', index: 1, blockType: 'reasoning' }
-    }
-    state.reasoning += reasoning
-    yield { type: 'reasoning-delta', index: 1, text: reasoning }
-  }
-  for (const call of delta.tool_calls ?? []) {
-    const slot = call.index ?? 0
-    let block = state.toolBlocks.get(slot)
-    if (block === undefined) {
-      block = { index: state.toolBase + slot, id: '', name: '', arguments: '' }
-      state.toolBlocks.set(slot, block)
-      yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
-    }
-    if (call.id !== undefined && block.id === '') block.id = call.id
-    if (call.function?.name !== undefined && call.function.name !== '' && block.name === '') {
-      block.name = call.function.name
-    }
-    if (call.function?.arguments !== undefined && call.function.arguments.length > 0) {
-      block.arguments += call.function.arguments
-      yield {
-        type: 'tool-call-delta',
-        index: block.index,
-        id: brandString<ToolCallId>(block.id),
-        ...(block.name !== '' ? { name: block.name } : {}),
-        argumentsDelta: call.function.arguments,
-      }
-    }
-  }
-  if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
-    state.finish = choice.finish_reason
-  }
 }
 
 /**

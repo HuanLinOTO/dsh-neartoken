@@ -2,6 +2,14 @@
  * The Anthropic messages wire: what a Claude model behind the gateway expects,
  * and the SSE events it answers with, folded back into harness chunks.
  *
+ * Two properties of the gateway shape this module:
+ *
+ * - Content block indexes arrive in the order the gateway opened them, which is
+ *   not fixed (a thinking block can precede the text block). Blocks are read by
+ *   the index the wire sent, never by a guessed position.
+ * - `message_start.usage` carries the gateway's own prompt estimate; the real
+ *   counts arrive with `message_delta`. Both are read, the later one winning.
+ *
  * @module
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -9,7 +17,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import { numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 
 /** One Anthropic content block, as sent. */
 type WireBlock = Record<string, unknown>
@@ -31,6 +39,9 @@ function textOf(content: readonly unknown[]): string {
 
 /**
  * Map one harness message onto its Anthropic form.
+ *
+ * Assistant thinking blocks are not sent back: the harness ReasoningBlock
+ * carries no signature, and the gateway drops a thinking block without one.
  * @param message - one conversation message.
  * @returns the wire message, or undefined when it carries nothing.
  */
@@ -69,7 +80,31 @@ function serializeMessage(message: RequestMessage): WireBlock | undefined {
 }
 
 /**
+ * Thinking budget for one harness reasoning effort.
+ *
+ * The messages API takes a token budget rather than an effort name, so each
+ * selectable level maps onto one. 1024 is the API floor.
+ * @param effort - the harness effort id.
+ * @returns the budget in tokens, or undefined when the effort is not a level.
+ */
+function thinkingBudget(effort: string): number | undefined {
+  switch (effort) {
+    case 'minimal': return 1024
+    case 'low': return 2048
+    case 'medium': return 8192
+    case 'high': return 16384
+    case 'xhigh': return 24576
+    case 'max': return 32000
+    default: return undefined
+  }
+}
+
+/**
  * Serialize one harness request into an Anthropic messages body.
+ *
+ * `max_tokens` is only sent when the caller set one, or when thinking needs
+ * headroom above its budget: the gateway does not require it, and inventing a
+ * cap would truncate long answers.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
@@ -82,12 +117,17 @@ export function serializeRequest(options: GenerateOptions, model: string): Recor
     const wire = serializeMessage(message)
     if (wire !== undefined) messages.push(wire)
   }
-  const body: Record<string, unknown> = {
-    model,
-    // Anthropic requires max_tokens; the harness may leave it open.
-    max_tokens: options.maxTokens ?? 8192,
-    messages,
-    stream: true,
+  const budget = options.reasoningEffort === undefined ? undefined : thinkingBudget(options.reasoningEffort)
+  const body: Record<string, unknown> = { model, messages, stream: true }
+  if (budget !== undefined) {
+    // Thinking owns the sampling temperature; sending one alongside is rejected.
+    body.thinking = { type: 'enabled', budget_tokens: budget }
+    body.max_tokens = options.maxTokens !== undefined && options.maxTokens > budget
+      ? options.maxTokens
+      : budget + 8192
+  } else {
+    if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
+    if (options.temperature !== undefined) body.temperature = options.temperature
   }
   if (options.system !== undefined && options.system.length > 0) body.system = options.system
   if (options.tools !== undefined && options.tools.length > 0) {
@@ -97,21 +137,42 @@ export function serializeRequest(options: GenerateOptions, model: string): Recor
       input_schema: tool.parameters,
     }))
   }
-  if (options.temperature !== undefined) body.temperature = options.temperature
   if (options.stop !== undefined && options.stop.length > 0) body.stop_sequences = options.stop
   return body
 }
 
+/** One block being assembled, keyed by the index the wire gave it. */
+interface OpenBlock {
+  index: number
+  kind: 'text' | 'reasoning' | 'tool-call'
+  id: string
+  name: string
+  body: string
+}
+
 /** Accumulator state for one in-flight Anthropic stream. */
 interface Assembly {
-  textIndex: number | null
-  text: string
-  reasoningIndex: number | null
-  reasoning: string
-  toolBase: number
-  toolBlocks: Map<number, { index: number; id: string; name: string; arguments: string }>
+  /** Blocks in first-seen order, keyed by the wire's own block index. */
+  blocks: Map<number, OpenBlock>
+  nextIndex: number
   usage: { input: number; cacheRead: number; cacheWrite: number; output: number } | null
   finish: string | null
+}
+
+/**
+ * Open (or re-open) the block a wire index refers to.
+ * @param state - the live assembly state.
+ * @param wireIndex - the index the wire used for this block.
+ * @param kind - the block kind the wire announced.
+ * @returns the block, and whether it was just opened.
+ */
+function open(state: Assembly, wireIndex: number, kind: OpenBlock['kind']): { block: OpenBlock; fresh: boolean } {
+  const existing = state.blocks.get(wireIndex)
+  if (existing !== undefined) return { block: existing, fresh: false }
+  const block: OpenBlock = { index: state.nextIndex, kind, id: '', name: '', body: '' }
+  state.nextIndex += 1
+  state.blocks.set(wireIndex, block)
+  return { block, fresh: true }
 }
 
 /**
@@ -125,7 +186,7 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
   if (event === undefined) return
   const type = stringOf(event.type)
   if (type === 'message_start') {
-    const usage = (event.message as { usage?: Record<string, unknown> } | undefined)?.usage ?? {}
+    const usage = asObject(asObject(event.message)?.usage) ?? {}
     state.usage = {
       input: numberOf(usage.input_tokens) ?? 0,
       cacheRead: numberOf(usage.cache_read_input_tokens) ?? 0,
@@ -135,72 +196,81 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
     return
   }
   if (type === 'content_block_start') {
-    const index = numberOf(event.index) ?? 0
-    const block = (event.content_block ?? {}) as Record<string, unknown>
+    const wireIndex = numberOf(event.index) ?? 0
+    const block = asObject(event.content_block) ?? {}
     const kind = stringOf(block.type)
     if (kind === 'tool_use') {
-      const entry = {
-        index: state.toolBase + index,
-        id: stringOf(block.id) ?? `tool_${index}`,
-        name: stringOf(block.name) ?? '',
-        arguments: '',
+      const opened = open(state, wireIndex, 'tool-call')
+      if (opened.fresh) {
+        opened.block.id = stringOf(block.id) ?? `tool_${wireIndex}`
+        opened.block.name = stringOf(block.name) ?? ''
+        yield { type: 'block-start', index: opened.block.index, blockType: 'tool-call' }
       }
-      state.toolBlocks.set(index, entry)
-      yield { type: 'block-start', index: entry.index, blockType: 'tool-call' }
       return
     }
     if (kind === 'thinking' || kind === 'redacted_thinking') {
-      if (state.reasoningIndex === null) state.reasoningIndex = 1
-      yield { type: 'block-start', index: 1, blockType: 'reasoning' }
+      const opened = open(state, wireIndex, 'reasoning')
+      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'reasoning' }
       return
     }
     if (kind === 'text') {
-      if (state.textIndex === null) state.textIndex = 0
-      yield { type: 'block-start', index: 0, blockType: 'text' }
+      const opened = open(state, wireIndex, 'text')
+      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'text' }
       return
     }
     return
   }
   if (type === 'content_block_delta') {
-    const index = numberOf(event.index) ?? 0
-    const delta = (event.delta ?? {}) as Record<string, unknown>
+    const wireIndex = numberOf(event.index) ?? 0
+    const delta = asObject(event.delta) ?? {}
     const kind = stringOf(delta.type)
+    const known = state.blocks.get(wireIndex)
+    // A delta for a block the wire never opened is still delivered: the block
+    // is opened here from the delta's own kind, so no content is ever dropped.
     if (kind === 'text_delta') {
       const text = stringOf(delta.text) ?? ''
       if (text === '') return
-      state.text += text
-      yield { type: 'text-delta', index: 0, text }
+      const opened = known === undefined ? open(state, wireIndex, 'text') : { block: known, fresh: false }
+      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'text' }
+      opened.block.body += text
+      yield { type: 'text-delta', index: opened.block.index, text }
       return
     }
     if (kind === 'thinking_delta') {
       const text = stringOf(delta.thinking) ?? ''
       if (text === '') return
-      state.reasoning += text
-      yield { type: 'reasoning-delta', index: 1, text }
+      const opened = known === undefined ? open(state, wireIndex, 'reasoning') : { block: known, fresh: false }
+      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'reasoning' }
+      opened.block.body += text
+      yield { type: 'reasoning-delta', index: opened.block.index, text }
       return
     }
     if (kind === 'input_json_delta') {
       const partial = stringOf(delta.partial_json) ?? ''
-      const entry = state.toolBlocks.get(index)
-      if (entry === undefined || partial === '') return
-      entry.arguments += partial
+      if (partial === '' || known === undefined || known.kind !== 'tool-call') return
+      known.body += partial
       yield {
         type: 'tool-call-delta',
-        index: entry.index,
-        id: brandString<ToolCallId>(entry.id),
-        ...(entry.name !== '' ? { name: entry.name } : {}),
+        index: known.index,
+        id: brandString<ToolCallId>(known.id),
+        ...(known.name !== '' ? { name: known.name } : {}),
         argumentsDelta: partial,
       }
     }
+    // signature_delta and other thinking metadata are not part of the harness
+    // vocabulary: the ReasoningBlock has no place to keep them.
     return
   }
   if (type === 'message_delta') {
-    const delta = (event.delta ?? {}) as Record<string, unknown>
-    const stop = stringOf(delta.stop_reason)
+    const stop = stringOf(asObject(event.delta)?.stop_reason)
     if (stop !== undefined) state.finish = stop
-    const usage = (event.usage ?? {}) as Record<string, unknown>
-    const output = numberOf(usage.output_tokens)
-    if (state.usage !== null && output !== undefined) state.usage.output = output
+    const usage = asObject(event.usage)
+    if (usage === undefined || state.usage === null) return
+    // The real counts land here; message_start only carried an estimate.
+    state.usage.input = numberOf(usage.input_tokens) ?? state.usage.input
+    state.usage.cacheRead = numberOf(usage.cache_read_input_tokens) ?? state.usage.cacheRead
+    state.usage.cacheWrite = numberOf(usage.cache_creation_input_tokens) ?? state.usage.cacheWrite
+    state.usage.output = numberOf(usage.output_tokens) ?? state.usage.output
   }
 }
 
@@ -228,18 +298,17 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     const detail = await response.text().catch(() => '')
     throw new LlmError(`NearToken answered ${response.status}: ${detail.slice(0, 500)}`, 'PROVIDER_ERROR')
   }
-  const state: Assembly = {
-    textIndex: null, text: '', reasoningIndex: null, reasoning: '',
-    toolBase: 2, toolBlocks: new Map(), usage: null, finish: null,
-  }
+  const state: Assembly = { blocks: new Map(), nextIndex: 0, usage: null, finish: null }
   for await (const payload of sseData(response, signal)) yield* consume(payload, state)
-  if (state.textIndex !== null) {
-    yield { type: 'block-end', index: state.textIndex, block: { type: 'text', text: state.text } }
-  }
-  if (state.reasoningIndex !== null) {
-    yield { type: 'block-end', index: state.reasoningIndex, block: { type: 'reasoning', text: state.reasoning } }
-  }
-  for (const block of state.toolBlocks.values()) {
+  for (const block of state.blocks.values()) {
+    if (block.kind === 'text') {
+      yield { type: 'block-end', index: block.index, block: { type: 'text', text: block.body } }
+      continue
+    }
+    if (block.kind === 'reasoning') {
+      yield { type: 'block-end', index: block.index, block: { type: 'reasoning', text: block.body } }
+      continue
+    }
     yield {
       type: 'block-end',
       index: block.index,
@@ -247,7 +316,7 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
         type: 'tool-call',
         id: brandString<ToolCallId>(block.id),
         name: block.name,
-        arguments: block.arguments,
+        arguments: block.body,
       },
     }
   }

@@ -46,11 +46,14 @@ describe('wireFor', () => {
 
 describe('wire targets', () => {
   it('addresses each API at its own path', () => {
-    expect(wireFor('claude-sonnet-4.5').url('https://site.test')).toBe('https://site.test/v1/messages')
-    expect(wireFor('gpt-5.2').url('https://site.test')).toBe('https://site.test/v1/responses')
+    expect(wireFor('claude-sonnet-4.5').url('https://site.test', 'claude-sonnet-4.5')).toBe('https://site.test/v1/messages')
+    expect(wireFor('gpt-5.2').url('https://site.test', 'gpt-5.2')).toBe('https://site.test/v1/responses')
     expect(wireFor('gemini-3.8-flash').url('https://site.test', 'gemini-3.8-flash'))
       .toBe('https://site.test/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse')
-    expect(wireFor('grok-4.6').url('https://site.test')).toBe('https://site.test/v1/chat/completions')
+    // A vendor-prefixed id keeps its separator: the gateway routes on the path.
+    expect(wireFor('google/gemini-3-flash').url('https://site.test', 'google/gemini-3-flash'))
+      .toBe('https://site.test/v1beta/models/google/gemini-3-flash:streamGenerateContent?alt=sse')
+    expect(wireFor('grok-4.6').url('https://site.test', 'grok-4.6')).toBe('https://site.test/v1/chat/completions')
   })
 
   it('signs with the header each API reads', () => {
@@ -68,7 +71,8 @@ describe('wire targets', () => {
   it('builds a body in each API own vocabulary', () => {
     const claude = wireFor('claude-sonnet-4.5').serialize(request('claude-sonnet-4.5'), 'claude-sonnet-4.5')
     expect(claude).toMatchObject({ model: 'claude-sonnet-4.5', stream: true })
-    expect(claude.max_tokens).toBeTypeOf('number')
+    // The gateway does not require max_tokens; inventing one would truncate.
+    expect(claude.max_tokens).toBeUndefined()
 
     const gemini = wireFor('gemini-3.8-flash').serialize(request('gemini-3.8-flash'), 'gemini-3.8-flash')
     expect(gemini).toMatchObject({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] })

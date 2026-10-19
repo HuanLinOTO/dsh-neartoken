@@ -1,12 +1,68 @@
 /**
- * The one SSE line pump the four wires share: decode a streaming body into
- * `data:` payloads, ignoring comments, blank lines and the `[DONE]` sentinel.
+ * The SSE plumbing the four wires share: turn a streaming body into `data:`
+ * payloads, and read JSON fields without trusting their type.
+ *
+ * Every value here comes off the wire, so nothing may be assumed: a field the
+ * gateway sends as `null` is as ordinary as one it omits, and reading through
+ * it would throw and kill the whole stream mid-answer.
  *
  * @module
  */
 
 /**
+ * Read one JSON value as an object.
+ * @param value - any decoded JSON value.
+ * @returns the object, or undefined for null, an array, or a primitive.
+ */
+export function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+/**
+ * Read one JSON value as an array of unknown entries.
+ * @param value - any decoded JSON value.
+ * @returns the array, or an empty array for anything else.
+ */
+export function asArray(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+/**
+ * Read a finite number from an unknown field.
+ * @param value - the candidate.
+ * @returns the number, or undefined for anything else (including numeric strings).
+ */
+export function numberOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * Read a string from an unknown field.
+ * @param value - the candidate.
+ * @returns the string, or undefined.
+ */
+export function stringOf(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+/**
+ * Read one `data:` line.
+ * @param line - one raw line, already split at \n.
+ * @returns the payload text, or undefined when the line carries no data.
+ */
+function dataOf(line: string): string | undefined {
+  const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
+  if (!trimmed.startsWith('data:')) return undefined
+  return trimmed.slice(5).trim()
+}
+
+/**
  * Yield every `data:` payload of one SSE response, in arrival order.
+ *
+ * The `[DONE]` sentinel, comments, and blank lines are skipped. A payload split
+ * across two reads is reassembled, and a final payload with no trailing newline
+ * is still yielded: a stream that ends mid-line must not lose its last event.
  * @param response - the streaming fetch response.
  * @param signal - cancellation passthrough for the read loop.
  * @returns the payload strings, `[DONE]` excluded.
@@ -24,15 +80,15 @@ export async function* sseData(response: Response, signal: AbortSignal | undefin
       buffer += decoder.decode(value, { stream: true })
       let newline = buffer.indexOf('\n')
       while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim()
+        const payload = dataOf(buffer.slice(0, newline))
         buffer = buffer.slice(newline + 1)
         newline = buffer.indexOf('\n')
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (payload === '' || payload === '[DONE]') continue
+        if (payload === undefined || payload === '' || payload === '[DONE]') continue
         yield payload
       }
     }
+    const tail = dataOf(buffer)
+    if (tail !== undefined && tail !== '' && tail !== '[DONE]') yield tail
   } finally {
     void reader.releaseLock()
   }
@@ -46,24 +102,5 @@ export async function* sseData(response: Response, signal: AbortSignal | undefin
 export function parseJsonObject(payload: string): Record<string, unknown> | undefined {
   let parsed: unknown
   try { parsed = JSON.parse(payload) } catch { return undefined }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  return parsed as Record<string, unknown>
-}
-
-/**
- * Read a finite number from an unknown field.
- * @param value - the candidate.
- * @returns the number, or undefined.
- */
-export function numberOf(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-/**
- * Read a string from an unknown field.
- * @param value - the candidate.
- * @returns the string, or undefined.
- */
-export function stringOf(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
+  return asObject(parsed)
 }
