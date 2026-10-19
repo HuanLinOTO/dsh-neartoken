@@ -53,6 +53,9 @@ importers:
       '@deepseek-ai/dsh-credentials':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/credentials/credentials
         version: link:../dsh/packages/credentials/credentials
+      '@deepseek-ai/dsh-fs':
+        specifier: link:D:/Projects/deepseek-harness/dsh/packages/fs/fs
+        version: link:../dsh/packages/fs/fs
       '@deepseek-ai/dsh-host-webserver':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/host/webserver
         version: link:../dsh/packages/host/webserver
@@ -65,6 +68,9 @@ importers:
       '@deepseek-ai/dsh-typert-protocol':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/typert/protocol
         version: link:../dsh/packages/typert/protocol
+      '@deepseek-ai/dsh-working-directory':
+        specifier: link:D:/Projects/deepseek-harness/dsh/packages/session/working-directory
+        version: link:../dsh/packages/session/working-directory
       '@deepseek-ai/schemastery':
         specifier: link:D:/Projects/deepseek-harness/dsh/vendor/schemastery
         version: link:../dsh/vendor/schemastery

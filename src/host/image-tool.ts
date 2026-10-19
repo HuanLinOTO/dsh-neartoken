@@ -14,12 +14,18 @@
  *
  * @module
  */
+import { writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+// Type-only: pulls the ctx.fs service face and the fs/observed event.
+import type {} from '@deepseek-ai/dsh-fs'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { GenericCallView } from '@deepseek-ai/dsh-tools'
+import type { GenericCallView, ToolExecution } from '@deepseek-ai/dsh-tools'
+// Type-only: pulls the ctx.workingDirectory service face used for relative paths.
+import type {} from '@deepseek-ai/dsh-working-directory'
+import { sniffImageMediaType } from './images.ts'
 import type { NearTokenImageClient } from './images.ts'
 
 /** File extension per accepted media type, so a stored picture has a name that matches its bytes. */
@@ -40,6 +46,12 @@ const EXTENSIONS: Readonly<Record<ImageMediaType, string>> = {
  * catches a generation that ignores its abort.
  */
 const DEADLINE_MARGIN_MS = 30_000
+
+/** Most reference pictures one call may carry: each rides the prompt as base64. */
+const MAX_REFERENCE_IMAGES = 4
+
+/** Largest reference picture read from disk, before base64 expansion. */
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 
 /** External facts the tool reads at call time. */
 export interface ImageToolDeps {
@@ -91,6 +103,8 @@ export interface GeneratedImageValue {
     height: number
     name: string
   }
+  /** Where the picture was also written, when the caller named a path. */
+  path?: string
 }
 
 /**
@@ -100,7 +114,8 @@ export interface GeneratedImageValue {
  */
 export function formatGenerateImageOutput(value: GeneratedImageValue): string {
   return `<model>${value.model}</model>
-<group>${value.group}</group>
+<group>${value.group}</group>${value.path === undefined ? '' : `
+<path>${value.path}</path>`}
 <type>image</type>
 <content>
 ${value.image.mediaType} image, ${String(value.image.width)}x${String(value.image.height)} px, ${String(value.image.bytes)} bytes, generated from the prompt
@@ -130,6 +145,94 @@ function generateImageContent(value: GeneratedImageValue): ContentBlock[] {
 }
 
 /**
+ * Resolve options for a filesystem call in the session's current directory.
+ * @param ctx - a context that may carry the working-directory service.
+ * @param exec - the current tool execution.
+ * @returns the resolution options, with no cwd when the service is absent.
+ */
+async function resolveOptions(
+  ctx: Context, exec: ToolExecution,
+): Promise<{ cwd?: string; signal?: AbortSignal }> {
+  const workingDirectory = ctx.get('workingDirectory')
+  const cwd = workingDirectory === undefined || exec.agent === undefined
+    ? undefined
+    : await workingDirectory.ensure(exec.agent, exec.signal)
+  return { ...cwd === undefined ? {} : { cwd }, signal: exec.signal }
+}
+
+/**
+ * Read the caller's reference pictures as data URLs, in the order given.
+ * @param ctx - a context carrying `fs`.
+ * @param exec - the current tool execution.
+ * @param paths - model-supplied file paths.
+ * @returns one data URL per picture.
+ * @throws {Error} when a path cannot be read as a supported image.
+ */
+async function readReferences(
+  ctx: Context, exec: ToolExecution, paths: readonly string[],
+): Promise<readonly string[]> {
+  if (paths.length === 0) return []
+  if (paths.length > MAX_REFERENCE_IMAGES) {
+    throw new Error(`at most ${String(MAX_REFERENCE_IMAGES)} reference images per call; ${String(paths.length)} were given`)
+  }
+  const fs = ctx.get('fs')
+  if (fs === undefined) throw new Error('cannot read reference images: no filesystem service is mounted')
+  const options = await resolveOptions(ctx, exec)
+  const urls: string[] = []
+  for (const requested of paths) {
+    const target = await fs.resolve(requested, options)
+    const info = await fs.stat(target, exec.signal)
+    if (info === undefined) throw new Error(`cannot use "${target.displayPath}" as a reference image: not found`)
+    if (info.type !== 'file') {
+      throw new Error(`cannot use "${target.displayPath}" as a reference image: not a regular file`)
+    }
+    const bytes = await fs.readBytes(target, exec.signal, MAX_REFERENCE_BYTES)
+    const mediaType = sniffImageMediaType(bytes)
+    if (mediaType === undefined) {
+      throw new Error(`cannot use "${target.displayPath}" as a reference image: not a PNG/JPEG/WebP/GIF file`)
+    }
+    urls.push(`data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}`)
+  }
+  return urls
+}
+
+/**
+ * Write a generated picture beside the transcript copy.
+ *
+ * The file is created exclusively: an existing path is a refusal, never an
+ * overwrite, because the caller cannot see what it would destroy. Only a local
+ * backend can receive bytes — `ctx.fs` writes text, so the bytes go through the
+ * host's own file API against the path the backend resolved.
+ * @param ctx - a context carrying `fs`.
+ * @param exec - the current tool execution.
+ * @param requested - the model-supplied destination path.
+ * @param bytes - the picture to write.
+ * @returns the resolved display path the file was written to.
+ * @throws {Error} when the destination exists or cannot hold bytes.
+ */
+async function writePicture(
+  ctx: Context, exec: ToolExecution, requested: string, bytes: Uint8Array,
+): Promise<string> {
+  const fs = ctx.get('fs')
+  if (fs === undefined) throw new Error('cannot write the picture: no filesystem service is mounted')
+  const target = await fs.resolve(requested, await resolveOptions(ctx, exec))
+  const existing = await fs.stat(target, exec.signal)
+  if (existing !== undefined) {
+    throw new Error(`cannot write "${target.displayPath}": the path already exists; name a new file`)
+  }
+  if (!fs.fileUrl(target).startsWith('file:')) {
+    throw new Error(
+      `cannot write "${target.displayPath}": this filesystem backend does not accept a local file;`
+      + ' the picture stays in the transcript as an attachment',
+    )
+  }
+  await writeFile(fs.processPath(target), bytes, { flag: 'wx' })
+  const written = await fs.stat(target, exec.signal)
+  if (written !== undefined) ctx.emit('fs/observed', target, { kind: 'present', version: written.version }, exec)
+  return target.displayPath
+}
+
+/**
  * Register the `generate_image` tool.
  * @param ctx - a context carrying `tools` and `attachments`.
  * @param deps - the stored setting and the generation client.
@@ -142,11 +245,34 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
       + '(the gpt-image, nano-banana, and gemini image families) and return the image itself. '
       + 'One call takes 20-60 seconds. Write the prompt as a full description of the picture you want; '
       + 'quoted text that must appear in the image is rendered by the model, but long lines may smear. '
+      + 'Pass images to edit or compose from existing files and say what to keep and what to change; '
+      + 'the first reference picture also sets the output aspect ratio. '
       + 'The available models are the ones the operator enabled in Settings → NearToken → Image generation.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'What the picture should show. Detailed prompts work better than short ones.' },
       model: { type: 'string', description: 'Enabled image model to use; omit to use the first enabled model.' },
-      size: { type: 'string', description: 'Requested size such as "1024x1024"; image-generation models may ignore it.' },
+      size: { type: 'string', description: 'Requested size such as "1024x1024". Image-generation models only; a chat-completions model refuses it.' },
+      quality: {
+        type: 'string',
+        enum: ['low', 'medium', 'high', 'auto'],
+        description: 'Rendering quality: low is faster and cheaper, high costs more. Image-generation models only.',
+      },
+      background: {
+        type: 'string',
+        enum: ['transparent', 'opaque', 'auto'],
+        description: 'Transparent output is for logos and cut-outs. Image-generation models only.',
+      },
+      images: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Reference pictures to edit or compose from, as file paths read through the workspace. '
+          + 'Put the picture that should set the aspect ratio first.',
+      },
+      path: {
+        type: 'string',
+        description: 'Also write the picture to this path (relative to the workspace or absolute). '
+          + 'The file must not exist yet. Omit to keep the image only in the transcript.',
+      },
     },
     output: {
       schema: {
@@ -168,6 +294,7 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
               name: { type: 'string', required: true },
             },
           },
+          path: { type: 'string', description: 'Where the picture was also written, when the caller named a path.' },
         },
       },
       render: (_args, value) => generateImageContent(value),
@@ -188,11 +315,17 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
       const { model, group } = resolveImageModel(settings.models, args.model)
       const attachments = ctx.get('attachments')
       if (attachments === undefined) throw new Error('cannot generate an image: no attachment service is mounted')
+      // References are read and encoded before the request: a missing file must
+      // fail without spending a generation.
+      const references = await readReferences(ctx, exec, args.images ?? [])
       const generated = await deps.client.generate({
         model,
         group,
         prompt: args.prompt,
         ...args.size === undefined ? {} : { size: args.size },
+        ...args.quality === undefined ? {} : { quality: args.quality },
+        ...args.background === undefined ? {} : { background: args.background },
+        ...references.length === 0 ? {} : { images: references },
         signal: exec.signal,
       })
       const name = `${model}.${EXTENSIONS[generated.mediaType]}`
@@ -201,6 +334,11 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
         mediaType: generated.mediaType,
         name,
       })
+      // The transcript copy is committed before the file is written, so a
+      // refused path still leaves the picture in the result.
+      const written = args.path === undefined
+        ? undefined
+        : await writePicture(ctx, exec, args.path, generated.bytes)
       return {
         model: generated.model,
         group: generated.group,
@@ -212,6 +350,7 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
           height: ref.height,
           name: ref.name ?? name,
         },
+        ...written === undefined ? {} : { path: written },
       }
     },
     presentCall(args): GenericCallView {

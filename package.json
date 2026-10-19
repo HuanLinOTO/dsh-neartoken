@@ -64,10 +64,12 @@
     "@deepseek-ai/dsh-client-ui-settings": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-credentials": "^0.2.1-alpha.5",
+    "@deepseek-ai/dsh-fs": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-host-webserver": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-llm": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-tools": "^0.2.1-alpha.5",
     "@deepseek-ai/dsh-typert-protocol": "^0.2.1-alpha.5",
+    "@deepseek-ai/dsh-working-directory": "^0.2.1-alpha.5",
     "@deepseek-ai/schemastery": "~3.18.5-alpha.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
@@ -112,6 +114,9 @@
     "@deepseek-ai/dsh-credentials": {
       "optional": true
     },
+    "@deepseek-ai/dsh-fs": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-host-webserver": {
       "optional": true
     },
@@ -122,6 +127,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-working-directory": {
       "optional": true
     },
     "@deepseek-ai/schemastery": {
@@ -150,10 +158,12 @@
     "@deepseek-ai/dsh-client-ui-settings": "link:D:/Projects/deepseek-harness/dsh/packages/client/ui-settings",
     "@deepseek-ai/dsh-client-ui-slots": "link:D:/Projects/deepseek-harness/dsh/packages/client/ui-slots",
     "@deepseek-ai/dsh-credentials": "link:D:/Projects/deepseek-harness/dsh/packages/credentials/credentials",
+    "@deepseek-ai/dsh-fs": "link:D:/Projects/deepseek-harness/dsh/packages/fs/fs",
     "@deepseek-ai/dsh-host-webserver": "link:D:/Projects/deepseek-harness/dsh/packages/host/webserver",
     "@deepseek-ai/dsh-llm": "link:D:/Projects/deepseek-harness/dsh/packages/llm/llm",
     "@deepseek-ai/dsh-tools": "link:D:/Projects/deepseek-harness/dsh/packages/core/tools",
     "@deepseek-ai/dsh-typert-protocol": "link:D:/Projects/deepseek-harness/dsh/packages/typert/protocol",
+    "@deepseek-ai/dsh-working-directory": "link:D:/Projects/deepseek-harness/dsh/packages/session/working-directory",
     "@deepseek-ai/schemastery": "link:D:/Projects/deepseek-harness/dsh/vendor/schemastery",
     "@earendil-works/pi-ai": "1.1.0",
     "@types/node": "^22.20.0",

@@ -1,19 +1,3 @@
-/**
- * The model-facing `generate_image` tool: one picture from a prompt, through
- * whichever picture model and group the operator enabled.
- *
- * The choice of model belongs to the operator, not to the caller: a profile
- * bills one group per model, and which group a picture costs from is a
- * deployment decision. So the tool advertises no model list of its own — it
- * calls the first enabled model unless the caller names one, and refuses a name
- * outside the enabled set with the enabled set spelled out.
- *
- * The result is the image itself, committed to the attachment store first: a
- * tool result must reference a durable object by the time the call is logged,
- * and the bytes only exist in this process until then.
- *
- * @module
- */
 import type { Context } from '@deepseek-ai/cordis';
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment';
 import type { NearTokenImageClient } from './images.ts';
@@ -54,6 +38,8 @@ export interface GeneratedImageValue {
         height: number;
         name: string;
     };
+    /** Where the picture was also written, when the caller named a path. */
+    path?: string;
 }
 /**
  * Format a generated picture as the model-facing envelope beside its image block.

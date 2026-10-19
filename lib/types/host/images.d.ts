@@ -92,6 +92,10 @@ export declare class NearTokenImageClient {
         readonly group: string;
         readonly prompt: string;
         readonly size?: string;
+        readonly quality?: string;
+        readonly background?: string;
+        /** Reference pictures as data URLs, in the order the caller gave them. */
+        readonly images?: readonly string[];
         readonly signal?: AbortSignal;
     }): Promise<NearTokenGeneratedImage>;
     /**

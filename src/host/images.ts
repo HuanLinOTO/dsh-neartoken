@@ -49,6 +49,33 @@ export function imageChannel(endpoints?: readonly string[]): ImageChannel {
   return endpoints?.includes('image-generation') === true ? 'images' : 'chat'
 }
 
+/** The request members only the images endpoint understands. */
+const IMAGES_ONLY_PARAMETERS = ['size', 'quality', 'background'] as const
+
+/**
+ * Refuse a parameter the model's channel cannot carry.
+ *
+ * A chat-completions picture model accepts none of these: the site would either
+ * reject the body or silently drop the member, and a silently dropped size looks
+ * exactly like the model ignoring the instruction. One clear refusal teaches the
+ * caller more than a request that half-works.
+ * @param channel - the request shape the model speaks.
+ * @param request - the requested members.
+ */
+function assertChannelParameters(
+  channel: ImageChannel,
+  request: { readonly model: string; readonly size?: string; readonly quality?: string; readonly background?: string },
+): void {
+  if (channel === 'images') return
+  const unsupported = IMAGES_ONLY_PARAMETERS.filter(name => request[name] !== undefined)
+  if (unsupported.length === 0) return
+  throw new Error(
+    `${unsupported.join(', ')} can only be sent to an image-generation model; `
+    + `${request.model} answers chat completions, so drop ${unsupported.length === 1 ? 'it' : 'them'} `
+    + 'or enable a model such as gpt-image-2.5-flare for these settings',
+  )
+}
+
 /** One picture the site answered with, before its bytes exist. */
 export type ImageReply =
   | { readonly kind: 'base64'; readonly data: string }
@@ -216,11 +243,16 @@ export class NearTokenImageClient {
     readonly group: string
     readonly prompt: string
     readonly size?: string
+    readonly quality?: string
+    readonly background?: string
+    /** Reference pictures as data URLs, in the order the caller gave them. */
+    readonly images?: readonly string[]
     readonly signal?: AbortSignal
   }): Promise<NearTokenGeneratedImage> {
     const route = (await this.deps.routes())
       .find(entry => entry.model === request.model && entry.group === request.group)
     const channel = imageChannel(route?.endpoints)
+    assertChannelParameters(channel, request)
     const timeoutMs = this.deps.timeoutMs()
     // The budget is its own signal so a timeout can be told apart from the
     // caller's cancellation: one deserves an explanation of how to wait longer,
@@ -250,6 +282,9 @@ export class NearTokenImageClient {
     readonly group: string
     readonly prompt: string
     readonly size?: string
+    readonly quality?: string
+    readonly background?: string
+    readonly images?: readonly string[]
     readonly channel: ImageChannel
     readonly route: NearTokenRoute | undefined
     readonly key: string
@@ -273,10 +308,24 @@ export class NearTokenImageClient {
             prompt: request.prompt,
             n: 1,
             ...request.size === undefined ? {} : { size: request.size },
+            ...request.quality === undefined ? {} : { quality: request.quality },
+            ...request.background === undefined ? {} : { background: request.background },
+            // The site's own field for reference pictures is `image`; the
+            // edit route is not usable here, so a picture to start from rides
+            // the generation call instead.
+            ...request.images === undefined || request.images.length === 0 ? {} : { image: [...request.images] },
           }
           : {
             model: request.model,
-            messages: [{ role: 'user', content: request.prompt }],
+            messages: [{
+              role: 'user',
+              content: request.images === undefined || request.images.length === 0
+                ? request.prompt
+                : [
+                  { type: 'text', text: request.prompt },
+                  ...request.images.map(url => ({ type: 'image_url', image_url: { url } })),
+                ],
+            }],
             stream: false,
           }),
         signal: request.signal,
