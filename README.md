@@ -1,7 +1,9 @@
+
+# dsh-neartoken
+
 <p align="center">
   <a href="https://dshfind.com/zh/plugins/huanlinoto/dsh-neartoken"><img src="https://dshfind.com/api/card/huanlinoto/dsh-neartoken?lang=zh" alt="dsh-neartoken card"></a>
 </p>
-# dsh-neartoken
 
 把 New API 站点（NearToken，`https://llm.pko.svcfusion.com`）变成 DSH 的模型供应商：**在设置页发起设备授权 → 用户在自己浏览器里登录站点并确认 → 插件自动接入 `neartoken` provider**。插件全程不接触密码。模型选择器再把这批模型按 New API 的渠道分组折成 **模型 → 分组 → 推理等级** 三级。
 
