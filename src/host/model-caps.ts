@@ -17,7 +17,7 @@
  *
  * @module
  */
-import { CHAT_MODELS, MODEL_CONTEXT_WINDOW, MODEL_TIERS, TIER_SETS } from './model-caps.generated.ts'
+import { CHAT_MODELS, MODEL_CONTEXT_WINDOW, MODEL_INPUT, MODEL_TIERS, TIER_SETS } from './model-caps.generated.ts'
 
 /**
  * Variants the site marks as unfit for coding: it pairs every such name with a
@@ -35,6 +35,14 @@ const NON_TEXT = /(image|tts|transcribe|asr)/i
  */
 const CHAT_ENDPOINTS: ReadonlySet<string> = new Set(['openai', 'openai-response', 'anthropic', 'gemini'])
 
+/** What the deployment measured about one model the catalog has not learned yet. */
+interface UncalledCapability {
+  /** Selectable reasoning levels, or null when the model names none. */
+  readonly levels: readonly string[] | null
+  /** Input modalities measured against the live gateway. */
+  readonly input: readonly string[]
+}
+
 /**
  * Chat models the site publishes before the pi-ai catalog learns them.
  *
@@ -48,8 +56,8 @@ const CHAT_ENDPOINTS: ReadonlySet<string> = new Set(['openai', 'openai-response'
  * name. Its accepted levels are low/medium/high/max; minimal and xhigh are
  * rejected by the upstream.
  */
-const UNCALLED_MODELS: Readonly<Record<string, readonly string[] | null>> = {
-  'gemini-4-argon': ['low', 'medium', 'high', 'max'],
+const UNCALLED_MODELS: Readonly<Record<string, UncalledCapability>> = {
+  'gemini-4-argon': { levels: ['low', 'medium', 'high', 'max'], input: ['text', 'image'] },
 }
 
 /** Display spelling of each level the catalog names. */
@@ -107,9 +115,28 @@ export function isChatOffering(model: string, endpoints?: readonly string[]): bo
  */
 export function reasoningLevels(model: string, declared?: readonly string[]): readonly string[] | undefined {
   if (declared !== undefined) return declared.length === 0 ? undefined : declared
-  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model] ?? undefined
+  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.levels ?? undefined
   const index = MODEL_TIERS[model]
   return index === undefined ? undefined : TIER_SETS[index]
+}
+
+/**
+ * The input modalities one model accepts.
+ *
+ * The harness treats a declared modality list as the only permission a request
+ * has: the `read_image` tool refuses to load a file for a model without
+ * `image`, and a request carrying an image is rejected before it is sent. So
+ * this answers for every model — a name nothing describes is stated as text-only
+ * rather than left unknown, which is what the site actually serves in practice
+ * and keeps an image out of a request that would fail.
+ * @param model - a bare model name.
+ * @param declared - modalities configured for this exact model, which win when given.
+ * @returns the modalities, always including `text`.
+ */
+export function inputModalitiesOf(model: string, declared?: readonly string[]): readonly string[] {
+  if (declared !== undefined && declared.length > 0) return declared
+  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.input ?? ['text']
+  return MODEL_INPUT[model] ?? ['text']
 }
 
 /** Everything that can answer one model's context capacity. */

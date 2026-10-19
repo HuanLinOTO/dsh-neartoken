@@ -48,6 +48,8 @@ const modelOverride = z.object({
   maxTokens: z.number().step(1).min(1),
   /** Selectable reasoning levels, for a model no catalog entry describes. */
   reasoning: z.array(z.string()),
+  /** Input modalities (`text` / `image`); without `image` the harness refuses image requests. */
+  input: z.array(z.string()),
 })
 
 /** The slice of the settings service this plugin uses. */

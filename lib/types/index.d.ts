@@ -45,6 +45,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow?: number | null | undefined;
         maxTokens?: number | null | undefined;
         reasoning?: string[] | null | undefined;
+        input?: string[] | null | undefined;
     } & import("@deepseek-ai/cosmokit").Dict, string>, import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
         /** Context capacity in tokens. */
         contextWindow: z<number, number, "plain">;
@@ -52,6 +53,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         maxTokens: z<number, number, "plain">;
         /** Selectable reasoning levels, for a model no catalog entry describes. */
         reasoning: z<string[], string[], "plain">;
+        /** Input modalities (`text` / `image`); without `image` the harness refuses image requests. */
+        input: z<string[], string[], "plain">;
     }>>, string>, "defined">;
     /**
      * The model whitelist: the catalog models the settings page keeps visible.
@@ -81,6 +84,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow?: number | null | undefined;
         maxTokens?: number | null | undefined;
         reasoning?: string[] | null | undefined;
+        input?: string[] | null | undefined;
     } & import("@deepseek-ai/cosmokit").Dict, string>, import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
         /** Context capacity in tokens. */
         contextWindow: z<number, number, "plain">;
@@ -88,6 +92,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         maxTokens: z<number, number, "plain">;
         /** Selectable reasoning levels, for a model no catalog entry describes. */
         reasoning: z<string[], string[], "plain">;
+        /** Input modalities (`text` / `image`); without `image` the harness refuses image requests. */
+        input: z<string[], string[], "plain">;
     }>>, string>, "defined">;
     /**
      * The model whitelist: the catalog models the settings page keeps visible.

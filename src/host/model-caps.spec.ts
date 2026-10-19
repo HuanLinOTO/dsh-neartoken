@@ -6,8 +6,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  contextWindowOf, defaultReasoningLevel, isChatOffering, isOfferedModel, maxTokensOf, reasoningLevelLabel,
-  reasoningLevels,
+  contextWindowOf, defaultReasoningLevel, inputModalitiesOf, isChatOffering, isOfferedModel, maxTokensOf,
+  reasoningLevelLabel, reasoningLevels,
 } from './model-caps.ts'
 import { MODEL_CONTEXT_WINDOW } from './model-caps.generated.ts'
 
@@ -55,6 +55,27 @@ describe('isChatOffering', () => {
   it('falls back to the name rules when the site declares no surfaces', () => {
     expect(isChatOffering('claude-opus-5-c')).toBe(false)
     expect(isChatOffering('claude-opus-5', [])).toBe(true)
+  })
+})
+
+describe('inputModalitiesOf', () => {
+  it('states what the catalog says a model accepts', () => {
+    expect(inputModalitiesOf('claude-opus-5-5')).toContain('image')
+    expect(inputModalitiesOf('deepseek-v4-pro')).toEqual(['text'])
+  })
+
+  it('states a model nothing describes as text-only rather than unknown', () => {
+    // An absent list is what the harness reads as "no permission", so a text
+    // answer here is what keeps an image out of a request that cannot take one.
+    expect(inputModalitiesOf('no-such-model-anywhere')).toEqual(['text'])
+  })
+
+  it('lets a configured list win over the catalog', () => {
+    expect(inputModalitiesOf('deepseek-v4-pro', ['text', 'image'])).toEqual(['text', 'image'])
+  })
+
+  it('knows the deployment-measured model takes images', () => {
+    expect(inputModalitiesOf('gemini-4-argon')).toContain('image')
   })
 })
 

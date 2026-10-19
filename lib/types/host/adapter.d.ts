@@ -11,6 +11,8 @@ export interface NearTokenModelOverride {
     readonly maxTokens?: number;
     /** Selectable reasoning levels, for a model no catalog entry describes. */
     readonly reasoning?: readonly string[];
+    /** Input modalities; the harness only permits an image request to a model that declares `image`. */
+    readonly input?: readonly string[];
 }
 /** External facts the adapter reads at call time. */
 export interface NearTokenDeps {

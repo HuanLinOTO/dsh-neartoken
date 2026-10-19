@@ -18,11 +18,11 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { attributionHeaders, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type {
-  GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, ReasoningEffortId, StreamChunk,
+  GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, ModelModality, ReasoningEffortId, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { NearTokenRoute } from './pricing.ts'
 import {
-  contextWindowOf, defaultReasoningLevel, maxTokensOf, reasoningLevelLabel, reasoningLevels,
+  contextWindowOf, defaultReasoningLevel, inputModalitiesOf, maxTokensOf, reasoningLevelLabel, reasoningLevels,
 } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
 import { selectedRoutes } from './whitelist.ts'
@@ -38,6 +38,19 @@ export interface NearTokenModelOverride {
   readonly maxTokens?: number
   /** Selectable reasoning levels, for a model no catalog entry describes. */
   readonly reasoning?: readonly string[]
+  /** Input modalities; the harness only permits an image request to a model that declares `image`. */
+  readonly input?: readonly string[]
+}
+
+/**
+ * The configured or catalogued modalities as the harness vocabulary.
+ * @param model - the bare model name.
+ * @param declared - the operator's configured modalities for this model, if any.
+ * @returns only the modalities this harness version understands.
+ */
+function modalitiesOf(model: string, declared?: readonly string[]): readonly ModelModality[] {
+  return inputModalitiesOf(model, declared)
+    .filter((modality): modality is ModelModality => modality === 'text' || modality === 'image')
 }
 
 /**
@@ -127,6 +140,7 @@ export class NearTokenAdapter extends LlmAdapter {
       id: route.id,
       name: route.name,
       description: route.description,
+      inputModalities: modalitiesOf(route.model, this.deps.modelOverride(route.model)?.input),
     }))
   }
 
@@ -151,6 +165,7 @@ export class NearTokenAdapter extends LlmAdapter {
     const maxTokens = maxTokensOf(route?.maxTokens, override?.maxTokens)
     const facts = {
       context: { contextWindow },
+      inputModalities: modalitiesOf(bare, override?.input),
       ...maxTokens === undefined ? {} : { defaultMaxTokens: maxTokens },
       ...reasoning === undefined ? {} : { reasoning },
     }

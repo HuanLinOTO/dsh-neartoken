@@ -13,5 +13,7 @@ export declare const TIER_SETS: readonly (readonly string[])[];
 export declare const MODEL_TIERS: Readonly<Record<string, number>>;
 /** Model id -> the smallest context window the catalog states for it, in tokens. */
 export declare const MODEL_CONTEXT_WINDOW: Readonly<Record<string, number>>;
+/** Model id -> the input modalities the catalog states, for models that take images. */
+export declare const MODEL_INPUT: Readonly<Record<string, readonly string[]>>;
 /** Every chat model the catalog describes, one per line. */
 export declare const CHAT_MODELS: ReadonlySet<string>;

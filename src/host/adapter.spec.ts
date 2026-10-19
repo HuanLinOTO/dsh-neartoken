@@ -97,6 +97,14 @@ describe('listModels', () => {
     expect(models).toEqual([])
   })
 
+  it('declares the input modalities of every advertised model', async () => {
+    const models = await adapterOver(expandRoutes(parsePricing(catalog))).listModels('neartoken')
+    // An image-capable model must say so, or the harness refuses read_image and
+    // strips the picture before the request leaves.
+    expect(models.find(model => model.id === 'default::grok-4.6')?.inputModalities).toContain('image')
+    expect(models.find(model => model.id === 'default::glm-5.3')?.inputModalities).toContain('text')
+  })
+
   it('resolves metadata only for a whitelisted model', async () => {
     const adapter = adapterOver(expandRoutes(parsePricing(catalog)), ['glm-5.3'])
     expect(await adapter.resolveModel('neartoken', 'default::glm-5.3')).toMatchObject({

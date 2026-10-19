@@ -35,7 +35,7 @@ const packageRoot = dirname(dirname(entryPath))
 const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), "utf8")).version
 const dataDir = join(packageRoot, 'dist', 'providers', 'data')
 
-/** Model id -> its reasoning levels (null when the catalog names none) and its smallest context window. */
+/** Model id -> its reasoning levels (null when the catalog names none), smallest context window, and input modalities. */
 const catalog = new Map()
 for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) {
   const parsed = JSON.parse(readFileSync(join(dataDir, file), 'utf8'))
@@ -59,6 +59,12 @@ for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) 
       // complete level list wins and the smallest window wins, so the result
       // does not depend on which provider file happened to be read first and
       // never overstates a capacity.
+      // Image support is a property of the model, not of one provider's listing,
+      // and a gateway that omits it is the common case. Three model ids of 1101
+      // dissented, so the union wins here while the capacity below takes the
+      // smallest value.
+      const modalities = new Set(previous?.input ?? [])
+      for (const modality of entry.input ?? []) modalities.add(modality)
       catalog.set(id, {
         levels: previous === undefined || previous.levels === null || (levels !== null && levels.length > previous.levels.length)
           ? levels
@@ -66,6 +72,7 @@ for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) 
         contextWindow: previous?.contextWindow === undefined
           ? contextWindow
           : contextWindow === undefined ? previous.contextWindow : Math.min(previous.contextWindow, contextWindow),
+        input: modalities,
       })
     }
   }
@@ -107,6 +114,15 @@ out.push('/** Model id -> the smallest context window the catalog states for it,
 out.push('export const MODEL_CONTEXT_WINDOW: Readonly<Record<string, number>> = {')
 for (const model of withWindow) {
   out.push("  '" + model + "': " + catalog.get(model).contextWindow + ',')
+}
+out.push('}')
+out.push('')
+out.push('/** Model id -> the input modalities the catalog states, for models that take images. */')
+out.push('export const MODEL_INPUT: Readonly<Record<string, readonly string[]>> = {')
+for (const model of models) {
+  const modalities = [...catalog.get(model).input].sort()
+  if (!modalities.includes('image')) continue
+  out.push("  '" + model + "': [" + modalities.map(m => "'" + m + "'").join(', ') + '],')
 }
 out.push('}')
 out.push('')
