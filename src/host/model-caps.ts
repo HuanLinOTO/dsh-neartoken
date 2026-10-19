@@ -121,6 +121,24 @@ export function reasoningLevels(model: string, declared?: readonly string[]): re
 }
 
 /**
+ * Input modalities read from the vendor documentation, which win over the
+ * catalog vote.
+ *
+ * Only models where the documentation and the catalog disagree, or where the
+ * catalog has no entry at all, belong here — this table is a correction list,
+ * not a second catalog.
+ */
+const DOCUMENTED_INPUT: Readonly<Record<string, readonly string[]>> = {
+  // Alibaba Cloud Model Studio lists Input Modality: Image / Text / Video.
+  'qwen3-max': ['text', 'image'],
+  'qwen3-coder-plus': ['text', 'image'],
+  'qwen3.8-max': ['text', 'image'],
+  'qwen3.8-27b': ['text', 'image'],
+  // V4 Flash is the text model; vision ships as a separate -Vision-Exp route.
+  'deepseek-flash': ['text'],
+}
+
+/**
  * The input modalities one model accepts.
  *
  * The harness treats a declared modality list as the only permission a request
@@ -135,6 +153,7 @@ export function reasoningLevels(model: string, declared?: readonly string[]): re
  */
 export function inputModalitiesOf(model: string, declared?: readonly string[]): readonly string[] {
   if (declared !== undefined && declared.length > 0) return declared
+  if (Object.hasOwn(DOCUMENTED_INPUT, model)) return DOCUMENTED_INPUT[model] ?? ['text']
   if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.input ?? ['text']
   return MODEL_INPUT[model] ?? ['text']
 }

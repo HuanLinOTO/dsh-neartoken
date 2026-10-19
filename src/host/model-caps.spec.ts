@@ -77,6 +77,16 @@ describe('inputModalitiesOf', () => {
     expect(inputModalitiesOf('no-such-model-anywhere')).toEqual(['text'])
   })
 
+  it('follows the vendor documentation where the catalog is missing or disagrees', () => {
+    // Alibaba Cloud Model Studio lists Input Modality: Image / Text / Video for
+    // these three, and the catalog has no entry for any of them.
+    expect(inputModalitiesOf('qwen3-max')).toContain('image')
+    expect(inputModalitiesOf('qwen3-coder-plus')).toContain('image')
+    expect(inputModalitiesOf('qwen3.8-27b')).toContain('image')
+    // DeepSeek ships vision as a separate route, so the flash name is text.
+    expect(inputModalitiesOf('deepseek-flash')).toEqual(['text'])
+  })
+
   it('lets a configured list win over the catalog', () => {
     expect(inputModalitiesOf('deepseek-v4-pro', ['text', 'image'])).toEqual(['text', 'image'])
   })
