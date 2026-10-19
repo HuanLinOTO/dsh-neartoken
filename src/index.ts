@@ -14,6 +14,7 @@ import { credentialRef, isCredentialRefName } from '@deepseek-ai/dsh-credentials
 import { LlmError } from '@deepseek-ai/dsh-llm'
 // Type-only: pulls the ctx.webServer merge for the settings-page routes.
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { NearTokenModelOverride } from './host/adapter.ts'
 import { NearTokenAccount } from './host/account.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
@@ -28,6 +29,26 @@ const DISPLAY_NAME = 'NearToken'
 
 /** Settings namespace the configurable-provider entry reports. */
 const SETTINGS_NS = 'ui-neartoken-provider'
+
+/**
+ * The context window every model reports until something better answers.
+ *
+ * A harness model without one loses automatic compaction outright, so this
+ * cannot be optional. 200K is the smallest capacity among the chat models the
+ * site typically offers: guessing low costs an early summary, guessing high
+ * costs a rejected request.
+ */
+const DEFAULT_CONTEXT_WINDOW = 200_000
+
+/** One operator-stated fact about one bare model name. */
+const modelOverride = z.object({
+  /** Context capacity in tokens. */
+  contextWindow: z.number().step(1).min(1),
+  /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
+  maxTokens: z.number().step(1).min(1),
+  /** Selectable reasoning levels, for a model no catalog entry describes. */
+  reasoning: z.array(z.string()),
+})
 
 /** The slice of the settings service this plugin uses. */
 interface SettingsPresentation {
@@ -45,6 +66,10 @@ export interface Options {
   baseURL: string
   apiKeyEnv: string
   catalogTtlMs: number
+  /** The capacity every model without a better answer reports, in tokens. */
+  defaultContextWindow: number
+  /** Operator-stated facts per bare model name: capacity and reasoning levels. */
+  modelOverrides: Record<string, NearTokenModelOverride>
   /** Model names kept visible in the model picker; empty shows every model. */
   enabledModels: Volatile<string[]>
 }
@@ -57,6 +82,17 @@ export const Config = z.object({
   apiKeyEnv: z.string().default('NEARTOKEN_API_KEY'),
   /** How long one pricing load stays fresh, in milliseconds. */
   catalogTtlMs: z.number().default(300_000),
+  /**
+   * The capacity every model reports when neither the site nor the generated
+   * catalog answers. Set it below the smallest model the site offers.
+   */
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
+  /**
+   * Per-model corrections, keyed by bare model name: the way to fix a capacity
+   * or teach a brand-new model its reasoning levels without publishing a new
+   * plugin version. Anything here wins over both the site and the catalog.
+   */
+  modelOverrides: z.dict(modelOverride).default({}),
   /**
    * The model whitelist: the catalog models the settings page keeps visible.
    * Empty means no whitelist, so every model the site offers is advertised.
@@ -107,6 +143,8 @@ export function apply(ctx: Context, config: Options): void {
     apiKey: resolveApiKey,
     enabled: () => config.enabledModels.get(),
     catalogTtlMs: () => config.catalogTtlMs,
+    defaultContextWindow: () => config.defaultContextWindow,
+    modelOverride: (model) => config.modelOverrides[model],
   })
   // The whitelist lives in this plugin's own profile entry, so a save is an
   // ordinary Settings write: it persists in the profile patch and the Loader

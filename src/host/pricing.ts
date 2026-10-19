@@ -2,14 +2,18 @@
  * The NearToken pricing directory: one shared load of the New API
  * `/api/pricing` endpoint, expanded into per-(group, model) catalog routes.
  *
- * The endpoint is public (no key) and already answers everything the group
- * dimension needs: the model list, each model's `enable_groups`, and the
- * `group_ratio` multiplier table. Group names carry their own badge prefix
- * convention (`[低价][反重力] Claude`), which the browser half parses for
+ * The endpoint is public (no key) and answers everything the catalog dimension
+ * needs: the model list, each model's `enable_groups`, the `group_ratio`
+ * multiplier table, the `group_refs` routing references, the declared
+ * `supported_endpoint_types`, and — on a deployment that maintains them — the
+ * `context_window` / `max_tokens` capacities. Group names carry their own badge
+ * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
+ *
+ * @module
  */
 
-import { isOfferedModel } from './model-caps.ts'
+import { isChatOffering } from './model-caps.ts'
 
 /**
  * The reference grammar the dispatch header accepts: `#` and the site's own
@@ -22,6 +26,11 @@ const GROUP_REF_PATTERN = /^#[0-9]+$/
 interface PricingModel {
   readonly model_name: string
   readonly enable_groups: readonly string[]
+  /** Capacity an operator maintained for this model; absent when unmaintained. */
+  readonly contextWindow?: number
+  readonly maxTokens?: number
+  /** Downstream surfaces the site declares for this model; absent when it declares none. */
+  readonly endpoints?: readonly string[]
 }
 
 /** The parts of `/api/pricing` this adapter consumes. */
@@ -49,6 +58,32 @@ export interface NearTokenRoute {
    */
   readonly groupRef?: string
   readonly model: string
+  /** Context window the site declared for this model, in tokens. */
+  readonly contextWindow?: number
+  /** Output ceiling the site declared for this model, in tokens. */
+  readonly maxTokens?: number
+  /** Downstream surfaces the site declared for this model. */
+  readonly endpoints?: readonly string[]
+}
+
+/**
+ * Read a positive token count from an endpoint field.
+ * @param value - the raw JSON member.
+ * @returns the count, or undefined when the field is absent or not a positive integer.
+ */
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+/**
+ * Read one model's declared endpoint types.
+ * @param value - the raw `supported_endpoint_types` member.
+ * @returns the declared names, or undefined when the site declared none.
+ */
+function endpointTypes(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  return names.length === 0 ? undefined : names
 }
 
 /**
@@ -69,6 +104,9 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
         group,
         ...groupRef === undefined ? {} : { groupRef },
         model: model.model_name,
+        ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
+        ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+        ...model.endpoints === undefined ? {} : { endpoints: model.endpoints },
       })
     }
   }
@@ -91,9 +129,15 @@ export function parsePricing(value: unknown): NearTokenPricing {
     const name = row.model_name
     const groups = row.enable_groups
     if (typeof name !== 'string' || !Array.isArray(groups)) continue
+    const contextWindow = tokenCount(row.context_window)
+    const maxTokens = tokenCount(row.max_tokens)
+    const endpoints = endpointTypes(row.supported_endpoint_types)
     models.push({
       model_name: name,
       enable_groups: groups.filter((group): group is string => typeof group === 'string'),
+      ...contextWindow === undefined ? {} : { contextWindow },
+      ...maxTokens === undefined ? {} : { maxTokens },
+      ...endpoints === undefined ? {} : { endpoints },
     })
   }
   const ratio: Record<string, number> = {}
@@ -148,9 +192,9 @@ export class PricingDirectory {
       .then(async (response) => {
         if (!response.ok) throw new Error(`pricing endpoint answered ${response.status}`)
         // The site publishes every route it knows; the provider only offers the
-        // ones it can describe and answer with (see isOfferedModel).
+        // ones that answer a chat request (see isChatOffering).
         return expandRoutes(parsePricing(await response.json()))
-          .filter(route => isOfferedModel(route.model))
+          .filter(route => isChatOffering(route.model, route.endpoints))
       })
       .then((routes) => {
         this.cache = { at: Date.now(), routes }

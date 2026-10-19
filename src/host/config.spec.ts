@@ -19,6 +19,8 @@ import { Config } from '../index.ts'
  */
 async function resolved(input: Record<string, unknown>): Promise<{
   baseURL: unknown
+  defaultContextWindow: number
+  modelOverrides: Record<string, unknown>
   enabledModels: { get(): readonly string[] }
 }> {
   let resolvedConfig: unknown
@@ -35,7 +37,12 @@ async function resolved(input: Record<string, unknown>): Promise<{
   } finally {
     await ctx.fiber.dispose()
   }
-  return resolvedConfig as { baseURL: unknown; enabledModels: { get(): readonly string[] } }
+  return resolvedConfig as {
+    baseURL: unknown
+    defaultContextWindow: number
+    modelOverrides: Record<string, unknown>
+    enabledModels: { get(): readonly string[] }
+  }
 }
 
 describe('Config', () => {
@@ -44,9 +51,20 @@ describe('Config', () => {
   })
 
   it('keeps the deployment knobs out of the live-editable form', () => {
-    for (const field of ['baseURL', 'apiKeyEnv', 'catalogTtlMs']) {
+    for (const field of ['baseURL', 'apiKeyEnv', 'catalogTtlMs', 'defaultContextWindow', 'modelOverrides']) {
       expect(Config.dict?.[field]?.meta.volatile).toBeUndefined()
     }
+  })
+
+  it('answers every model with the configured fallback capacity when nothing else states one', async () => {
+    // A model without a context window loses automatic compaction entirely, so
+    // this default is what keeps a brand-new site model usable unchanged.
+    expect((await resolved({})).defaultContextWindow).toBe(200_000)
+  })
+
+  it('resolves per-model corrections keyed by bare model name', async () => {
+    const config = await resolved({ modelOverrides: { 'gemini-4-argon': { contextWindow: 1_048_576, reasoning: ['low', 'high'] } } })
+    expect(config.modelOverrides['gemini-4-argon']).toMatchObject({ contextWindow: 1_048_576, reasoning: ['low', 'high'] })
   })
 
   it('resolves an unconfigured whitelist to the empty list, so every model shows', async () => {

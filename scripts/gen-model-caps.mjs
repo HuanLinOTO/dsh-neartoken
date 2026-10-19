@@ -4,9 +4,13 @@
  *
  * The plugin does not depend on pi-ai at runtime: a site route can serve any
  * model name, and pi-ai carries the only maintained table of what those models
- * can do. Reading it once at build time keeps the shipped plugin self-contained
- * while letting a model name be checked against real data instead of a guess.
- * Rerun this after bumping the dev dependency.
+ * can do. Reading it once at build time keeps the shipped plugin
+ * self-contained while letting a model name be checked against real data
+ * instead of a guess. Rerun this after bumping the dev dependency.
+ *
+ * The table is a default, not an authority: a site that declares
+ * `context_window` in /api/pricing, or an operator who configured
+ * `modelOverrides`, answers before this file does (see src/host/model-caps.ts).
  *
  * Usage: node scripts/gen-model-caps.mjs
  */
@@ -31,8 +35,8 @@ const packageRoot = dirname(dirname(entryPath))
 const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), "utf8")).version
 const dataDir = join(packageRoot, 'dist', 'providers', 'data')
 
-/** Model id -> its reasoning levels, or null when the catalog names none. */
-const chat = new Map()
+/** Model id -> its reasoning levels (null when the catalog names none) and its smallest context window. */
+const catalog = new Map()
 for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) {
   const parsed = JSON.parse(readFileSync(join(dataDir, file), 'utf8'))
   for (const bucket of Object.values(parsed)) {
@@ -45,32 +49,44 @@ for (const file of readdirSync(dataDir).filter(name => name.endsWith('.json'))) 
       // A map that only switches thinking off declares no selectable level, and
       // an empty list is rejected downstream as an invalid offering.
       const levels = named.length === 0 ? null : named
-      const previous = chat.get(id)
+      const contextWindow = typeof entry.contextWindow === 'number' && entry.contextWindow > 0
+        ? entry.contextWindow
+        : undefined
+      const previous = catalog.get(id)
       // One model id appears under several providers and they disagree: a
-      // gateway may list two of a model's levels where the vendor lists six.
-      // The most complete list wins, so the result does not depend on which
-      // provider file happened to be read first.
-      if (previous === undefined || previous === null || (levels !== null && levels.length > previous.length)) {
-        chat.set(id, levels)
-      }
+      // gateway may list two of a model's levels where the vendor lists six,
+      // and may state a smaller context window than the vendor. The most
+      // complete level list wins and the smallest window wins, so the result
+      // does not depend on which provider file happened to be read first and
+      // never overstates a capacity.
+      catalog.set(id, {
+        levels: previous === undefined || previous.levels === null || (levels !== null && levels.length > previous.levels.length)
+          ? levels
+          : previous.levels,
+        contextWindow: previous?.contextWindow === undefined
+          ? contextWindow
+          : contextWindow === undefined ? previous.contextWindow : Math.min(previous.contextWindow, contextWindow),
+      })
     }
   }
 }
 
-const models = [...chat.keys()].sort()
-const withTiers = models.filter(model => chat.get(model) !== null)
-const tierSets = [...new Set(withTiers.map(model => chat.get(model).join(",")))].sort()
+const models = [...catalog.keys()].sort()
+const withTiers = models.filter(model => catalog.get(model).levels !== null)
+const tierSets = [...new Set(withTiers.map(model => catalog.get(model).levels.join(",")))].sort()
 const tierIndex = new Map(tierSets.map((set, index) => [set, index]))
+const withWindow = models.filter(model => catalog.get(model).contextWindow !== undefined)
 
 const quote = '\u0060'
 const out = []
 out.push('/**')
 out.push(' * Generated from @earendil-works/pi-ai@' + version + '. Run node scripts/gen-model-caps.mjs; do not edit.')
 out.push(' *')
-out.push(' * CHAT_MODELS is every chat model the catalog describes: a name outside it has no')
-out.push(' * known capabilities, and the provider hides it rather than guess. TIER_SETS holds')
-out.push(' * each distinct reasoning level list once; MODEL_TIERS points models at one of')
-out.push(' * them. Level names are the catalog own wire spellings.')
+out.push(' * CHAT_MODELS is every chat model the catalog describes. TIER_SETS holds each')
+out.push(' * distinct reasoning level list once; MODEL_TIERS points models at one of them.')
+out.push(' * Level names are the catalog own wire spellings. MODEL_CONTEXT_WINDOW is the')
+out.push(' * smallest context window the catalog states for the model, used only when')
+out.push(' * neither the site nor the plugin configuration answers.')
 out.push(' */')
 out.push('')
 out.push('/** Distinct reasoning level lists. */')
@@ -83,7 +99,14 @@ out.push('')
 out.push('/** Model id -> the index in TIER_SETS describing its reasoning levels. */')
 out.push('export const MODEL_TIERS: Readonly<Record<string, number>> = {')
 for (const model of withTiers) {
-  out.push("  '" + model + "': " + tierIndex.get(chat.get(model).join(',')) + ',')
+  out.push("  '" + model + "': " + tierIndex.get(catalog.get(model).levels.join(',')) + ',')
+}
+out.push('}')
+out.push('')
+out.push('/** Model id -> the smallest context window the catalog states for it, in tokens. */')
+out.push('export const MODEL_CONTEXT_WINDOW: Readonly<Record<string, number>> = {')
+for (const model of withWindow) {
+  out.push("  '" + model + "': " + catalog.get(model).contextWindow + ',')
 }
 out.push('}')
 out.push('')
@@ -95,4 +118,5 @@ out.push('')
 
 const target = join(here, '..', 'src', 'host', 'model-caps.generated.ts')
 writeFileSync(target, out.join('\n'), 'utf8')
-console.log('wrote ' + models.length + ' chat models, ' + withTiers.length + ' with reasoning levels, ' + tierSets.length + ' distinct level sets')
+console.log('wrote ' + models.length + ' chat models, ' + withTiers.length + ' with reasoning levels, '
+  + withWindow.length + ' with a context window, ' + tierSets.length + ' distinct level sets')

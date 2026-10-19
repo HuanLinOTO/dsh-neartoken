@@ -5,7 +5,11 @@
  * offered at all, and a name inside it without levels is offered bare.
  */
 import { describe, expect, it } from 'vitest'
-import { defaultReasoningLevel, isOfferedModel, reasoningLevelLabel, reasoningLevels } from './model-caps.ts'
+import {
+  contextWindowOf, defaultReasoningLevel, isChatOffering, isOfferedModel, maxTokensOf, reasoningLevelLabel,
+  reasoningLevels,
+} from './model-caps.ts'
+import { MODEL_CONTEXT_WINDOW } from './model-caps.generated.ts'
 
 describe('isOfferedModel', () => {
   it('hides the coding variant the site pairs with a twin', () => {
@@ -26,6 +30,43 @@ describe('isOfferedModel', () => {
 
   it('offers a model the deployment published ahead of the catalog', () => {
     expect(isOfferedModel('gemini-4-argon')).toBe(true)
+  })
+})
+
+describe('isChatOffering', () => {
+  it('keeps a model the site declares as a chat surface, even one no catalog describes', () => {
+    expect(isChatOffering('brand-new-model', ['openai'])).toBe(true)
+    expect(isChatOffering('brand-new-model', ['anthropic'])).toBe(true)
+    expect(isChatOffering('brand-new-model', ['openai-response', 'gemini'])).toBe(true)
+  })
+
+  it('hides a model whose declared surfaces never answer chat', () => {
+    expect(isChatOffering('gpt-image-2.5-flare', ['image-generation'])).toBe(false)
+    expect(isChatOffering('some-video', ['openai-video'])).toBe(false)
+    expect(isChatOffering('some-rerank', ['jina-rerank', 'embeddings'])).toBe(false)
+  })
+
+  it('falls back to the name rules when the site declares no surfaces', () => {
+    expect(isChatOffering('claude-opus-5-c')).toBe(false)
+    expect(isChatOffering('claude-opus-5', [])).toBe(true)
+  })
+})
+
+describe('contextWindowOf', () => {
+  it('prefers the operator override, then the site, then the catalog, then the fallback', () => {
+    const model = 'gpt-5'
+    expect(contextWindowOf(model, { override: 1, reported: 2, fallback: 3 })).toBe(1)
+    expect(contextWindowOf(model, { reported: 2, fallback: 3 })).toBe(2)
+    expect(contextWindowOf(model, { fallback: 3 })).toBe(MODEL_CONTEXT_WINDOW[model])
+    expect(contextWindowOf('no-such-model-anywhere', { fallback: 3 })).toBe(3)
+  })
+})
+
+describe('maxTokensOf', () => {
+  it('answers only when an explicit output ceiling exists', () => {
+    expect(maxTokensOf()).toBeUndefined()
+    expect(maxTokensOf(8_192)).toBe(8_192)
+    expect(maxTokensOf(8_192, 65_536)).toBe(65_536)
   })
 })
 

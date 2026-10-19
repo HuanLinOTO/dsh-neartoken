@@ -9,6 +9,7 @@
  * @module
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { NearTokenModelOverride } from './adapter.ts';
 import type { NearTokenRoute } from './pricing.ts';
 /** External facts the route is built from. */
 export interface NearTokenProviderDeps {
@@ -26,6 +27,10 @@ export interface NearTokenProviderDeps {
     enabled: () => readonly string[];
     /** How long one pricing load stays fresh, in milliseconds. */
     catalogTtlMs: () => number;
+    /** The capacity every model without a better answer reports, in tokens. */
+    defaultContextWindow: () => number;
+    /** The operator's configuration for one bare model name, when they wrote any. */
+    modelOverride: (model: string) => NearTokenModelOverride | undefined;
 }
 /** The NearToken provider route, mounted at most once per process. */
 export declare class NearTokenProvider {

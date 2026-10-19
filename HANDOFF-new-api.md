@@ -1,7 +1,7 @@
 # HANDOFF：New API ↔ DSH 的两件事（设备授权接入 + 分组路由）
 
 > 面向 new-api（D:\Projects\new-api）与 `dsh-neartoken` 两侧的共同契约。
-> 分两部分：**第 1 节是采编入（缺口，new-api 侧待实现）**，第 2~4 节是分组路由（new-api 侧待实现）。
+> 分三部分：**第 1 节是设备授权接入**、第 2~4 节是分组路由、第 7 节是模型容量清单（均由 new-api 侧实现）。
 > DSH 侧已按本文件实现完毕。
 
 ---
@@ -175,3 +175,55 @@ Authorization: Bearer <access_token>
 | `group_refs` 解析 | `src/host/pricing.ts` `parsePricing()`，语法常量 `GROUP_REF_PATTERN = /^#[0-9]+$/` |
 | catalog id 编码 | `"<group>::<model>"`（`expandRoutes`），请求时按**最后一个** `::` 解码回裸模型名 + ref |
 | 凭据落点 | 引用 `NEARTOKEN_API_KEY`（不写任何配置文件） |
+
+---
+
+# 第三部分：模型容量清单
+
+## 7. 每个模型的上下文窗口与最大输出
+
+`/api/pricing` 需在既有字段之外，为每个 `data[]` 条目提供两个**可选**字段：
+
+```json
+{
+  "data": [
+    {
+      "model_name": "claude-opus-5-5",
+      "enable_groups": ["默认分组"],
+      "supported_endpoint_types": ["anthropic"],
+      "context_window": 200000,
+      "max_tokens": 64000
+    }
+  ]
+}
+```
+
+语义：
+
+1. `context_window`：该模型**请求 + 响应**合计的上下文窗口，单位 token，正整数。
+2. `max_tokens`：该模型单次响应的最大输出 token，单位 token，正整数。
+3. **未维护就不出现**：值为 0 或缺省时整个字段省略。客户端必须容忍缺失（缺失时走自己的兜底值），不得把 0 当成有效容量。
+4. 两个字段都由管理员在 New API 管理后台按模型维护，属于运营数据而非代码；渠道换代只需改数字，不需要发客户端版本。
+5. 老客户端忽略未知字段，新客户端容忍字段缺失 —— 双向兼容，不需要版本协商。
+
+### 为什么需要
+
+DSH 的自动压缩按“上下文窗口 × 阈值比例”算摘要预算。模型没有上下文窗口时，压缩后端**拒绝为该模型计算预算并直接放弃**，长会话只能等上游 400 兜底。缺失 `max_tokens` 无害（请求不带该字段，由上游默认值决定）。
+
+### 客户端侧优先级（dsh-neartoken，已实现）
+
+| 优先级 | 来源 |
+|---|---|
+| 1 | 用户在插件配置里的 `modelOverrides` |
+| 2 | 本站 `/api/pricing` 的 `context_window` |
+| 3 | 插件内置的 pi-ai 生成表 |
+| 4 | 插件配置的 `defaultContextWindow`（默认 200000） |
+
+`max_tokens` 只在优先级 1、2 给出时才写进请求：内置生成表里的值是厂商口径，站点可能把同一个名字路由到上限更低的渠道，照发会把“回答被截断”换成“请求被拒”。
+
+### 验收用例
+
+1. 后台给某模型填 `context_window=200000, max_tokens=64000` → `/api/pricing` 该条目出现这两个字段，且分组过滤后仍带着它们。
+2. 不填（或填 0）→ 两个字段都不出现，客户端仍能列出该模型并在自动压缩时使用兜底容量。
+3. 改数字后无需重启客户端：插件目录 TTL 到期（默认 5 分钟）即生效。
+4. 只支持图片/嵌入/重排的模型，即便填了容量也不该被聊天客户端提供 —— 由 `supported_endpoint_types` 判定，与容量无关。

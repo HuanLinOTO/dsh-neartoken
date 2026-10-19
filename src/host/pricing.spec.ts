@@ -34,6 +34,35 @@ describe('parsePricing', () => {
   })
 })
 
+describe('declared capacities and surfaces', () => {
+  it('reads the capacities an operator maintained in the console', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], context_window: 200_000, max_tokens: 64_000,
+    }] })
+    expect(pricing.models[0]).toMatchObject({ contextWindow: 200_000, maxTokens: 64_000 })
+  })
+
+  it('ignores a capacity that is not a positive integer', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], context_window: 0, max_tokens: '64000',
+    }] })
+    expect(pricing.models[0]?.contextWindow).toBeUndefined()
+    expect(pricing.models[0]?.maxTokens).toBeUndefined()
+  })
+
+  it('carries the declared surfaces onto every group route of one model', () => {
+    const routes = expandRoutes(parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['a', 'b'], supported_endpoint_types: ['anthropic', 'gemini'],
+    }] }))
+    expect(routes.map(route => route.endpoints)).toEqual([['anthropic', 'gemini'], ['anthropic', 'gemini']])
+  })
+
+  it('treats an empty surface list as no declaration at all', () => {
+    const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], supported_endpoint_types: [] }] })
+    expect(pricing.models[0]?.endpoints).toBeUndefined()
+  })
+})
+
 describe('expandRoutes', () => {
   it('carries the group reference on the routes whose group published one', () => {
     const routes = expandRoutes(parsePricing(payload))

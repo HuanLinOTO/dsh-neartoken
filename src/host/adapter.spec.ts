@@ -41,6 +41,8 @@ function adapterOver(routes: readonly NearTokenRoute[], enabled: readonly string
     enabled: () => enabled,
     apiKey: async () => 'test-key',
     baseURL: () => 'https://example.test',
+    defaultContextWindow: () => 200_000,
+    modelOverride: () => undefined,
   })
 }
 
@@ -106,6 +108,44 @@ describe('listModels', () => {
   })
 })
 
+describe('resolveModel capacity', () => {
+  /** One model whose site row states both capacities. */
+  const stated = {
+    data: [{ model_name: 'grok-4.6', enable_groups: ['default'], context_window: 131_072, max_tokens: 8_192 }],
+  }
+
+  /** An adapter over routes that states one configured fact and one fallback. */
+  const configured = (routes: readonly NearTokenRoute[]) => new NearTokenAdapter({
+    routes: async () => routes,
+    enabled: () => [],
+    apiKey: async () => 'test-key',
+    baseURL: () => 'https://example.test',
+    defaultContextWindow: () => 64_000,
+    modelOverride: (model) => model === 'grok-4.6' ? { contextWindow: 1_048_576, maxTokens: 65_536, reasoning: ['low', 'high'] } : undefined,
+  })
+
+  it('reports the capacity the site declared', async () => {
+    const resolved = await adapterOver(expandRoutes(parsePricing(stated))).resolveModel('neartoken', 'default::grok-4.6')
+    expect(resolved.context).toEqual({ contextWindow: 131_072 })
+    expect(resolved.defaultMaxTokens).toBe(8_192)
+  })
+
+  it('lets a configured override win over both the site and the catalog', async () => {
+    const resolved = await configured(expandRoutes(parsePricing(stated))).resolveModel('neartoken', 'default::grok-4.6')
+    expect(resolved.context).toEqual({ contextWindow: 1_048_576 })
+    expect(resolved.defaultMaxTokens).toBe(65_536)
+    expect(resolved.reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'high'])
+  })
+
+  it('falls back to the configured capacity for a model nothing describes', async () => {
+    const routes = expandRoutes(parsePricing({ data: [{ model_name: 'brand-new-model', enable_groups: ['default'] }] }))
+    const resolved = await configured(routes).resolveModel('neartoken', 'default::brand-new-model')
+    expect(resolved.context).toEqual({ contextWindow: 64_000 })
+    // No explicit output ceiling means the request omits max_tokens entirely.
+    expect(resolved.defaultMaxTokens).toBeUndefined()
+  })
+})
+
 describe('stream', () => {
   it('sends the ASCII group reference as the routing header', async () => {
     const routes = expandRoutes(parsePricing(payload))
@@ -130,6 +170,7 @@ describe('stream', () => {
     }) as typeof fetch
     const adapter = new NearTokenAdapter({
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+      defaultContextWindow: () => 200_000, modelOverride: () => undefined,
     })
     await dispatch(adapter, '[低价] Grok::grok-4.6')
     expect((body as { model?: string }).model).toBe('grok-4.6')
@@ -156,6 +197,7 @@ describe('stream wire selection', () => {
     }) as typeof fetch
     const adapter = new NearTokenAdapter({
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+      defaultContextWindow: () => 200_000, modelOverride: () => undefined,
     })
     await dispatch(adapter, id)
     return one

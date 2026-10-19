@@ -2,16 +2,25 @@
  * The NearToken pricing directory: one shared load of the New API
  * `/api/pricing` endpoint, expanded into per-(group, model) catalog routes.
  *
- * The endpoint is public (no key) and already answers everything the group
- * dimension needs: the model list, each model's `enable_groups`, and the
- * `group_ratio` multiplier table. Group names carry their own badge prefix
- * convention (`[低价][反重力] Claude`), which the browser half parses for
+ * The endpoint is public (no key) and answers everything the catalog dimension
+ * needs: the model list, each model's `enable_groups`, the `group_ratio`
+ * multiplier table, the `group_refs` routing references, the declared
+ * `supported_endpoint_types`, and — on a deployment that maintains them — the
+ * `context_window` / `max_tokens` capacities. Group names carry their own badge
+ * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
+ *
+ * @module
  */
 /** One model row from `/api/pricing`. */
 interface PricingModel {
     readonly model_name: string;
     readonly enable_groups: readonly string[];
+    /** Capacity an operator maintained for this model; absent when unmaintained. */
+    readonly contextWindow?: number;
+    readonly maxTokens?: number;
+    /** Downstream surfaces the site declares for this model; absent when it declares none. */
+    readonly endpoints?: readonly string[];
 }
 /** The parts of `/api/pricing` this adapter consumes. */
 export interface NearTokenPricing {
@@ -37,6 +46,12 @@ export interface NearTokenRoute {
      */
     readonly groupRef?: string;
     readonly model: string;
+    /** Context window the site declared for this model, in tokens. */
+    readonly contextWindow?: number;
+    /** Output ceiling the site declared for this model, in tokens. */
+    readonly maxTokens?: number;
+    /** Downstream surfaces the site declared for this model. */
+    readonly endpoints?: readonly string[];
 }
 /**
  * Expand one pricing payload into one route per (group, model) pair.

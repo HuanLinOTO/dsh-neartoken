@@ -32,6 +32,8 @@ function providerOver() {
     apiKey: async () => 'k'.repeat(48),
     enabled: () => [],
     catalogTtlMs: () => 300_000,
+    defaultContextWindow: () => 200_000,
+    modelOverride: () => undefined,
   })
   return { provider, replacements, counts: () => ({ registered, released }) }
 }

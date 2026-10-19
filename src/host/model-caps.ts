@@ -1,14 +1,23 @@
 /**
- * What the site's model names can actually do.
+ * What one site model name can actually do: whether it answers chat at all, and
+ * how much context it holds.
  *
- * A New API route publishes whatever names it likes, and `/api/pricing` says
- * nothing about whether a model reasons. The generated table beside this module
- * (see `scripts/gen-model-caps.mjs`) answers that from the pi-ai catalog, which
- * is the only maintained source for these names.
+ * Three sources answer, in falling priority, and each answers something the
+ * others cannot:
+ *
+ * 1. the site itself, through `/api/pricing` — `supported_endpoint_types` says
+ *    which downstream surfaces the model serves, and `context_window` /
+ *    `max_tokens` are the capacities an operator maintained in the New API
+ *    console (see the `HANDOFF-new-api.md` capacity section);
+ * 2. this plugin's own configuration — `modelOverrides` (per bare model name)
+ *    and `defaultContextWindow` (everything else), so a capacity can be
+ *    corrected without publishing a new plugin version;
+ * 3. the generated pi-ai table beside this module, which describes the models
+ *    the catalog knows even when the site declares nothing.
  *
  * @module
  */
-import { CHAT_MODELS, MODEL_TIERS, TIER_SETS } from './model-caps.generated.ts'
+import { CHAT_MODELS, MODEL_CONTEXT_WINDOW, MODEL_TIERS, TIER_SETS } from './model-caps.generated.ts'
 
 /**
  * Variants the site marks as unfit for coding: it pairs every such name with a
@@ -20,13 +29,20 @@ const CODING_VARIANT = /-c$/i
 const NON_TEXT = /(image|tts|transcribe|asr)/i
 
 /**
- * Chat models the deployment publishes before the pi-ai catalog learns them.
+ * The downstream surfaces that answer a chat request. A model the site
+ * declares without any of these is a media, embedding, or rerank route, and the
+ * endpoint list is the site's own statement rather than a guess from the name.
+ */
+const CHAT_ENDPOINTS: ReadonlySet<string> = new Set(['openai', 'openai-response', 'anthropic', 'gemini'])
+
+/**
+ * Chat models the site publishes before the pi-ai catalog learns them.
  *
- * The catalog is the only maintained capability source, so an unknown name is
- * normally withheld. A model listed here is offered anyway, with the reasoning
- * levels measured against the live gateway; `null` offers it without claiming
- * any. Delete an entry once the catalog describes the model, since the catalog
- * is the better authority.
+ * Only the name-based fallback below consults this list; a site that declares
+ * `supported_endpoint_types` needs no allowlist at all. A model listed here is
+ * offered with the reasoning levels measured against the live gateway;
+ * `null` offers it without claiming any. Delete an entry once the catalog
+ * describes the model, since the catalog is the better authority.
  *
  * `gemini-4-argon`: Gemini 4 replaced the thinking token budget with a level
  * name. Its accepted levels are low/medium/high/max; minimal and xhigh are
@@ -47,11 +63,12 @@ const LEVEL_LABELS: Readonly<Record<string, string>> = {
 }
 
 /**
- * Whether the provider should offer this model at all.
+ * Whether the name-based fallback keeps this model.
  *
  * Three exclusions: a coding-suffixed twin, a media route, and any name neither
  * the catalog nor {@link UNCALLED_MODELS} describes — an unknown model would
- * otherwise be advertised with invented capabilities.
+ * otherwise be advertised with invented capabilities. Only a site that declares
+ * no endpoint types reaches this rule; see {@link isChatOffering}.
  * @param model - a bare model name from the pricing endpoint.
  * @returns whether the model stays in the catalog.
  */
@@ -63,14 +80,77 @@ export function isOfferedModel(model: string): boolean {
 }
 
 /**
+ * Whether the catalog should offer this model at all.
+ *
+ * The site's declared endpoint types decide when it declares any: that is what
+ * lets a model the catalog has never heard of appear the day the site adds it,
+ * instead of waiting for a plugin release. A site that declares nothing falls
+ * back to the name rules, which is the only answer available there.
+ * @param model - a bare model name from the pricing endpoint.
+ * @param endpoints - the site's declared downstream surfaces, if any.
+ * @returns whether the model stays in the catalog.
+ */
+export function isChatOffering(model: string, endpoints?: readonly string[]): boolean {
+  if (endpoints === undefined || endpoints.length === 0) return isOfferedModel(model)
+  return endpoints.some(endpoint => CHAT_ENDPOINTS.has(endpoint))
+}
+
+/**
  * The selectable reasoning levels for one model.
  * @param model - a bare model name.
- * @returns the catalog's level names, or undefined when it names none.
+ * @param declared - levels configured for this exact model, which win when given.
+ * @returns the level names, or undefined when nothing names any.
  */
-export function reasoningLevels(model: string): readonly string[] | undefined {
+export function reasoningLevels(model: string, declared?: readonly string[]): readonly string[] | undefined {
+  if (declared !== undefined) return declared.length === 0 ? undefined : declared
   if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model] ?? undefined
   const index = MODEL_TIERS[model]
   return index === undefined ? undefined : TIER_SETS[index]
+}
+
+/** Everything that can answer one model's context capacity. */
+export interface CapacitySources {
+  /** What the site declared for this exact model, in tokens. */
+  reported?: number
+  /** The operator's configuration for this bare model name, in tokens. */
+  override?: number
+  /** The configured answer when nothing else knows, in tokens. */
+  fallback: number
+}
+
+/**
+ * Resolve one model's context window.
+ *
+ * A harness model without a context window loses automatic compaction entirely
+ * — the compaction backend refuses to size a summary budget it cannot bound —
+ * so this always answers, falling back to the configured capacity rather than
+ * declining. Priority: operator override, then the site's own declaration, then
+ * the generated catalog, then the configured fallback.
+ * @param model - a bare model name.
+ * @param sources - the four candidate answers.
+ * @returns a positive token count.
+ */
+export function contextWindowOf(model: string, sources: CapacitySources): number {
+  return sources.override
+    ?? sources.reported
+    ?? MODEL_CONTEXT_WINDOW[model]
+    ?? sources.fallback
+}
+
+/**
+ * Resolve one model's maximum output tokens.
+ *
+ * Only an explicit answer counts: the generated catalog's `maxTokens` is the
+ * vendor's own ceiling, and the site may route the name to a channel with a
+ * lower one, so sending it would trade a truncated reply for a rejected
+ * request. Without an explicit answer the request omits the field and the
+ * upstream default applies.
+ * @param reported - what the site declared for this exact model.
+ * @param override - the operator's configuration for this bare model name.
+ * @returns the output ceiling, or undefined to leave it to the upstream.
+ */
+export function maxTokensOf(reported?: number, override?: number): number | undefined {
+  return override ?? reported
 }
 
 /**

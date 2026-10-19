@@ -21,23 +21,37 @@ import type {
   GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, ReasoningEffortId, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type { NearTokenRoute } from './pricing.ts'
-import { defaultReasoningLevel, reasoningLevelLabel, reasoningLevels } from './model-caps.ts'
+import {
+  contextWindowOf, defaultReasoningLevel, maxTokensOf, reasoningLevelLabel, reasoningLevels,
+} from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
 import { selectedRoutes } from './whitelist.ts'
 
 /** Display name of the single provider route this adapter owns. */
 export const NEARTOKEN_PROVIDER_NAME = 'NearToken'
 
+/** What an operator may state about one bare model name in the plugin configuration. */
+export interface NearTokenModelOverride {
+  /** Context capacity in tokens, overriding both the site and the catalog. */
+  readonly contextWindow?: number
+  /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
+  readonly maxTokens?: number
+  /** Selectable reasoning levels, for a model no catalog entry describes. */
+  readonly reasoning?: readonly string[]
+}
+
 /**
  * The reasoning offering for one model, or nothing.
  *
- * Levels come from the catalog's own table; a model it does not describe is
- * advertised without any, rather than with levels it may not have.
+ * Configured levels win; otherwise they come from the catalog's own table. A
+ * model neither source describes is advertised without any, rather than with
+ * levels it may not have.
  * @param model - the bare model name the route serves.
+ * @param declared - the operator's configured levels for this model, if any.
  * @returns the reasoning metadata, or undefined for a model without levels.
  */
-function reasoningOf(model: string): LlmModelReasoningInfo | undefined {
-  const levels = reasoningLevels(model)
+function reasoningOf(model: string, declared?: readonly string[]): LlmModelReasoningInfo | undefined {
+  const levels = reasoningLevels(model, declared)
   if (levels === undefined) return undefined
   return {
     efforts: levels.map(level => ({
@@ -61,6 +75,14 @@ export interface NearTokenDeps {
   apiKey: () => Promise<string>
   /** Site root without a trailing slash. */
   baseURL: () => string
+  /**
+   * The capacity every model without a better answer reports. A harness model
+   * without a context window loses automatic compaction, so this is never
+   * undefined.
+   */
+  defaultContextWindow: () => number
+  /** The operator's configuration for one bare model name, when they wrote any. */
+  modelOverride: (model: string) => NearTokenModelOverride | undefined
 }
 
 /**
@@ -112,25 +134,37 @@ export class NearTokenAdapter extends LlmAdapter {
    * Resolve one exact route's metadata from the same generation as dispatch.
    * @param provider - the route this adapter registered.
    * @param model - the catalog id passed to `GenerateOptions.model`.
-   * @returns route identity plus that model's real reasoning levels.
+   * @returns route identity plus the model's capacity and reasoning levels.
    */
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     // The same filter as the catalog: a hidden model has no metadata here either.
     const routes = selectedRoutes(await this.deps.routes(), this.deps.enabled())
     const route = routes.find(entry => entry.id === model)
     const bare = route?.model ?? decodeRoute(model).model
-    const reasoning = reasoningOf(bare)
+    const override = this.deps.modelOverride(bare)
+    const reasoning = reasoningOf(bare, override?.reasoning)
+    const contextWindow = contextWindowOf(bare, {
+      ...override?.contextWindow === undefined ? {} : { override: override.contextWindow },
+      ...route?.contextWindow === undefined ? {} : { reported: route.contextWindow },
+      fallback: this.deps.defaultContextWindow(),
+    })
+    const maxTokens = maxTokensOf(route?.maxTokens, override?.maxTokens)
+    const facts = {
+      context: { contextWindow },
+      ...maxTokens === undefined ? {} : { defaultMaxTokens: maxTokens },
+      ...reasoning === undefined ? {} : { reasoning },
+    }
     if (route === undefined) {
       // An unlisted id (or one from a stale catalog) still routes: the harness
       // contract keeps this query advisory.
-      return { provider, id: model, name: model, ...reasoning === undefined ? {} : { reasoning } }
+      return { provider, id: model, name: model, ...facts }
     }
     return {
       provider,
       id: route.id,
       name: route.name,
       description: route.description,
-      ...reasoning === undefined ? {} : { reasoning },
+      ...facts,
     }
   }
 

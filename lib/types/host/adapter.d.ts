@@ -3,6 +3,15 @@ import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk }
 import type { NearTokenRoute } from './pricing.ts';
 /** Display name of the single provider route this adapter owns. */
 export declare const NEARTOKEN_PROVIDER_NAME = "NearToken";
+/** What an operator may state about one bare model name in the plugin configuration. */
+export interface NearTokenModelOverride {
+    /** Context capacity in tokens, overriding both the site and the catalog. */
+    readonly contextWindow?: number;
+    /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
+    readonly maxTokens?: number;
+    /** Selectable reasoning levels, for a model no catalog entry describes. */
+    readonly reasoning?: readonly string[];
+}
 /** External facts the adapter reads at call time. */
 export interface NearTokenDeps {
     /** The expanded (group, model) routes, loaded and cached by the host entry. */
@@ -16,6 +25,14 @@ export interface NearTokenDeps {
     apiKey: () => Promise<string>;
     /** Site root without a trailing slash. */
     baseURL: () => string;
+    /**
+     * The capacity every model without a better answer reports. A harness model
+     * without a context window loses automatic compaction, so this is never
+     * undefined.
+     */
+    defaultContextWindow: () => number;
+    /** The operator's configuration for one bare model name, when they wrote any. */
+    modelOverride: (model: string) => NearTokenModelOverride | undefined;
 }
 /**
  * Decode one catalog model id into its routing parts.
@@ -51,7 +68,7 @@ export declare class NearTokenAdapter extends LlmAdapter {
      * Resolve one exact route's metadata from the same generation as dispatch.
      * @param provider - the route this adapter registered.
      * @param model - the catalog id passed to `GenerateOptions.model`.
-     * @returns route identity plus that model's real reasoning levels.
+     * @returns route identity plus the model's capacity and reasoning levels.
      */
     resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo>;
     /**
