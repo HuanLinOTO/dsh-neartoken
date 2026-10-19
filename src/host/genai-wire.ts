@@ -121,6 +121,34 @@ function thinkingBudget(effort: string): number | undefined {
 }
 
 /**
+ * Whether a model takes a thinking level instead of a token budget.
+ *
+ * Gemini 4 dropped `thinkingBudget`; sending one answers 400 "Use thinking
+ * level instead". The level names it accepts are the effort ids themselves.
+ * @param model - the bare model id.
+ * @returns true for the level vocabulary.
+ */
+function usesThinkingLevel(model: string): boolean {
+  const major = /gemini-(\d+)/i.exec(model)?.[1]
+  return major !== undefined && Number(major) >= 4
+}
+
+/**
+ * The `thinkingConfig` for one request, in the vocabulary the model speaks.
+ * @param model - the bare model id.
+ * @param effort - the harness reasoning effort, when one was chosen.
+ * @returns the config, or undefined when the model gets no thinking request.
+ */
+function thinkingConfigOf(model: string, effort: string | undefined): Record<string, unknown> | undefined {
+  if (effort === undefined) return undefined
+  // Without includeThoughts the gateway never returns a thought part, so the
+  // reasoning stream would stay empty even for a thinking model.
+  if (usesThinkingLevel(model)) return { thinkingLevel: effort, includeThoughts: true }
+  const budget = thinkingBudget(effort)
+  return budget === undefined ? undefined : { thinkingBudget: budget, includeThoughts: true }
+}
+
+/**
  * Serialize one harness request into a genai request body.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to; genai carries
@@ -138,12 +166,8 @@ export function serializeRequest(options: GenerateOptions, model: string): Recor
   if (options.temperature !== undefined) generationConfig.temperature = options.temperature
   if (options.maxTokens !== undefined) generationConfig.maxOutputTokens = options.maxTokens
   if (options.stop !== undefined && options.stop.length > 0) generationConfig.stopSequences = options.stop
-  const budget = options.reasoningEffort === undefined ? undefined : thinkingBudget(options.reasoningEffort)
-  if (budget !== undefined) {
-    // Without includeThoughts the gateway never returns a thought part, so the
-    // reasoning stream would stay empty even for a thinking model.
-    generationConfig.thinkingConfig = { thinkingBudget: budget, includeThoughts: true }
-  }
+  const thinking = thinkingConfigOf(model, options.reasoningEffort)
+  if (thinking !== undefined) generationConfig.thinkingConfig = thinking
   const body: Record<string, unknown> = { contents }
   if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig
   if (options.system !== undefined && options.system.length > 0) {

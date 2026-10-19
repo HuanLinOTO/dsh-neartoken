@@ -1,9 +1,9 @@
 /**
  * Whether the provider should offer this model at all.
  *
- * Three exclusions: a coding-suffixed twin, a media route, and any name the
- * catalog does not describe — an unknown model would otherwise be advertised
- * with invented capabilities.
+ * Three exclusions: a coding-suffixed twin, a media route, and any name neither
+ * the catalog nor {@link UNCALLED_MODELS} describes — an unknown model would
+ * otherwise be advertised with invented capabilities.
  * @param model - a bare model name from the pricing endpoint.
  * @returns whether the model stays in the catalog.
  */

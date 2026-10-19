@@ -250,6 +250,15 @@ describe('genai wire', () => {
     )
     expect(body.generationConfig).toMatchObject({ thinkingConfig: { thinkingBudget: 2048, includeThoughts: true } })
   })
+
+  it('asks Gemini 4 for a thinking level, which replaced the token budget', () => {
+    // The live gateway answers 400 "Use thinking level instead" for a budget.
+    const body = serializeGenai(
+      { ...request(), reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+      'gemini-4-argon',
+    )
+    expect(body.generationConfig).toMatchObject({ thinkingConfig: { thinkingLevel: 'high', includeThoughts: true } })
+  })
 })
 
 describe('responses wire', () => {

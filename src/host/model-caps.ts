@@ -19,6 +19,23 @@ const CODING_VARIANT = /-c$/i
 /** Media routes that carry a model name but never answer a chat request. */
 const NON_TEXT = /(image|tts|transcribe|asr)/i
 
+/**
+ * Chat models the deployment publishes before the pi-ai catalog learns them.
+ *
+ * The catalog is the only maintained capability source, so an unknown name is
+ * normally withheld. A model listed here is offered anyway, with the reasoning
+ * levels measured against the live gateway; `null` offers it without claiming
+ * any. Delete an entry once the catalog describes the model, since the catalog
+ * is the better authority.
+ *
+ * `gemini-4-argon`: Gemini 4 replaced the thinking token budget with a level
+ * name. Its accepted levels are low/medium/high/max; minimal and xhigh are
+ * rejected by the upstream.
+ */
+const UNCALLED_MODELS: Readonly<Record<string, readonly string[] | null>> = {
+  'gemini-4-argon': ['low', 'medium', 'high', 'max'],
+}
+
 /** Display spelling of each level the catalog names. */
 const LEVEL_LABELS: Readonly<Record<string, string>> = {
   minimal: 'Minimal',
@@ -32,15 +49,16 @@ const LEVEL_LABELS: Readonly<Record<string, string>> = {
 /**
  * Whether the provider should offer this model at all.
  *
- * Three exclusions: a coding-suffixed twin, a media route, and any name the
- * catalog does not describe — an unknown model would otherwise be advertised
- * with invented capabilities.
+ * Three exclusions: a coding-suffixed twin, a media route, and any name neither
+ * the catalog nor {@link UNCALLED_MODELS} describes — an unknown model would
+ * otherwise be advertised with invented capabilities.
  * @param model - a bare model name from the pricing endpoint.
  * @returns whether the model stays in the catalog.
  */
 export function isOfferedModel(model: string): boolean {
   if (CODING_VARIANT.test(model)) return false
   if (NON_TEXT.test(model)) return false
+  if (Object.hasOwn(UNCALLED_MODELS, model)) return true
   return CHAT_MODELS.has(model)
 }
 
@@ -50,6 +68,7 @@ export function isOfferedModel(model: string): boolean {
  * @returns the catalog's level names, or undefined when it names none.
  */
 export function reasoningLevels(model: string): readonly string[] | undefined {
+  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model] ?? undefined
   const index = MODEL_TIERS[model]
   return index === undefined ? undefined : TIER_SETS[index]
 }

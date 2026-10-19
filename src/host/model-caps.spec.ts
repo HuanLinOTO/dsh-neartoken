@@ -23,6 +23,10 @@ describe('isOfferedModel', () => {
     expect(isOfferedModel('glm-5.0')).toBe(false)
     expect(isOfferedModel('some-private-model')).toBe(false)
   })
+
+  it('offers a model the deployment published ahead of the catalog', () => {
+    expect(isOfferedModel('gemini-4-argon')).toBe(true)
+  })
 })
 
 describe('reasoningLevels', () => {
@@ -36,6 +40,12 @@ describe('reasoningLevels', () => {
 
   it('reports none for a model without a level map anywhere', () => {
     expect(reasoningLevels('some-private-model')).toBeUndefined()
+  })
+
+  it('reads the measured levels of a model published ahead of the catalog', () => {
+    // Gemini 4 rejects a token budget and the minimal/xhigh level names.
+    expect(reasoningLevels('gemini-4-argon')).toEqual(['low', 'medium', 'high', 'max'])
+    expect(defaultReasoningLevel(reasoningLevels('gemini-4-argon') ?? [])).toBe('medium')
   })
 })
 
