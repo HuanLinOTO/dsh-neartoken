@@ -143,7 +143,8 @@ function thinkingConfigOf(model: string, effort: string | undefined): Record<str
   if (effort === undefined) return undefined
   // Without includeThoughts the gateway never returns a thought part, so the
   // reasoning stream would stay empty even for a thinking model.
-  if (usesThinkingLevel(model)) return { thinkingLevel: effort, includeThoughts: true }
+  // The level vocabulary starts at 'low'; 'minimal' is rejected upstream.
+  if (usesThinkingLevel(model)) return { thinkingLevel: effort === 'minimal' ? 'low' : effort, includeThoughts: true }
   const budget = thinkingBudget(effort)
   return budget === undefined ? undefined : { thinkingBudget: budget, includeThoughts: true }
 }

@@ -80,31 +80,27 @@ function serializeMessage(message: RequestMessage): WireBlock | undefined {
 }
 
 /**
- * Thinking budget for one harness reasoning effort.
+ * The effort the messages API accepts for one harness level.
  *
- * The messages API takes a token budget rather than an effort name, so each
- * selectable level maps onto one. 1024 is the API floor.
+ * `minimal` is not a value the API knows; `low` is its floor.
  * @param effort - the harness effort id.
- * @returns the budget in tokens, or undefined when the effort is not a level.
+ * @returns the effort to send.
  */
-function thinkingBudget(effort: string): number | undefined {
-  switch (effort) {
-    case 'minimal': return 1024
-    case 'low': return 2048
-    case 'medium': return 8192
-    case 'high': return 16384
-    case 'xhigh': return 24576
-    case 'max': return 32000
-    default: return undefined
-  }
+function claudeEffort(effort: string): string {
+  return effort === 'minimal' ? 'low' : effort
 }
 
 /**
  * Serialize one harness request into an Anthropic messages body.
  *
- * `max_tokens` is only sent when the caller set one, or when thinking needs
- * headroom above its budget: the gateway does not require it, and inventing a
- * cap would truncate long answers.
+ * Reasoning is requested as `thinking.type = "adaptive"` with the effort in
+ * `output_config`, which every Claude generation behind this gateway accepts.
+ * The older `thinking.type = "enabled"` budget form is not portable: models of
+ * the Claude 5 generation reject it outright ("requires adaptive thinking"),
+ * and an adaptive request still works on the older ones.
+ *
+ * `max_tokens` is only sent when the caller set one: the gateway does not
+ * require it, and inventing a cap would truncate long answers.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
@@ -117,18 +113,13 @@ export function serializeRequest(options: GenerateOptions, model: string): Recor
     const wire = serializeMessage(message)
     if (wire !== undefined) messages.push(wire)
   }
-  const budget = options.reasoningEffort === undefined ? undefined : thinkingBudget(options.reasoningEffort)
   const body: Record<string, unknown> = { model, messages, stream: true }
-  if (budget !== undefined) {
-    // Thinking owns the sampling temperature; sending one alongside is rejected.
-    body.thinking = { type: 'enabled', budget_tokens: budget }
-    body.max_tokens = options.maxTokens !== undefined && options.maxTokens > budget
-      ? options.maxTokens
-      : budget + 8192
-  } else {
-    if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
-    if (options.temperature !== undefined) body.temperature = options.temperature
+  if (options.reasoningEffort !== undefined) {
+    body.thinking = { type: 'adaptive' }
+    body.output_config = { effort: claudeEffort(options.reasoningEffort) }
   }
+  if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
+  if (options.temperature !== undefined) body.temperature = options.temperature
   if (options.system !== undefined && options.system.length > 0) body.system = options.system
   if (options.tools !== undefined && options.tools.length > 0) {
     body.tools = options.tools.map(tool => ({
@@ -179,7 +170,9 @@ function open(state: Assembly, wireIndex: number, kind: OpenBlock['kind']): { bl
  * Fold one Anthropic event into the assembly state.
  * @param payload - one SSE data payload.
  * @param state - the live assembly state.
- * @returns zero or more harness chunks.
+ * @returns zero or more harness chunks. Text and reasoning blocks open on
+ * their first non-empty delta; tool calls open on `content_block_start`, which
+ * is where their id and name arrive.
  */
 function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
   const event = parseJsonObject(payload)
@@ -208,16 +201,9 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       }
       return
     }
-    if (kind === 'thinking' || kind === 'redacted_thinking') {
-      const opened = open(state, wireIndex, 'reasoning')
-      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'reasoning' }
-      return
-    }
-    if (kind === 'text') {
-      const opened = open(state, wireIndex, 'text')
-      if (opened.fresh) yield { type: 'block-start', index: opened.block.index, blockType: 'text' }
-      return
-    }
+    // Text and thinking blocks are opened by their first non-empty delta, so a
+    // thinking block that arrives empty never becomes a block of its own. A
+    // tool_use has to open here: its id and name only exist in this event.
     return
   }
   if (type === 'content_block_delta') {

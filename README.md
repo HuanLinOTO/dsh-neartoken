@@ -108,7 +108,8 @@
 
 - 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；图片与文件仍以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
 - 四套 wire 的 SSE 解析都有「帧样本 → 期望 chunk 序列」回归测试（`src/host/wire-parse.spec.ts`），帧样本取自生产网关的真实响应。网关在内容帧上发 `"usage": null`，只有末帧带真值：任何一处把 `usage` 当对象直接读都会让整条流中途崩掉（曾导致 claude 模型全不可用）。
-- 推理等级映射到各协议的**固定 token 预算**：anthropic 发 `thinking.budget_tokens`（minimal 1024 → max 32000），genai 发 `thinkingConfig.thinkingBudget` 且带 `includeThoughts`（不带你拿不到思维链）。chat 与 responses 仍按原样发 `reasoning_effort` / `reasoning.effort`。
+- 推理等级按各协议自己的词汇发送：**anthropic 发 `thinking.type=adaptive` + `output_config.effort`**（不能再用 `thinking.type=enabled` + `budget_tokens`：Claude 5 代直接 400 `requires adaptive thinking`，而 adaptive 在老代际上同样可用，所以统一用它；`minimal` 收敛成 `low`）；genai 发 `thinkingConfig` 且带 `includeThoughts`（不带你拿不到思维链）；chat 与 responses 发 `reasoning_effort` / `reasoning.effort`。
+- 文本与思维块由**第一个非空 delta** 打开，思维块为空时不产生空块；工具调用块在 `content_block_start` 打开，因为 id 与函数名只在那里出现。
 - **Gemini 4 换成 `thinkingLevel`**：这一代不再接受 token 预算（发 budget 会 400 `Use thinking level instead`），按 `gemini-<主版本>` ≥ 4 自动切换字段，等级名直接用 `low` / `medium` / `high` / `max`。
 - 站点会先上架 pi-ai 目录还没收录的模型。这类名字默认隐藏（不猜能力），`src/host/model-caps.ts` 的 `UNCALLED_MODELS` 是显式放行表，值为实测出来的推理等级（`gemini-4-argon` 就是一条）。目录收录后删掉对应条目即可。
 - 思考历史**不回传**：harness 的 reasoning 块没有 signature 槽位，anthropic 的 `signature_delta` 与 gemini 的 `thoughtSignature` 都被丢弃。当前网关的转换层本身也会丢弃 thinking 块，所以多轮不会因此报错；接真正的 Anthropic / Gemini 直连渠道时这一条会变成硬限制。

@@ -149,6 +149,19 @@ describe('anthropic messages wire', () => {
     ])
   })
 
+  it('drops a thinking block that streamed no content', async () => {
+    // A thinking block can open and close with nothing in it; an empty
+    // reasoning block would still cost a transcript entry.
+    const response = streamed([
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+    ])
+    const chunks = await drain(parseAnthropic(response, undefined))
+    expect(blocksOf(chunks)).toEqual([{ type: 'text', text: 'ok' }])
+  })
+
   it('does not repeat block-start for a block the wire re-announces', async () => {
     const response = streamed([
       'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
@@ -173,15 +186,23 @@ describe('anthropic messages wire', () => {
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
   })
 
-  it('asks for thinking when a reasoning effort was chosen', () => {
+  it('asks for adaptive thinking with the chosen effort', () => {
+    // A token budget is rejected by the Claude 5 generation, while adaptive is
+    // accepted by every generation behind this gateway.
     const body = serializeAnthropic(
       { ...request(), reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
       'claude-opus-5-5',
     )
-    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 16384 })
-    // Thinking owns the sampling temperature and needs headroom above its budget.
-    expect(body.temperature).toBeUndefined()
-    expect(body.max_tokens).toBeGreaterThan(16384)
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+    expect(body.output_config).toEqual({ effort: 'high' })
+  })
+
+  it('lowers the minimal effort, which the messages API does not know', () => {
+    const body = serializeAnthropic(
+      { ...request(), reasoningEffort: 'minimal' as GenerateOptions['reasoningEffort'] },
+      'claude-opus-5-5',
+    )
+    expect(body.output_config).toEqual({ effort: 'low' })
   })
 
   it('sends no max_tokens when the caller set none and no thinking was asked for', () => {
