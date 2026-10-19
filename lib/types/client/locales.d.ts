@@ -29,7 +29,6 @@ export declare const zh: {
     'empty.efforts': string;
     'account.nav': string;
     'account.title': string;
-    'account.intro': string;
     'account.site': string;
     'account.connect': string;
     'account.connecting': string;
@@ -45,7 +44,6 @@ export declare const zh: {
     'account.balance': string;
     'account.used': string;
     'account.token': string;
-    'account.tokenHint': string;
     'account.signOut': string;
     'account.signingOut': string;
     'account.loading': string;
@@ -58,6 +56,9 @@ export declare const zh: {
     'whitelist.noMatch': string;
     'whitelist.empty': string;
     'whitelist.count': string;
+    'whitelist.picked': string;
+    'card.expand': string;
+    'card.collapse': string;
     'whitelist.groupsCount': string;
     'whitelist.minRatio': string;
     'whitelist.groupsTitle': string;
@@ -83,6 +84,7 @@ export declare const zh: {
     'images.empty': string;
     'images.loading': string;
     'images.count': string;
+    'images.picked': string;
     'images.groupAria': string;
 };
 /** The dictionary key union. */
@@ -113,7 +115,6 @@ export declare const en: {
     'empty.efforts': string;
     'account.nav': string;
     'account.title': string;
-    'account.intro': string;
     'account.site': string;
     'account.connect': string;
     'account.connecting': string;
@@ -129,7 +130,6 @@ export declare const en: {
     'account.balance': string;
     'account.used': string;
     'account.token': string;
-    'account.tokenHint': string;
     'account.signOut': string;
     'account.signingOut': string;
     'account.loading': string;
@@ -142,6 +142,9 @@ export declare const en: {
     'whitelist.noMatch': string;
     'whitelist.empty': string;
     'whitelist.count': string;
+    'whitelist.picked': string;
+    'card.expand': string;
+    'card.collapse': string;
     'whitelist.groupsCount': string;
     'whitelist.minRatio': string;
     'whitelist.groupsTitle': string;
@@ -167,5 +170,6 @@ export declare const en: {
     'images.empty': string;
     'images.loading': string;
     'images.count': string;
+    'images.picked': string;
     'images.groupAria': string;
 };

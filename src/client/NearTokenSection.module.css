@@ -66,9 +66,12 @@
 
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 14px 18px;
   margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .fact {
@@ -84,9 +87,12 @@
 }
 
 .factValue {
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--dsw-alias-label-primary);
 }
 
 .form {
@@ -308,4 +314,57 @@
 
 .select:disabled {
   opacity: 0.5;
+}
+/* A collapsible card: the whole header row is the toggle, so the count stays
+   readable while the body is folded away. */
+.cardToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cardToggle:hover .name {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Counts read as one quiet line: the totals in the label tone, the selected
+   number in the accent tone, both on tabular figures so they do not jitter. */
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.countDot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-dimmed);
+}
+
+.countPicked {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.chevron {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 120ms ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
 }

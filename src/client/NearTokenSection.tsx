@@ -8,6 +8,7 @@
  * — the key and the provider insertion both happen on the Host side of a grant.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelsState, NearTokenStatus,
@@ -109,7 +110,6 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
   return (
     <div className={css.section}>
       <h2 className={css.title}>{t('account.title')}</h2>
-      <p className={css.intro}>{t('account.intro')}</p>
       {status === undefined
         ? <p className={css.hint}>{t('account.loading')}</p>
         : status.configured
@@ -138,7 +138,6 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                   <dd className={css.factValue}>{status.tokenName}</dd>
                 </div>
               </dl>
-              <p className={css.hint}>{t('account.tokenHint')}</p>
               <div className={css.actions}>
                 <button type="button" className={css.button} disabled={busy} onClick={signOut}>
                   {busy ? t('account.signingOut') : t('account.signOut')}
@@ -214,6 +213,8 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
   const [saved, setSaved] = useState(false)
   /** Why the last edit could not be applied; cleared by the next one. */
   const [notice, setNotice] = useState<string | undefined>(undefined)
+  /** Whether the list itself is showing; the card opens collapsed. */
+  const [open, setOpen] = useState(false)
   /** The queued save, while a burst of clicks is still settling. */
   const pending = useRef<number | undefined>(undefined)
   // The row whose group detail is showing, positioned in viewport coordinates:
@@ -346,13 +347,25 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
 
   return (
     <section className={css.card}>
-      <div className={css.cardHead}>
+      <button
+        type="button"
+        className={css.cardToggle}
+        aria-expanded={open}
+        aria-label={t(open ? 'card.collapse' : 'card.expand')}
+        onClick={() => { setOpen((current) => !current) }}
+      >
         <span className={css.name}>{t('whitelist.title')}</span>
-        <span className={css.badge}>{t('whitelist.count', {
-          total: String(models.length), selected: String(selected.size),
-        })}
+        <span className={css.count}>
+          <span className={css.countTotal}>{t('whitelist.count', { total: String(models.length) })}</span>
+          <span className={css.countDot} aria-hidden="true" />
+          <span className={css.countPicked}>{t('whitelist.picked', { selected: String(selected.size) })}</span>
         </span>
-      </div>
+        <IconChevronDownOutlineRegular
+          className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
+          size={14}
+        />
+      </button>
+      {!open ? null : <>
       <p className={css.intro}>{t('whitelist.intro')}</p>
       {state === undefined
         ? (error === undefined ? <p className={css.hint}>{t('whitelist.loading')}</p> : null)
@@ -438,6 +451,7 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
           </div>
         )}
       {error === undefined ? null : <p className={css.notice}>{error}</p>}
+      </>}
     </section>
   )
 }
@@ -460,6 +474,8 @@ function ImageGeneration({ api, t }: NearTokenSectionInjected) {
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
   const [saved, setSaved] = useState(false)
+  /** Whether the controls are showing; the card opens collapsed. */
+  const [open, setOpen] = useState(false)
 
   /** Publish one host answer into the controls. */
   const adopt = useCallback((next: NearTokenImagesState): void => {
@@ -520,13 +536,25 @@ function ImageGeneration({ api, t }: NearTokenSectionInjected) {
 
   return (
     <section className={css.card}>
-      <div className={css.cardHead}>
+      <button
+        type="button"
+        className={css.cardToggle}
+        aria-expanded={open}
+        aria-label={t(open ? 'card.collapse' : 'card.expand')}
+        onClick={() => { setOpen((current) => !current) }}
+      >
         <span className={css.name}>{t('images.title')}</span>
-        <span className={css.badge}>{t('images.count', {
-          total: String(models.length), selected: String(enabledCount),
-        })}
+        <span className={css.count}>
+          <span className={css.countTotal}>{t('images.count', { total: String(models.length) })}</span>
+          <span className={css.countDot} aria-hidden="true" />
+          <span className={css.countPicked}>{t('images.picked', { selected: String(enabledCount) })}</span>
         </span>
-      </div>
+        <IconChevronDownOutlineRegular
+          className={open ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
+          size={14}
+        />
+      </button>
+      {!open ? null : <>
       <p className={css.intro}>{t('images.intro')}</p>
       {state === undefined
         ? (error === undefined ? <p className={css.hint}>{t('images.loading')}</p> : null)
@@ -584,6 +612,7 @@ function ImageGeneration({ api, t }: NearTokenSectionInjected) {
             {error === undefined ? null : <p className={css.notice}>{error}</p>}
           </div>
         )}
+      </>}
     </section>
   )
 }
