@@ -52,6 +52,12 @@ export declare class NearTokenProvider {
      */
     catalog(): Promise<readonly NearTokenRoute[]>;
     /**
+     * Read every route the site publishes, picture models included. The model
+     * seat and the adapter only ever see the chat routes.
+     * @returns one route per (group, model), from the shared load.
+     */
+    fullCatalog(): Promise<readonly NearTokenRoute[]>;
+    /**
      * Register the adapter and its configurable-provider entry.
      * @returns after the route serves requests; a no-op when already mounted.
      */

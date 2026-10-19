@@ -11,8 +11,10 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { AUTHORIZE_PATH, CANCEL_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH } from '../protocol.ts'
-import type { NearTokenModelsState } from '../protocol.ts'
+import {
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH,
+} from '../protocol.ts'
+import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
 import { parseEnabled } from './whitelist.ts'
@@ -33,6 +35,14 @@ export interface NearTokenRouteDeps {
   models: () => Promise<NearTokenModelsState>
   /** Persist a whitelist; an empty list restores the whole catalog. */
   saveModels: (enabled: readonly string[]) => Promise<void>
+  /** The picture models beside the stored image-generation setting. */
+  images: () => Promise<NearTokenImagesState>
+  /**
+   * Persist the image-generation setting.
+   * @param body - the raw request body, validated against the current catalog.
+   * @returns a refusal message, or nothing once the setting was stored.
+   */
+  saveImages: (body: unknown) => Promise<{ readonly message: string } | undefined>
 }
 
 /** Trust surface consumed here; the browser-side connection package owns the full type. */
@@ -133,6 +143,40 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, { ok: true })
     },
   }), `neartoken: ${MODELS_PATH}`)
+
+  // The image-generation setting: which picture models the generate_image tool
+  // may call, and the group each one bills to.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: IMAGES_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method === 'GET') {
+        sendJson(res, 200, await deps.images())
+        return
+      }
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'GET, POST')
+        return
+      }
+      const body = await readJsonObject(req, res, MAX_WHITELIST_BODY_BYTES)
+      if (body === undefined) return
+      let refusal: { readonly message: string } | undefined
+      try {
+        refusal = await deps.saveImages(body)
+      } catch (error: unknown) {
+        // A save the settings service refused is this page's failure to report:
+        // the stored setting did not move.
+        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      if (refusal !== undefined) {
+        sendJson(res, 400, { code: 'bad-request', message: refusal.message })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+    },
+  }), `neartoken: ${IMAGES_PATH}`)
 }
 
 /**

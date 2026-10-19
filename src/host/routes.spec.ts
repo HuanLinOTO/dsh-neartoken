@@ -7,8 +7,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MODELS_PATH, STATUS_PATH } from '../protocol.ts'
-import type { NearTokenModelsState } from '../protocol.ts'
+import { IMAGES_PATH, MODELS_PATH, STATUS_PATH } from '../protocol.ts'
+import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { NearTokenRouteDeps } from './routes.ts'
@@ -17,6 +17,13 @@ import type { NearTokenRouteDeps } from './routes.ts'
 const STATE: NearTokenModelsState = {
   models: [{ model: 'glm-5.3', groups: [{ group: 'default', ratio: '2x' }] }],
   enabled: [],
+}
+
+/** The picture catalog the image route answers. */
+const IMAGES: NearTokenImagesState = {
+  enabled: true,
+  models: [{ model: 'gpt-image-2.5-flare', channel: 'images', groups: [{ group: 'promo', ratio: '0.8x' }] }],
+  selection: { 'gpt-image-2.5-flare': 'promo' },
 }
 
 /** One recorded answer. */
@@ -51,9 +58,11 @@ function request(method: string, body?: string, contentType = 'application/json'
 function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   answer: (path: string, req: IncomingMessage) => Promise<Answer>
   saves: (readonly string[])[]
+  imageSaves: unknown[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   const saves: (readonly string[])[] = []
+  const imageSaves: unknown[] = []
   const ctx = {
     effect: (register: () => unknown) => register(),
     get: () => undefined,
@@ -69,10 +78,13 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     onDisconnect: () => {},
     models: async () => STATE,
     saveModels: async (enabled) => { saves.push(enabled) },
+    images: async () => IMAGES,
+    saveImages: async (body) => { imageSaves.push(body); return undefined },
     ...deps,
   })
   return {
     saves,
+    imageSaves,
     async answer(path, req) {
       const handler = handlers.get(path)
       if (handler === undefined) throw new Error(`no route ${path}`)
@@ -171,6 +183,8 @@ describe('the same-origin fence', () => {
       onDisconnect: () => {},
       models: async () => STATE,
       saveModels: async (enabled) => { saves.push(enabled) },
+      images: async () => IMAGES,
+      saveImages: async () => undefined,
     })
     let status = 0
     const res = { statusCode: 0, setHeader() {}, end() { status = res.statusCode } } as unknown as ServerResponse
@@ -178,5 +192,51 @@ describe('the same-origin fence', () => {
     expect(status).toBe(403)
     expect(handlers.has(STATUS_PATH)).toBe(true)
     expect(saves).toEqual([])
+  })
+})
+describe('the models route body', () => {
+  it('stores the list the page sent', async () => {
+    const { answer, saves } = routesOver()
+    const { status } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: ['glm-5.3'] })))
+    expect(status).toBe(200)
+    expect(saves).toEqual([['glm-5.3']])
+  })
+})
+
+describe('the images route', () => {
+  it('answers the picture catalog beside the stored setting', async () => {
+    const { answer } = routesOver()
+    const { status, body } = await answer(IMAGES_PATH, request('GET'))
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual(IMAGES)
+  })
+
+  it('refuses a method it does not serve', async () => {
+    const { answer } = routesOver()
+    const { status, headers } = await answer(IMAGES_PATH, request('DELETE'))
+    expect(status).toBe(405)
+    expect(headers.allow).toBe('GET, POST')
+  })
+
+  it('hands the raw body to the store, which owns the catalog check', async () => {
+    const { answer, imageSaves } = routesOver()
+    const body = { enabled: true, models: { 'gpt-image-2.5-flare': 'promo' } }
+    const { status } = await answer(IMAGES_PATH, request('POST', JSON.stringify(body)))
+    expect(status).toBe(200)
+    expect(imageSaves).toEqual([body])
+  })
+
+  it('refuses a body the catalog does not know', async () => {
+    const { answer } = routesOver({ saveImages: async () => ({ message: '图像模型或分组不在站点当前的图像清单里' }) })
+    const { status, body } = await answer(IMAGES_PATH, request('POST', JSON.stringify({ enabled: true, models: {} })))
+    expect(status).toBe(400)
+    expect(JSON.parse(body).message).toContain('图像清单')
+  })
+
+  it('reports a settings write that failed as a server failure', async () => {
+    const { answer } = routesOver({ saveImages: async () => { throw new Error('no settings service') } })
+    const { status, body } = await answer(IMAGES_PATH, request('POST', JSON.stringify({ enabled: true, models: {} })))
+    expect(status).toBe(500)
+    expect(JSON.parse(body).code).toBe('save-failed')
   })
 })

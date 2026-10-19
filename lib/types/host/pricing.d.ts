@@ -88,10 +88,18 @@ export declare class PricingDirectory {
         };
     }, baseURL: () => string, ttlMs: () => number);
     /**
-     * Return the expanded routes, reloading when the cache is older than the TTL.
+     * Return the routes a chat request can use, reloading when the cache is
+     * older than the TTL.
      * @param force - bypass the TTL and reload now.
      * @returns one route per (group, model); empty when the endpoint is unreachable.
      */
     load(force?: boolean): Promise<readonly NearTokenRoute[]>;
+    /**
+     * Return every route the site publishes, picture models included. The model
+     * seat drops them; the image-generation setting is what needs them.
+     * @param force - bypass the TTL and reload now.
+     * @returns one route per (group, model); empty when the endpoint is unreachable.
+     */
+    catalog(force?: boolean): Promise<readonly NearTokenRoute[]>;
 }
 export {};

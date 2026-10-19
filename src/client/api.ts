@@ -5,10 +5,11 @@
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH,
 } from '../protocol.ts'
 import type {
-  BeginAuthorizationOutcome, NearTokenModelsPatch, NearTokenModelsState, NearTokenStatus,
+  BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
+  NearTokenModelsState, NearTokenStatus,
 } from '../protocol.ts'
 
 /** The HTTP carrier, injectable so the section's behavior is testable. */
@@ -28,6 +29,10 @@ export interface NearTokenApi {
   models(): Promise<NearTokenModelsState>
   /** Save a whitelist; an empty list shows every model again. */
   saveModels(enabled: readonly string[]): Promise<void>
+  /** Read the picture models beside the stored image-generation setting. */
+  images(): Promise<NearTokenImagesState>
+  /** Save the image-generation setting: the tool's switch and one group per enabled model. */
+  saveImages(patch: NearTokenImagesPatch): Promise<void>
 }
 
 /**
@@ -75,6 +80,22 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled } satisfies NearTokenModelsPatch),
       }))
+    },
+    async images() {
+      return await jsonOf<NearTokenImagesState>(await fetcher(IMAGES_PATH, { headers: { accept: 'application/json' } }))
+    },
+    async saveImages(patch) {
+      const response = await fetcher(IMAGES_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (!response.ok) {
+        // The Host refuses a selection its catalog does not have; its message
+        // names the reason, so the page shows that rather than a status code.
+        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
+        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
+      }
     },
   }
 }

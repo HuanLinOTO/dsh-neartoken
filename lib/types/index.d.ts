@@ -22,6 +22,13 @@ export interface Options {
     modelOverrides: Record<string, NearTokenModelOverride>;
     /** Model names kept visible in the model picker; empty shows every model. */
     enabledModels: Volatile<string[]>;
+    /** How long one image generation may take, in milliseconds. */
+    imageTimeoutMs: number;
+    /** The image-generation setting: the tool's switch and one group per enabled model. */
+    imageGeneration: Volatile<{
+        enabled: boolean;
+        models: Record<string, string>;
+    }>;
 }
 /** Configuration surface; prototype keeps every knob optional. */
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
@@ -63,6 +70,29 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * without remounting it.
      */
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    /**
+     * How long one picture may take. The site's image models routinely need
+     * 25-60 seconds, so the default is well past a chat turn's budget.
+     */
+    imageTimeoutMs: z<number, number, "defined">;
+    /**
+     * The image-generation setting: whether the `generate_image` tool is mounted
+     * for this profile, and the group each enabled picture model bills to. Off by
+     * default — a profile that never draws pays for no tool row. Volatile like the
+     * whitelist, so the settings page's save reaches the running plugin without a
+     * remount.
+     */
+    imageGeneration: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the tool is mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Bare model name to the group name its requests route through. */
+        models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the tool is mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Bare model name to the group name its requests route through. */
+        models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
+    }>>>, "volatile">;
 }>>, Schemastery.ObjectT<NoInfer<{
     /** Site root without a trailing slash. */
     baseURL: z<string, string, "defined">;
@@ -102,6 +132,29 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * without remounting it.
      */
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    /**
+     * How long one picture may take. The site's image models routinely need
+     * 25-60 seconds, so the default is well past a chat turn's budget.
+     */
+    imageTimeoutMs: z<number, number, "defined">;
+    /**
+     * The image-generation setting: whether the `generate_image` tool is mounted
+     * for this profile, and the group each enabled picture model bills to. Off by
+     * default — a profile that never draws pays for no tool row. Volatile like the
+     * whitelist, so the settings page's save reaches the running plugin without a
+     * remount.
+     */
+    imageGeneration: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the tool is mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Bare model name to the group name its requests route through. */
+        models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the tool is mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Bare model name to the group name its requests route through. */
+        models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
+    }>>>, "volatile">;
 }>>, "plain">;
 /** Required services: the LLM registry the adapter mounts into. */
 export declare const inject: string[];

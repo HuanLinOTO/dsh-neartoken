@@ -16,6 +16,7 @@
 | **登录** | 设置页 → `POST /neartoken/authorize` → 站点 `POST /api/dsh/device/authorize` 拿到确认码 → 用户在自己浏览器里批准 → 插件按 `interval` 轮询 `POST /api/dsh/device/token`（`authorization_pending` / `slow_down` 退避 +2s / `access_denied` / `expired_token` / `granted`）→ 把站点铸造的 key 写进 credentials 的 `NEARTOKEN_API_KEY` |
 | **目录** | `GET /api/pricing`（TTL 缓存）→ 按 (分组, 模型) 展开成 `"<组>::<模型>"` → 可见性过滤 → `listModels` 交给 DSH |
 | **出字** | `stream()` → 按模型选协议 → 站点 `/v1/messages`、`/v1beta/models/*:streamGenerateContent`、`/v1/responses`、`/v1/chat/completions`。`body.model` 是裸模型名，`x-neartoken-group` 头带分组的 `#<id>` |
+| **画图** | 工具 `generate_image` → 站点 `/v1/images/generations`（声明了 `image-generation` 的模型）或 `/v1/chat/completions`（gemini 系）→ 取回 bytes → 存进 attachment → 结果里带图 |
 
 一条实现约束：provider 只有在凭据存在时才挂载，且 `credentials` 服务可能晚于本插件就绪，所以启动时先同步一次、再用 `ctx.inject` 同步一次。
 
@@ -31,6 +32,9 @@
 | `src/host/*-wire.ts` | 四条上游协议各自的请求体与 SSE 解析 |
 | `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
+| `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
+| `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
+| `src/host/image-settings.ts` | 生图设置读写与校验（模型必须是站点当前的生图模型，分组必须是该模型自己的分组） |
 | `src/client/` | 设置页、模型选择器、分组胶囊渲染 |
 
 ## 使用
@@ -41,6 +45,7 @@
 4. 插件轮询到批准后自动完成：把站点为该插件铸造的 API key 写进 credentials 的 `NEARTOKEN_API_KEY`，并挂上 `neartoken` provider。
 5. 「断开连接」删掉本地凭据、撤掉 provider，并调用站点的撤销端点。
 6. 卡片下方的「模型白名单」勾选即自动保存 —— 未勾选的不再出现在模型选择器里，且当场生效（Host 用 `AdapterRegistrationHandle.replace()` 重新声明同一条路由，同步发布 `llm/adapters-updated`，浏览器重拉目录）。没设置过白名单时默认全部显示，「全部显示」清空白名单。
+7. 再往下的「图像生成」卡片：先勾「启用 generate_image 工具」，再勾要用的生图模型并为每个模型选分组（选的是**计费分组**，不是模型），最后点保存。工具随开关挂载/撤下，模型立刻能用或不能用。
 
 备用路径：直接让 credentials 服务存 `NEARTOKEN_API_KEY`，或启动环境导出同名变量 —— provider 会在启动时按凭据现状挂载。
 
@@ -57,7 +62,9 @@
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |
 | `modelOverrides` | `{}` | 按裸模型名逐条修正容量与推理等级，见下 |
-| `enabledModels` | `[]` | 模型白名单（裸模型名）；空数组 = 全部显示。唯一 volatile 字段，设置页直接写它 |
+| `enabledModels` | `[]` | 模型白名单（裸模型名）；空数组 = 全部显示。volatile，设置页直接写它 |
+| `imageTimeoutMs` | `180000` | 单次生图的放弃时限（毫秒）；上游常见 25-60 秒 |
+| `imageGeneration` | `{ enabled: false, models: {} }` | 生图开关与「模型 → 分组」映射；volatile，设置页写 |
 
 `modelOverrides` 是「站点没声明、目录还没收录」时的兜底手段，改完重启即生效，**不需要发新版本**：
 
@@ -102,6 +109,29 @@
 
 推理等级来自 `@earendil-works/pi-ai` 的模型目录（DSH 的 `llm-pi-ai` 用的同一份数据）。插件不在运行时依赖它：`scripts/gen-model-caps.mjs` 把目录生成成 `src/host/model-caps.generated.ts`（1101 个 chat 模型、486 个带推理档位、1101 个带上下文窗口），升级依赖后跑 `pnpm run gen:model-caps` 重建。同一模型 id 在不同 provider 下可能给出不同档位（网关常只列两档，厂商列六档），生成时取**最完整**的那份；上下文窗口取**最小**的那份。
 
+## 图像生成（`generate_image`）
+
+开启后插件注册一个 `generate_image` 工具，模型可以直接出图：
+
+```json
+{ "prompt": "一只戴墨镜的柴犬，扁平插画风格", "model": "gpt-image-2.5-flare", "size": "1024x1024" }
+```
+
+`prompt` 必填，`model` 省略时用设置页里第一个启用的模型，`size` 只对 images 通道有意义。结果同时带**文字信封**（模型名、分组、尺寸、字节数）和**图片块**，所以模型自己能看到画出来的东西，用户也能在卡片里看到。
+
+两种上游通道由站点声明的端点决定，不用手动选：
+
+| 通道 | 判定 | 请求 | 响应 |
+|---|---|---|---|
+| `images` | `supported_endpoint_types` 含 `image-generation`（gpt-image 系） | `POST /v1/images/generations` | `data[0].b64_json` 或临时 `url` |
+| `chat` | 其余（nano-banana、`gemini-*-image`、grok-imagine） | `POST /v1/chat/completions` | 回复文本里的 `data:image/...;base64,` 或图片链接 |
+
+实测数据：`gpt-image-2.5-flare` 走促销分组 `#39` 约 43 秒返回 1.3 MB PNG（base64）；`nano-banana-pro` 打 images 端点会被站点拒绝（`only imagen models are supported`），走 chat 才出图；`grok-imagine-image` 两条都通。拿到 bytes 后按 magic bytes 判格式（PNG/JPEG/WebP/GIF），再交给 attachment 服务落盘。
+
+**为什么分组必须选**：同一个模型常被好几个分组转售，价格差好几倍，站点靠 `x-neartoken-group` 头决定路由。所以设置页里「模型 → 分组」是显式配置，而不是取第一个分组了事。保存时 Host 会校验：模型必须仍在站点当前清单里、分组必须是**该模型自己**的分组，否则拒绝（400），宁可让你重选，也不存一条调到必然失败的路由。
+
+限制：v1 只做文生图，**不支持参考图/改图**（`images/edits` 与 data-URL 参考图都未接）；一次只出一张。
+
 ## 已知限制
 
 - 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；图片与文件仍以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
@@ -117,13 +147,17 @@
 - 账号卡片不自动刷新：数字只来自授权那一刻 grant 里的 `user`（站点的 dashboard 接口认浏览器会话，不认本插件持有的 relay key），落盘到 profile 下的 `neartoken-account.json`，重启后从文件恢复。之后余额变化不会反映，需要重新连接一次。
 - 白名单按裸模型名过滤：勾掉某模型会把它的所有分组一起隐藏；某个正在使用的模型被勾掉后，会话里已选中的 id 仍在，但选择器里不再列出它。
 - 白名单写入走 DSH 的 Settings：profile 里该行只保留 volatile 字段，所以别把 `baseURL` 等非 volatile 字段写进**同一个 profile 行**（会在此后第一次保存白名单时被 Settings 的 strip 规则清掉）。
+- 生图只做文生图：无参考图、无改图、一次一张；`size` 只是建议，上游常忽略（输出长宽比由上游决定）。
+- 生图结果是 attachment 引用：图片本身存在 attachment store 里，工具结果不落工作区文件。要文件的话从卡片里取，或后续版本再加落盘。
+- 生图失败按站点原话报错（限流、渠道无可用 channel、模型不支持该端点都会原样透出），不重试、不跨分组兜底 —— 换分组是用户的决定。
 
 ## 开发
 
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / config / wire-parse
+pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / config / wire-parse / images / image-settings / image-tool
+pnpm run typecheck  # 两个 face 分别检查（host 与 client 的 ctx.sessions 声明互相冲突，不能同 program）
 pnpm run gen:model-caps   # 升级 @earendil-works/pi-ai 后重建能力表
 pnpm run build      # lib/index.js (host) + lib/client.js (client) + lib/types
 ```

@@ -293,3 +293,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The picture models' group picker: one row per model, the group beside it. */
+.select {
+  margin-left: auto;
+  max-width: 60%;
+  padding: 2px 6px;
+  border: 1px solid var(--dsw-color-border-subtle, rgb(0 0 0 / 12%));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+.select:disabled {
+  opacity: 0.5;
+}

@@ -11,7 +11,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { NearTokenModelsState } from '../protocol.ts';
+import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
 /** What the routes need from the plugin. */
@@ -24,6 +24,16 @@ export interface NearTokenRouteDeps {
     models: () => Promise<NearTokenModelsState>;
     /** Persist a whitelist; an empty list restores the whole catalog. */
     saveModels: (enabled: readonly string[]) => Promise<void>;
+    /** The picture models beside the stored image-generation setting. */
+    images: () => Promise<NearTokenImagesState>;
+    /**
+     * Persist the image-generation setting.
+     * @param body - the raw request body, validated against the current catalog.
+     * @returns a refusal message, or nothing once the setting was stored.
+     */
+    saveImages: (body: unknown) => Promise<{
+        readonly message: string;
+    } | undefined>;
 }
 /**
  * @param ctx - a context that carries `webServer`.

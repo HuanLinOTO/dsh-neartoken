@@ -20,6 +20,8 @@ export declare const CANCEL_PATH = "/neartoken/cancel";
 export declare const LOGOUT_PATH = "/neartoken/logout";
 /** Read the catalog beside the stored whitelist; POST a new whitelist. */
 export declare const MODELS_PATH = "/neartoken/models";
+/** Read the picture models and the image-generation setting; POST one change to it. */
+export declare const IMAGES_PATH = "/neartoken/images";
 /** One account's facts, as the settings card shows them. */
 export interface NearTokenAccountSummary {
     /** The dashboard user name. */
@@ -99,3 +101,32 @@ export type BeginAuthorizationOutcome = {
     readonly status: 'failed';
     readonly message: string;
 };
+/** Which request shape one picture model speaks: the images endpoint or a chat completion. */
+export type NearTokenImageChannel = 'images' | 'chat';
+/** One picture model the image-generation setting can enable. */
+export interface NearTokenImageModelEntry {
+    /** Bare model name, as the site's API takes it. */
+    readonly model: string;
+    /** The request shape this model answers. */
+    readonly channel: NearTokenImageChannel;
+    /** Every group offering this model, in catalog order. */
+    readonly groups: readonly NearTokenModelGroup[];
+    /** The cheapest multiplier among those groups, when the site published one. */
+    readonly minRatio?: number;
+}
+/** The `GET /neartoken/images` answer. */
+export interface NearTokenImagesState {
+    /** Whether the `generate_image` tool is mounted for this profile. */
+    readonly enabled: boolean;
+    /** Every picture model the site offers, in catalog order. */
+    readonly models: readonly NearTokenImageModelEntry[];
+    /** The enabled models and the group each one routes through; empty means the tool has no model to call. */
+    readonly selection: Readonly<Record<string, string>>;
+}
+/** The `POST /neartoken/images` request body. */
+export interface NearTokenImagesPatch {
+    /** Whether the tool should be mounted. */
+    readonly enabled: boolean;
+    /** Bare model name to the group name it must route through. */
+    readonly models: Readonly<Record<string, string>>;
+}

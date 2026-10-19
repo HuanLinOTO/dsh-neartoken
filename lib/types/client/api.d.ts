@@ -1,4 +1,4 @@
-import type { BeginAuthorizationOutcome, NearTokenModelsState, NearTokenStatus } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsState, NearTokenStatus } from '../protocol.ts';
 /** The HTTP carrier, injectable so the section's behavior is testable. */
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 /** What the section calls. */
@@ -15,6 +15,10 @@ export interface NearTokenApi {
     models(): Promise<NearTokenModelsState>;
     /** Save a whitelist; an empty list shows every model again. */
     saveModels(enabled: readonly string[]): Promise<void>;
+    /** Read the picture models beside the stored image-generation setting. */
+    images(): Promise<NearTokenImagesState>;
+    /** Save the image-generation setting: the tool's switch and one group per enabled model. */
+    saveImages(patch: NearTokenImagesPatch): Promise<void>;
 }
 /**
  * Build the carrier.

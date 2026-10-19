@@ -9,7 +9,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { NearTokenModelEntry, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
+import type {
+  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelsState, NearTokenStatus,
+} from '../protocol.ts'
 import type { NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
 import { GroupTag, RatioChip } from './group-tags.tsx'
@@ -187,6 +189,7 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
       {error === undefined ? null : <p className={css.notice}>{error}</p>}
       {status?.error === undefined ? null : <p className={css.notice}>{t('account.failed', { message: status.error })}</p>}
       {status?.configured === true ? <ModelWhitelist api={api} t={t} /> : null}
+      {status?.configured === true ? <ImageGeneration api={api} t={t} /> : null}
     </div>
   )
 }
@@ -435,6 +438,152 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
           </div>
         )}
       {error === undefined ? null : <p className={css.notice}>{error}</p>}
+    </section>
+  )
+}
+
+/**
+ * The image-generation card: the `generate_image` tool's switch and, per picture
+ * model, the group its requests route through.
+ *
+ * Unlike the whitelist this block saves on a button, not on every click: the two
+ * members describe one setting, and a group choice made before the model is
+ * checked would otherwise be written as nothing.
+ * @param props - the injected route carrier and translate.
+ * @returns the image-generation block.
+ */
+function ImageGeneration({ api, t }: NearTokenSectionInjected) {
+  const [state, setState] = useState<NearTokenImagesState | undefined>(undefined)
+  const [enabled, setEnabled] = useState(false)
+  const [selection, setSelection] = useState<Readonly<Record<string, string>>>({})
+  const [busy, setBusy] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [saved, setSaved] = useState(false)
+
+  /** Publish one host answer into the controls. */
+  const adopt = useCallback((next: NearTokenImagesState): void => {
+    setState(next)
+    setEnabled(next.enabled)
+    setSelection({ ...next.selection })
+    setDirty(false)
+  }, [])
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      adopt(await api.images())
+    } catch (failure: unknown) {
+      setError(t('images.failed', { message: messageOf(failure) }))
+    }
+  }, [adopt, api, t])
+
+  useEffect(() => { void load() }, [load])
+
+  const models = state?.models ?? []
+  const enabledCount = Object.keys(selection).length
+
+  /** Check or uncheck one model; the first group of a newly checked model is its route. */
+  const toggle = (model: string, groups: NearTokenImageModelEntry['groups']): void => {
+    setSaved(false)
+    setDirty(true)
+    setSelection((current) => {
+      if (current[model] !== undefined) {
+        const next = { ...current }
+        delete next[model]
+        return next
+      }
+      const first = groups[0]?.group
+      return first === undefined ? current : { ...current, [model]: first }
+    })
+  }
+
+  const chooseGroup = (model: string, group: string): void => {
+    setSaved(false)
+    setDirty(true)
+    setSelection(current => ({ ...current, [model]: group }))
+  }
+
+  const save = async (): Promise<void> => {
+    setBusy(true)
+    setError(undefined)
+    setSaved(false)
+    try {
+      await api.saveImages({ enabled, models: selection })
+      setSaved(true)
+      setDirty(false)
+    } catch (failure: unknown) {
+      setError(t('images.failed', { message: messageOf(failure) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className={css.card}>
+      <div className={css.cardHead}>
+        <span className={css.name}>{t('images.title')}</span>
+        <span className={css.badge}>{t('images.count', {
+          total: String(models.length), selected: String(enabledCount),
+        })}
+        </span>
+      </div>
+      <p className={css.intro}>{t('images.intro')}</p>
+      {state === undefined
+        ? (error === undefined ? <p className={css.hint}>{t('images.loading')}</p> : null)
+        : (
+          <div className={css.form}>
+            <label className={css.row}>
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => { setSaved(false); setDirty(true); setEnabled(event.target.checked) }}
+              />
+              <span className={css.rowName}>{t('images.enable')}</span>
+            </label>
+            {models.length === 0
+              ? <p className={css.hint}>{t('images.empty')}</p>
+              : (
+                <div className={css.list}>
+                  {models.map(entry => (
+                    <label key={entry.model} className={css.row}>
+                      <input
+                        type="checkbox"
+                        checked={selection[entry.model] !== undefined}
+                        onChange={() => { toggle(entry.model, entry.groups) }}
+                      />
+                      <span className={css.rowName}>{entry.model}</span>
+                      <select
+                        className={css.select}
+                        aria-label={t('images.groupAria', { model: entry.model })}
+                        disabled={selection[entry.model] === undefined}
+                        value={selection[entry.model] ?? entry.groups[0]?.group ?? ''}
+                        onChange={(event) => { chooseGroup(entry.model, event.target.value) }}
+                      >
+                        {entry.groups.map(group => (
+                          <option key={group.group} value={group.group}>
+                            {group.group}{group.ratio === undefined ? '' : ` · ${group.ratio}`}
+                          </option>
+                        ))}
+                      </select>
+                      <span className={css.rowMeta}>
+                        {t(entry.channel === 'images' ? 'images.channel.images' : 'images.channel.chat')}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            <div className={css.toolbar}>
+              <button type="button" className={css.button} disabled={busy || !dirty} onClick={() => { void save() }}>
+                {busy ? t('images.saving') : t('images.save')}
+              </button>
+              <span className={css.autosave} aria-live="polite">
+                {dirty ? t('images.dirty') : saved ? t('images.saved') : ''}
+              </span>
+            </div>
+            <p className={css.hint}>{t('images.hint')}</p>
+            {error === undefined ? null : <p className={css.notice}>{error}</p>}
+          </div>
+        )}
     </section>
   )
 }

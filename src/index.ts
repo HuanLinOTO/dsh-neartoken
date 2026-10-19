@@ -16,6 +16,9 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { NearTokenModelOverride } from './host/adapter.ts'
 import { NearTokenAccount } from './host/account.ts'
+import { imageCatalog, NearTokenImageSettings, parseImagePatch } from './host/image-settings.ts'
+import { registerGenerateImageTool } from './host/image-tool.ts'
+import { NearTokenImageClient } from './host/images.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
 import { NearTokenWhitelist } from './host/whitelist.ts'
@@ -74,6 +77,10 @@ export interface Options {
   modelOverrides: Record<string, NearTokenModelOverride>
   /** Model names kept visible in the model picker; empty shows every model. */
   enabledModels: Volatile<string[]>
+  /** How long one image generation may take, in milliseconds. */
+  imageTimeoutMs: number
+  /** The image-generation setting: the tool's switch and one group per enabled model. */
+  imageGeneration: Volatile<{ enabled: boolean; models: Record<string, string> }>
 }
 
 /** Configuration surface; prototype keeps every knob optional. */
@@ -102,6 +109,24 @@ export const Config = z.object({
    * without remounting it.
    */
   enabledModels: z.array(z.string()).default([]).volatile(),
+  /**
+   * How long one picture may take. The site's image models routinely need
+   * 25-60 seconds, so the default is well past a chat turn's budget.
+   */
+  imageTimeoutMs: z.number().step(1).min(1_000).default(180_000),
+  /**
+   * The image-generation setting: whether the `generate_image` tool is mounted
+   * for this profile, and the group each enabled picture model bills to. Off by
+   * default — a profile that never draws pays for no tool row. Volatile like the
+   * whitelist, so the settings page's save reaches the running plugin without a
+   * remount.
+   */
+  imageGeneration: z.object({
+    /** Whether the tool is mounted. */
+    enabled: z.boolean().default(false),
+    /** Bare model name to the group name its requests route through. */
+    models: z.dict(z.string()).default({}),
+  }).volatile(),
 })
 
 /** Required services: the LLM registry the adapter mounts into. */
@@ -159,6 +184,43 @@ export function apply(ctx: Context, config: Options): void {
     entryId: SETTINGS_NS,
     settings: () => ctx.get('settings') as WhitelistSettings | undefined,
   })
+  const images = new NearTokenImageClient({
+    baseURL: () => config.baseURL,
+    apiKey: resolveApiKey,
+    routes: async () => await provider.fullCatalog(),
+    timeoutMs: () => config.imageTimeoutMs,
+  })
+  const imageSettings = new NearTokenImageSettings({
+    stored: () => config.imageGeneration.get(),
+    catalog: async () => imageCatalog(await provider.fullCatalog()),
+    entryId: SETTINGS_NS,
+    settings: () => ctx.get('settings') as WhitelistSettings | undefined,
+  })
+  // Mounting the tool IS the switch: a profile that turned image generation off
+  // never shows the model a tool whose every call would be refused. A save runs
+  // this again from the running plugin, the same way a whitelist save re-announces
+  // the route, rather than remounting the whole entry.
+  let syncImageTool = (): void => {
+    // No tool service in this composition: the setting stays stored and unused.
+  }
+  ctx.inject(['tools', 'attachments'], (toolCtx) => {
+    let registered: (() => void) | undefined
+    const sync = (): void => {
+      if (config.imageGeneration.get().enabled) {
+        if (registered !== undefined) return
+        registered = toolCtx.effect(() => registerGenerateImageTool(toolCtx, {
+          settings: () => config.imageGeneration.get(),
+          client: images,
+        }), 'neartoken: generate_image')
+        return
+      }
+      if (registered === undefined) return
+      registered()
+      registered = undefined
+    }
+    syncImageTool = sync
+    sync()
+  })
   // A finished authorization is the moment the route appears: the site just
   // minted the key for this plugin, so the provider can serve immediately.
   const account = new NearTokenAccount(ctx, {
@@ -195,6 +257,18 @@ export function apply(ctx: Context, config: Options): void {
       saveModels: async (enabled) => {
         await whitelist.save(enabled)
         provider.refresh()
+      },
+      images: () => imageSettings.state(),
+      // The catalog is the authority on which models and groups a save may
+      // name, so the body is checked against the same load the tool calls from.
+      saveImages: async (body) => {
+        const patch = parseImagePatch(body, (await imageSettings.state()).models)
+        if (patch === undefined) {
+          return { message: '图像模型或分组不在站点当前的图像清单里' }
+        }
+        await imageSettings.save(patch)
+        syncImageTool()
+        return undefined
       },
     })
   })

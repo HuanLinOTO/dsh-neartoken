@@ -198,21 +198,31 @@ export class PricingDirectory {
   ) {}
 
   /**
-   * Return the expanded routes, reloading when the cache is older than the TTL.
+   * Return the routes a chat request can use, reloading when the cache is
+   * older than the TTL.
    * @param force - bypass the TTL and reload now.
    * @returns one route per (group, model); empty when the endpoint is unreachable.
    */
-  load(force = false): Promise<readonly NearTokenRoute[]> {
+  async load(force = false): Promise<readonly NearTokenRoute[]> {
+    // The site publishes every route it knows; the provider only offers the
+    // ones that answer a chat request (see isChatOffering).
+    return (await this.catalog(force)).filter(route => isChatOffering(route.model, route.endpoints))
+  }
+
+  /**
+   * Return every route the site publishes, picture models included. The model
+   * seat drops them; the image-generation setting is what needs them.
+   * @param force - bypass the TTL and reload now.
+   * @returns one route per (group, model); empty when the endpoint is unreachable.
+   */
+  catalog(force = false): Promise<readonly NearTokenRoute[]> {
     const fresh = this.cache !== undefined && Date.now() - this.cache.at < this.ttlMs()
     if (!force && fresh && this.cache !== undefined) return Promise.resolve(this.cache.routes)
     if (this.inflight !== undefined) return this.inflight
     const operation = fetch(`${this.baseURL()}/api/pricing`, { headers: { accept: 'application/json' } })
       .then(async (response) => {
         if (!response.ok) throw new Error(`pricing endpoint answered ${response.status}`)
-        // The site publishes every route it knows; the provider only offers the
-        // ones that answer a chat request (see isChatOffering).
         return expandRoutes(parsePricing(await response.json()))
-          .filter(route => isChatOffering(route.model, route.endpoints))
       })
       .then((routes) => {
         this.cache = { at: Date.now(), routes }

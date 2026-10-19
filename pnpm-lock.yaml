@@ -17,6 +17,9 @@ importers:
       '@deepseek-ai/dsh-api-session-controller':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/api/session-controller
         version: link:../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-attachment':
+        specifier: link:D:/Projects/deepseek-harness/dsh/packages/attachment/attachment
+        version: link:../dsh/packages/attachment/attachment
       '@deepseek-ai/dsh-brand':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/util/brand
         version: link:../dsh/packages/util/brand
@@ -56,6 +59,9 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/llm/llm
         version: link:../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-tools':
+        specifier: link:D:/Projects/deepseek-harness/dsh/packages/core/tools
+        version: link:../dsh/packages/core/tools
       '@deepseek-ai/dsh-typert-protocol':
         specifier: link:D:/Projects/deepseek-harness/dsh/packages/typert/protocol
         version: link:../dsh/packages/typert/protocol
