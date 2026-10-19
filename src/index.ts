@@ -111,9 +111,10 @@ export const Config = z.object({
   enabledModels: z.array(z.string()).default([]).volatile(),
   /**
    * How long one picture may take. The site's image models routinely need
-   * 25-60 seconds, so the default is well past a chat turn's budget.
+   * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
+   * the default leaves room for that rather than sitting just above the median.
    */
-  imageTimeoutMs: z.number().step(1).min(1_000).default(180_000),
+  imageTimeoutMs: z.number().step(1).min(5_000).default(300_000),
   /**
    * The image-generation setting: whether the `generate_image` tool is mounted
    * for this profile, and the group each enabled picture model bills to. Off by
@@ -211,6 +212,7 @@ export function apply(ctx: Context, config: Options): void {
         registered = toolCtx.effect(() => registerGenerateImageTool(toolCtx, {
           settings: () => config.imageGeneration.get(),
           client: images,
+          timeoutMs: () => config.imageTimeoutMs,
         }), 'neartoken: generate_image')
         return
       }

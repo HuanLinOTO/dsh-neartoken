@@ -3,7 +3,7 @@
  * one speaks, and how the two possible answers are read back into bytes.
  */
 import { describe, expect, it } from 'vitest'
-import { extractImageReply, imageChannel, isImageModel, sniffImageMediaType } from './images.ts'
+import { extractImageReply, imageChannel, isImageModel, NearTokenImageClient, sniffImageMediaType } from './images.ts'
 
 describe('isImageModel', () => {
   it('accepts the picture models the catalog offers', () => {
@@ -94,5 +94,70 @@ describe('sniffImageMediaType', () => {
   it('answers nothing for bytes that are not a supported picture', () => {
     expect(sniffImageMediaType(new Uint8Array([1, 2, 3]))).toBeUndefined()
     expect(sniffImageMediaType(new Uint8Array([]))).toBeUndefined()
+  })
+})
+/** The minimal Response surface the client reads. */
+function answer(body: unknown, status = 200): Response {
+  return {
+    ok: status < 400,
+    status,
+    async json() { return body },
+    async text() { return typeof body === 'string' ? body : JSON.stringify(body) },
+    async arrayBuffer() { return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]).buffer },
+  } as unknown as Response
+}
+
+/** The generation client over one route and one fake carrier. */
+function clientOver(send: typeof fetch, timeoutMs = 1_000): NearTokenImageClient {
+  return new NearTokenImageClient({
+    baseURL: () => 'https://site.example',
+    apiKey: async () => 'sk-test',
+    routes: async () => [{
+      id: 'promo::gpt-image-2.5-flare',
+      name: 'gpt-image-2.5-flare @ promo',
+      description: '分组倍率 0.8x',
+      group: 'promo',
+      groupRef: '#39',
+      model: 'gpt-image-2.5-flare',
+      endpoints: ['image-generation', 'openai'],
+    }],
+    timeoutMs: () => timeoutMs,
+    fetch: send,
+  })
+}
+
+describe('NearTokenImageClient', () => {
+  it('sends the group reference and returns the picture bytes', async () => {
+    const calls: { url: string; init?: RequestInit }[] = []
+    const send = ((url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return Promise.resolve(answer({ data: [{ b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') }] }))
+    }) as unknown as typeof fetch
+    const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+    expect(image.mediaType).toBe('image/png')
+    expect(calls[0]?.url).toBe('https://site.example/v1/images/generations')
+    expect((calls[0]?.init?.headers as Record<string, string>)['x-neartoken-group']).toBe('#39')
+  })
+
+  it('explains a budget that ran out instead of surfacing the abort', async () => {
+    const send = ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+      })
+    })) as unknown as typeof fetch
+    await expect(clientOver(send, 5).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' }))
+      .rejects.toThrow(/did not return an image within 0s \(imageTimeoutMs\)/)
+  })
+
+  it('reports a refusal with the status and the site\'s own words', async () => {
+    const send = (() => Promise.resolve(answer('{"error":{"message":"no channel"}}', 503))) as unknown as typeof fetch
+    await expect(clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' }))
+      .rejects.toThrow(/refused gpt-image-2.5-flare with HTTP 503: .*no channel/)
+  })
+
+  it('refuses an answer that carries no picture', async () => {
+    const send = (() => Promise.resolve(answer({ choices: [{ message: { content: 'nope' } }] }))) as unknown as typeof fetch
+    await expect(clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' }))
+      .rejects.toThrow(/answered without an image/)
   })
 })

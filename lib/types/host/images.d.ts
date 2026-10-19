@@ -58,6 +58,8 @@ export interface NearTokenImageDeps {
     routes: () => Promise<readonly NearTokenRoute[]>;
     /** How long one generation may take before it is abandoned, in milliseconds. */
     timeoutMs: () => number;
+    /** HTTP carrier; defaults to the process's own fetch. */
+    fetch?: typeof fetch;
 }
 /** One generated picture, with the route that drew it. */
 export interface NearTokenGeneratedImage {
@@ -93,9 +95,16 @@ export declare class NearTokenImageClient {
         readonly signal?: AbortSignal;
     }): Promise<NearTokenGeneratedImage>;
     /**
+     * One request, one answer: the parts of a generation that the time budget wraps.
+     * @param request - the call, already resolved to a channel and group.
+     * @returns the encoded picture.
+     */
+    private attempt;
+    /**
      * Fetch a generated picture from the short-lived URL some gateways answer with.
      * @param url - the site's result URL.
      * @param signal - the generation's cancellation and time budget.
+     * @param send - the HTTP carrier the request used.
      * @returns the encoded picture.
      * @throws {Error} when the URL cannot be read.
      */

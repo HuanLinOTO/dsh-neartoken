@@ -72,7 +72,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     /**
      * How long one picture may take. The site's image models routinely need
-     * 25-60 seconds, so the default is well past a chat turn's budget.
+     * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
+     * the default leaves room for that rather than sitting just above the median.
      */
     imageTimeoutMs: z<number, number, "defined">;
     /**
@@ -134,7 +135,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     /**
      * How long one picture may take. The site's image models routinely need
-     * 25-60 seconds, so the default is well past a chat turn's budget.
+     * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
+     * the default leaves room for that rather than sitting just above the median.
      */
     imageTimeoutMs: z<number, number, "defined">;
     /**

@@ -180,6 +180,8 @@ export interface NearTokenImageDeps {
   routes: () => Promise<readonly NearTokenRoute[]>
   /** How long one generation may take before it is abandoned, in milliseconds. */
   timeoutMs: () => number
+  /** HTTP carrier; defaults to the process's own fetch. */
+  fetch?: typeof fetch
 }
 
 /** One generated picture, with the route that drew it. */
@@ -219,19 +221,53 @@ export class NearTokenImageClient {
     const route = (await this.deps.routes())
       .find(entry => entry.model === request.model && entry.group === request.group)
     const channel = imageChannel(route?.endpoints)
-    const signal = combineSignals(request.signal, this.deps.timeoutMs())
+    const timeoutMs = this.deps.timeoutMs()
+    // The budget is its own signal so a timeout can be told apart from the
+    // caller's cancellation: one deserves an explanation of how to wait longer,
+    // the other is the turn being stopped and travels unchanged.
+    const budget = AbortSignal.timeout(timeoutMs)
+    const signal = request.signal === undefined ? budget : AbortSignal.any([request.signal, budget])
     const key = await this.deps.apiKey()
-    const response = await fetch(
-      `${this.deps.baseURL()}/v1/${channel === 'images' ? 'images/generations' : 'chat/completions'}`,
+    const send = this.deps.fetch ?? fetch
+    const image = await this.attempt({ ...request, channel, route, key, signal, send, timeoutMs }).catch((error: unknown) => {
+      if (!budget.aborted) throw error
+      throw new Error(
+        `the site did not return an image within ${String(Math.round(timeoutMs / 1_000))}s`
+        + ` (imageTimeoutMs); ${request.model} can be this slow — retry, raise imageTimeoutMs, or enable a faster image model`,
+        { cause: error },
+      )
+    })
+    return image
+  }
+
+  /**
+   * One request, one answer: the parts of a generation that the time budget wraps.
+   * @param request - the call, already resolved to a channel and group.
+   * @returns the encoded picture.
+   */
+  private async attempt(request: {
+    readonly model: string
+    readonly group: string
+    readonly prompt: string
+    readonly size?: string
+    readonly channel: ImageChannel
+    readonly route: NearTokenRoute | undefined
+    readonly key: string
+    readonly signal: AbortSignal
+    readonly send: typeof fetch
+    readonly timeoutMs: number
+  }): Promise<NearTokenGeneratedImage> {
+    const response = await request.send(
+      `${this.deps.baseURL()}/v1/${request.channel === 'images' ? 'images/generations' : 'chat/completions'}`,
       {
         method: 'POST',
         headers: {
           ...attributionHeaders(),
           'content-type': 'application/json',
-          authorization: `Bearer ${key}`,
-          ...route?.groupRef === undefined ? {} : { 'x-neartoken-group': route.groupRef },
+          authorization: `Bearer ${request.key}`,
+          ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
         },
-        body: JSON.stringify(channel === 'images'
+        body: JSON.stringify(request.channel === 'images'
           ? {
             model: request.model,
             prompt: request.prompt,
@@ -243,7 +279,7 @@ export class NearTokenImageClient {
             messages: [{ role: 'user', content: request.prompt }],
             stream: false,
           }),
-        signal,
+        signal: request.signal,
       },
     )
     if (!response.ok) {
@@ -256,7 +292,7 @@ export class NearTokenImageClient {
     }
     const bytes = reply.kind === 'base64'
       ? Uint8Array.from(Buffer.from(reply.data, 'base64'))
-      : await this.download(reply.url, signal)
+      : await this.download(reply.url, request.signal, request.send)
     const mediaType = sniffImageMediaType(bytes)
     if (mediaType === undefined) {
       throw new Error(`${request.model} returned ${String(bytes.byteLength)} bytes that are not a PNG/JPEG/WebP/GIF image`)
@@ -268,23 +304,14 @@ export class NearTokenImageClient {
    * Fetch a generated picture from the short-lived URL some gateways answer with.
    * @param url - the site's result URL.
    * @param signal - the generation's cancellation and time budget.
+   * @param send - the HTTP carrier the request used.
    * @returns the encoded picture.
    * @throws {Error} when the URL cannot be read.
    */
-  private async download(url: string, signal: AbortSignal): Promise<Uint8Array> {
-    const response = await fetch(url, { signal })
+  private async download(url: string, signal: AbortSignal, send: typeof fetch): Promise<Uint8Array> {
+    const response = await send(url, { signal })
     if (!response.ok) throw new Error(`the generated image URL answered HTTP ${String(response.status)}`)
     return new Uint8Array(await response.arrayBuffer())
   }
 }
 
-/**
- * Bound one generation by both the caller's cancellation and its own time budget.
- * @param signal - the caller's cancellation, when it passed one.
- * @param timeoutMs - how long the generation may take.
- * @returns a signal that aborts on either.
- */
-function combineSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const budget = AbortSignal.timeout(timeoutMs)
-  return signal === undefined ? budget : AbortSignal.any([signal, budget])
-}

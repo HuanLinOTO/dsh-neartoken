@@ -63,7 +63,7 @@
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |
 | `modelOverrides` | `{}` | 按裸模型名逐条修正容量与推理等级，见下 |
 | `enabledModels` | `[]` | 模型白名单（裸模型名）；空数组 = 全部显示。volatile，设置页直接写它 |
-| `imageTimeoutMs` | `180000` | 单次生图的放弃时限（毫秒）；上游常见 25-60 秒 |
+| `imageTimeoutMs` | `300000` | 单次生图的预算（毫秒）；工具调用截止时间 = 它 + 30 秒，见下文「超时」 |
 | `imageGeneration` | `{ enabled: false, models: {} }` | 生图开关与「模型 → 分组」映射；volatile，设置页写 |
 
 `modelOverrides` 是「站点没声明、目录还没收录」时的兜底手段，改完重启即生效，**不需要发新版本**：
@@ -131,6 +131,21 @@
 **为什么分组必须选**：同一个模型常被好几个分组转售，价格差好几倍，站点靠 `x-neartoken-group` 头决定路由。所以设置页里「模型 → 分组」是显式配置，而不是取第一个分组了事。保存时 Host 会校验：模型必须仍在站点当前清单里、分组必须是**该模型自己**的分组，否则拒绝（400），宁可让你重选，也不存一条调到必然失败的路由。
 
 限制：v1 只做文生图，**不支持参考图/改图**（`images/edits` 与 data-URL 参考图都未接）；一次只出一张。
+
+### 超时
+
+生图是几十秒到几分钟的活，所以有两条时间线，故意错开：
+
+| 层 | 值 | 超时后模型看到什么 |
+|---|---|---|
+| 插件自己的预算 | `imageTimeoutMs`（默认 300 秒） | `the site did not return an image within 300s (imageTimeoutMs); … retry, raise imageTimeoutMs, or enable a faster image model` |
+| 工具调用截止时间 | `imageTimeoutMs + 30 秒`，声明给 harness 的 timeout policy | 通用的 `tool call timed out after …ms` |
+
+自己那条早 30 秒触发，所以正常情况模型拿到的是**能指路**的那条（等了多久、该调哪个旋钮）；harness 那条只兜住「工具无视 abort 继续跑」。预算耗尽和调用方取消是分开处理的（`AbortSignal.any` 里单独持有预算信号），取消原样向上传递，不会被写成超时。
+
+实测：促销组 43 秒出过图，也遇到过 114 秒；另有一次上游 504（`openai_error`），重试即成功 —— 渠道故障插件不重试、不跨分组兜底，原样报给模型。
+
+还有一条时间线不在插件里：模型若用 `run_code` 这类 PTC 工具去调 `generate_image`，外层 `run_code` 的默认 120 秒会先到。当普通工具直接调则没有这层。
 
 ## 已知限制
 

@@ -26,6 +26,8 @@ export interface ImageToolDeps {
     };
     /** The generation client shared with the rest of the plugin. */
     client: NearTokenImageClient;
+    /** How long one generation may take, in milliseconds; also sizes the tool deadline. */
+    timeoutMs: () => number;
 }
 /**
  * Choose the model and group one call uses.

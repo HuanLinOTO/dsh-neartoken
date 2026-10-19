@@ -30,12 +30,25 @@ const EXTENSIONS: Readonly<Record<ImageMediaType, string>> = {
   'image/gif': 'gif',
 }
 
+/**
+ * Slack between the generation budget and the tool-call deadline.
+ *
+ * The harness's timeout policy arms `timeoutMs` on `exec.signal` and, when it
+ * fires, replaces the result with a bare "tool call timed out". Keeping our own
+ * budget slightly shorter means the model usually gets the useful message — how
+ * long it waited, and that `imageTimeoutMs` is the knob — while the policy still
+ * catches a generation that ignores its abort.
+ */
+const DEADLINE_MARGIN_MS = 30_000
+
 /** External facts the tool reads at call time. */
 export interface ImageToolDeps {
   /** The stored setting: whether the tool is on, and each enabled model's group. */
   settings: () => { readonly enabled: boolean; readonly models: Readonly<Record<string, string>> }
   /** The generation client shared with the rest of the plugin. */
   client: NearTokenImageClient
+  /** How long one generation may take, in milliseconds; also sizes the tool deadline. */
+  timeoutMs: () => number
 }
 
 /**
@@ -160,6 +173,10 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
       render: (_args, value) => generateImageContent(value),
       presentationMeta: (_args, value) => ({ model: value.model, group: value.group }),
     },
+    // One picture routinely takes 20-60 seconds, and a slow group can take
+    // minutes, so the deadline the timeout policy arms is the generation budget
+    // plus a margin rather than any default.
+    timeoutMs: deps.timeoutMs() + DEADLINE_MARGIN_MS,
     // Two pictures can be drawn at once: each call owns its own request and
     // writes content-addressed attachments.
     isConcurrencySafe: () => true,
