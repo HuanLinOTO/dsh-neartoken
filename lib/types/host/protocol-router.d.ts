@@ -12,6 +12,7 @@
  * @module
  */
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { WireImages } from './wire-images.ts';
 /** The four wires the gateway may be asked in. */
 export type WireProtocol = 'chat' | 'anthropic' | 'genai' | 'responses';
 /** One wire: where a call goes, how it is signed, built, and read back. */
@@ -22,8 +23,8 @@ export interface Wire {
     url(baseURL: string, model: string): string;
     /** Credential and routing headers for one call. */
     headers(key: string, groupRef: string | undefined): Record<string, string>;
-    /** The request body for one harness call. */
-    serialize(options: GenerateOptions, model: string): Record<string, unknown>;
+    /** The request body for one harness call, with the request's images inlined. */
+    serialize(options: GenerateOptions, model: string, images: WireImages): Record<string, unknown>;
     /** Parse the streamed answer into harness chunks. */
     parse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk>;
 }

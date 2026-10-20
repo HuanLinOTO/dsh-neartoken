@@ -15,6 +15,8 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { imageOf } from './wire-images.ts'
+import type { WireImages } from './wire-images.ts'
 
 /** One genai content object, as sent. */
 type WireContent = Record<string, unknown>
@@ -63,14 +65,23 @@ function toolNamesOf(messages: readonly RequestMessage[]): Map<string, string> {
  * @param toolNames - call id to function name, for tool results.
  * @returns the wire content, or undefined when it carries nothing.
  */
-function serializeMessage(message: RequestMessage, toolNames: Map<string, string>): WireContent | undefined {
+function serializeMessage(
+  message: RequestMessage, toolNames: Map<string, string>, images: WireImages = new Map(),
+): WireContent | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
     case 'system':
     case 'developer': {
       const text = textOf(content)
-      return text === '' ? undefined : { role: 'user', parts: [{ text }] }
+      const parts: Record<string, unknown>[] = []
+      if (text !== '') parts.push({ text })
+      // generateContent takes inline bytes under its own camelCase member.
+      for (const block of content) {
+        const image = imageOf(block, images)
+        if (image !== undefined) parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
+      }
+      return parts.length === 0 ? undefined : { role: 'user', parts }
     }
     case 'assistant': {
       const parts: Record<string, unknown>[] = []
@@ -156,11 +167,13 @@ function thinkingConfigOf(model: string, effort: string | undefined): Record<str
  * it in the URL, so the body does not repeat it.
  * @returns the ready-to-JSON body object.
  */
-export function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown> {
+export function serializeRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
   const toolNames = toolNamesOf(options.messages)
   const contents: WireContent[] = []
   for (const message of options.messages) {
-    const wire = serializeMessage(message, toolNames)
+    const wire = serializeMessage(message, toolNames, images)
     if (wire !== undefined) contents.push(wire)
   }
   const generationConfig: Record<string, unknown> = {}

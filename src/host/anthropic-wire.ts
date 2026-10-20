@@ -18,6 +18,8 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { imageOf } from './wire-images.ts'
+import type { WireImages } from './wire-images.ts'
 
 /** One Anthropic content block, as sent. */
 type WireBlock = Record<string, unknown>
@@ -45,13 +47,22 @@ function textOf(content: readonly unknown[]): string {
  * @param message - one conversation message.
  * @returns the wire message, or undefined when it carries nothing.
  */
-function serializeMessage(message: RequestMessage): WireBlock | undefined {
+function serializeMessage(message: RequestMessage, images: WireImages = new Map()): WireBlock | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
     case 'system': {
       const text = textOf(content)
-      return text === '' ? undefined : { role: 'user', content: [{ type: 'text', text }] }
+      const blocks: WireBlock[] = []
+      if (text !== '') blocks.push({ type: 'text', text })
+      // Anthropic takes the bytes themselves, with the media type beside them.
+      for (const block of content) {
+        const image = imageOf(block, images)
+        if (image !== undefined) {
+          blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
+        }
+      }
+      return blocks.length === 0 ? undefined : { role: 'user', content: blocks }
     }
     case 'assistant': {
       const blocks: WireBlock[] = []
@@ -105,12 +116,14 @@ function claudeEffort(effort: string): string {
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
  */
-export function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown> {
+export function serializeRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
   const messages: WireBlock[] = []
   for (const message of options.messages) {
     // The messages API has no system role inside the turn list; such a message
     // is folded into the user turn shape rather than dropped.
-    const wire = serializeMessage(message)
+    const wire = serializeMessage(message, images)
     if (wire !== undefined) messages.push(wire)
   }
   const body: Record<string, unknown> = { model, messages, stream: true }

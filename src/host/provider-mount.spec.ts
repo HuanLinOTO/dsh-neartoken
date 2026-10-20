@@ -34,6 +34,7 @@ function providerOver() {
     catalogTtlMs: () => 300_000,
     defaultContextWindow: () => 200_000,
     modelOverride: () => undefined,
+    attachments: () => undefined,
   })
   return { provider, replacements, counts: () => ({ registered, released }) }
 }

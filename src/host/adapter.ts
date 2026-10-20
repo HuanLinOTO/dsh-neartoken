@@ -26,6 +26,8 @@ import {
 } from './model-caps.ts'
 import type { ModalitySources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
+import { inlineImages } from './wire-images.ts'
+import type { ImageSource } from './wire-images.ts'
 import { selectedRoutes } from './whitelist.ts'
 
 /** Display name of the single provider route this adapter owns. */
@@ -97,6 +99,8 @@ export interface NearTokenDeps {
   defaultContextWindow: () => number
   /** The operator's configuration for one bare model name, when they wrote any. */
   modelOverride: (model: string) => NearTokenModelOverride | undefined
+  /** The attachment service, which owns the bytes behind a message's images. */
+  attachments: () => ImageSource | undefined
 }
 
 /**
@@ -208,13 +212,17 @@ export class NearTokenAdapter extends LlmAdapter {
     const route = (await this.deps.routes()).find(entry => entry.id === options.model)
     const groupRef = route?.groupRef
     const wire = wireFor(model)
+    // Images are inlined before the body is built: a wire that cannot see them
+    // must not quietly send text only, which is exactly what a dropped
+    // screenshot looks like to the model on the other end.
+    const images = await inlineImages(this.deps.attachments(), options.messages, options.signal)
     const response = await fetch(wire.url(this.deps.baseURL(), model), {
       method: 'POST',
       headers: {
         ...attributionHeaders(),
         ...wire.headers(key, groupRef),
       },
-      body: JSON.stringify(wire.serialize(options, model)),
+      body: JSON.stringify(wire.serialize(options, model, images)),
       signal: options.signal,
     })
     yield* wire.parse(response, options.signal)

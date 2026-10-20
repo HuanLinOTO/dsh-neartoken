@@ -10,6 +10,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { NearTokenModelOverride } from './adapter.ts';
+import type { ImageSource } from './wire-images.ts';
 import type { NearTokenRoute } from './pricing.ts';
 /** External facts the route is built from. */
 export interface NearTokenProviderDeps {
@@ -31,6 +32,8 @@ export interface NearTokenProviderDeps {
     defaultContextWindow: () => number;
     /** The operator's configuration for one bare model name, when they wrote any. */
     modelOverride: (model: string) => NearTokenModelOverride | undefined;
+    /** The attachment service, when the composition provides one. */
+    attachments: () => ImageSource | undefined;
 }
 /** The NearToken provider route, mounted at most once per process. */
 export declare class NearTokenProvider {

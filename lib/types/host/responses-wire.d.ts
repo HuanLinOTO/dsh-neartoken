@@ -1,11 +1,12 @@
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { WireImages } from './wire-images.ts';
 /**
  * Serialize one harness request into a responses body.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
  */
-export declare function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown>;
+export declare function serializeRequest(options: GenerateOptions, model: string, images?: WireImages): Record<string, unknown>;
 /**
  * Parse one streamed responses response into harness chunks.
  * @param response - the streaming fetch response.

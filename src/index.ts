@@ -21,6 +21,7 @@ import { registerGenerateImageTool } from './host/image-tool.ts'
 import { NearTokenImageClient } from './host/images.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
+import type { ImageSource } from './host/wire-images.ts'
 import { NearTokenWhitelist } from './host/whitelist.ts'
 import type { WhitelistSettings } from './host/whitelist.ts'
 
@@ -173,6 +174,9 @@ export function apply(ctx: Context, config: Options): void {
     catalogTtlMs: () => config.catalogTtlMs,
     defaultContextWindow: () => config.defaultContextWindow,
     modelOverride: (model) => config.modelOverrides[model],
+    // The adapter reads a message's images from here; without it a request
+    // carrying one fails loudly instead of arriving as text only.
+    attachments: () => ctx.get('attachments') as ImageSource | undefined,
   })
   // The whitelist lives in this plugin's own profile entry, so a save is an
   // ordinary Settings write: it persists in the profile patch and the Loader

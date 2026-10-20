@@ -13,6 +13,7 @@
  */
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { parseSse as parseAnthropic, serializeRequest as serializeAnthropic } from './anthropic-wire.ts'
+import type { WireImages } from './wire-images.ts'
 import { parseSse as parseGenai, serializeRequest as serializeGenai } from './genai-wire.ts'
 import { parseSse as parseResponses, serializeRequest as serializeResponses } from './responses-wire.ts'
 import { parseSse as parseChat, serializeRequest as serializeChat } from './openai-wire.ts'
@@ -28,8 +29,8 @@ export interface Wire {
   url(baseURL: string, model: string): string
   /** Credential and routing headers for one call. */
   headers(key: string, groupRef: string | undefined): Record<string, string>
-  /** The request body for one harness call. */
-  serialize(options: GenerateOptions, model: string): Record<string, unknown>
+  /** The request body for one harness call, with the request's images inlined. */
+  serialize(options: GenerateOptions, model: string, images: WireImages): Record<string, unknown>
   /** Parse the streamed answer into harness chunks. */
   parse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk>
 }

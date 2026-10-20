@@ -1,8 +1,8 @@
 /**
  * Minimal OpenAI chat-completions wire for the NearToken adapter: request
  * serialization from the harness message vocabulary and SSE response parsing
- * into `StreamChunk`s. Prototype scope: text and tool calls round-trip
- * faithfully; images and files are sent as placeholder text.
+ * into `StreamChunk`s. Text, images, and tool calls round-trip; files do not
+ * (a file block contributes no wire member).
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { LlmError } from '@deepseek-ai/dsh-llm'
@@ -10,6 +10,8 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { dataUrlOf, imageOf } from './wire-images.ts'
+import type { WireImages } from './wire-images.ts'
 
 /** One wire-format chat message. */
 type WireMessage = Record<string, unknown>
@@ -35,13 +37,15 @@ function textOf(content: readonly unknown[]): string {
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
  */
-export function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown> {
+export function serializeRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
   const messages: WireMessage[] = []
   if (options.system !== undefined && options.system.length > 0) {
     messages.push({ role: 'system', content: options.system })
   }
   for (const message of options.messages) {
-    const wire = serializeMessage(message)
+    const wire = serializeMessage(message, images)
     if (wire !== undefined) messages.push(wire)
   }
   const body: Record<string, unknown> = {
@@ -68,7 +72,25 @@ export function serializeRequest(options: GenerateOptions, model: string): Recor
  * @param message - one conversation or user-input message.
  * @returns the wire message, or undefined for a message with nothing to send.
  */
-function serializeMessage(message: RequestMessage): WireMessage | undefined {
+/**
+ * Build one user turn's content: plain text when it carries only text, a part
+ * list once a picture has to ride along.
+ * @param content - the message's content blocks.
+ * @param images - the request's inlined images.
+ * @returns the wire content member.
+ */
+function userContentOf(content: readonly unknown[], images: WireImages): string | readonly unknown[] {
+  const text = textOf(content)
+  const parts: unknown[] = []
+  if (text !== '') parts.push({ type: 'text', text })
+  for (const block of content) {
+    const image = imageOf(block, images)
+    if (image !== undefined) parts.push({ type: 'image_url', image_url: { url: dataUrlOf(image) } })
+  }
+  return parts.some(part => (part as { type?: string }).type === 'image_url') ? parts : text
+}
+
+function serializeMessage(message: RequestMessage, images: WireImages): WireMessage | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'system':
@@ -77,7 +99,7 @@ function serializeMessage(message: RequestMessage): WireMessage | undefined {
       return text === '' ? undefined : { role: 'system', content: text }
     }
     case 'user':
-      return { role: 'user', content: textOf(content) }
+      return { role: 'user', content: userContentOf(content, images) }
     case 'assistant': {
       const toolCalls = content
         .filter((block): block is ToolCallBlock => typeof block === 'object' && block !== null

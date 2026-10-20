@@ -181,7 +181,7 @@
 
 ## 已知限制
 
-- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；图片与文件仍以占位文本发送；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
+- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；**用户消息里的图片按各协议原样发送** —— chat 用 `image_url` part、anthropic 用 `source.base64`、genai 用 `inlineData`、responses 用 `input_image`。字节由 `attachments.readImage` 在请求前内联；没有 attachments 服务或读不出来会**让请求失败**，不再静默降级成纯文本（曾经就是这样：贴的截图模型根本收不到）。文件块（非图片附件）仍不发；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
 - 四套 wire 的 SSE 解析都有「帧样本 → 期望 chunk 序列」回归测试（`src/host/wire-parse.spec.ts`），帧样本取自生产网关的真实响应。网关在内容帧上发 `"usage": null`，只有末帧带真值：任何一处把 `usage` 当对象直接读都会让整条流中途崩掉（曾导致 claude 模型全不可用）。
 - 推理等级按各协议自己的词汇发送：**anthropic 发 `thinking.type=adaptive` + `output_config.effort`**（不能再用 `thinking.type=enabled` + `budget_tokens`：Claude 5 代直接 400 `requires adaptive thinking`，而 adaptive 在老代际上同样可用，所以统一用它；`minimal` 收敛成 `low`）；genai 发 `thinkingConfig` 且带 `includeThoughts`（不带你拿不到思维链）；chat 与 responses 发 `reasoning_effort` / `reasoning.effort`。
 - **Gemini 4 换成 `thinkingLevel`**：这一代不再接受 token 预算（发 budget 会 400 `Use thinking level instead`），按 `gemini-<主版本>` ≥ 4 自动切换字段，等级名用 `low` / `medium` / `high` / `max`。

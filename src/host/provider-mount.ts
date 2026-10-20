@@ -12,6 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { NearTokenAdapter } from './adapter.ts'
 import type { NearTokenModelOverride } from './adapter.ts'
+import type { ImageSource } from './wire-images.ts'
 import type { NearTokenRoute } from './pricing.ts'
 import { PricingDirectory } from './pricing.ts'
 
@@ -35,6 +36,8 @@ export interface NearTokenProviderDeps {
   defaultContextWindow: () => number
   /** The operator's configuration for one bare model name, when they wrote any. */
   modelOverride: (model: string) => NearTokenModelOverride | undefined
+  /** The attachment service, when the composition provides one. */
+  attachments: () => ImageSource | undefined
 }
 
 /** The NearToken provider route, mounted at most once per process. */
@@ -88,6 +91,7 @@ export class NearTokenProvider {
       baseURL: this.deps.baseURL,
       defaultContextWindow: this.deps.defaultContextWindow,
       modelOverride: this.deps.modelOverride,
+      attachments: this.deps.attachments,
     })
     this.routes = this.ctx.llm.registerAdapter([this.deps.provider], adapter)
     this.directory = this.ctx.llm.registerConfigurableProviders([{

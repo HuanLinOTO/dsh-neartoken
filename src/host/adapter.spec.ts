@@ -43,6 +43,7 @@ function adapterOver(routes: readonly NearTokenRoute[], enabled: readonly string
     baseURL: () => 'https://example.test',
     defaultContextWindow: () => 200_000,
     modelOverride: () => undefined,
+    attachments: () => undefined,
   })
 }
 
@@ -130,6 +131,7 @@ describe('resolveModel capacity', () => {
     baseURL: () => 'https://example.test',
     defaultContextWindow: () => 64_000,
     modelOverride: (model) => model === 'grok-4.6' ? { contextWindow: 1_048_576, maxTokens: 65_536, reasoning: ['low', 'high'] } : undefined,
+    attachments: () => undefined,
   })
 
   it('reports the capacity the site declared', async () => {
@@ -179,6 +181,7 @@ describe('stream', () => {
     const adapter = new NearTokenAdapter({
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
+      attachments: () => undefined,
     })
     await dispatch(adapter, '[低价] Grok::grok-4.6')
     expect((body as { model?: string }).model).toBe('grok-4.6')
@@ -206,6 +209,7 @@ describe('stream wire selection', () => {
     const adapter = new NearTokenAdapter({
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
+      attachments: () => undefined,
     })
     await dispatch(adapter, id)
     return one

@@ -69,19 +69,19 @@ describe('wire targets', () => {
   })
 
   it('builds a body in each API own vocabulary', () => {
-    const claude = wireFor('claude-sonnet-4.5').serialize(request('claude-sonnet-4.5'), 'claude-sonnet-4.5')
+    const claude = wireFor('claude-sonnet-4.5').serialize(request('claude-sonnet-4.5'), 'claude-sonnet-4.5', new Map())
     expect(claude).toMatchObject({ model: 'claude-sonnet-4.5', stream: true })
     // The gateway does not require max_tokens; inventing one would truncate.
     expect(claude.max_tokens).toBeUndefined()
 
-    const gemini = wireFor('gemini-3.8-flash').serialize(request('gemini-3.8-flash'), 'gemini-3.8-flash')
+    const gemini = wireFor('gemini-3.8-flash').serialize(request('gemini-3.8-flash'), 'gemini-3.8-flash', new Map())
     expect(gemini).toMatchObject({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] })
 
-    const gpt = wireFor('gpt-5.2').serialize(request('gpt-5.2'), 'gpt-5.2')
+    const gpt = wireFor('gpt-5.2').serialize(request('gpt-5.2'), 'gpt-5.2', new Map())
     expect(gpt).toMatchObject({ model: 'gpt-5.2', input: [{ role: 'user', content: 'hi' }], stream: true })
     expect(gpt).not.toHaveProperty('messages')
 
-    const chat = wireFor('grok-4.6').serialize(request('grok-4.6'), 'grok-4.6')
+    const chat = wireFor('grok-4.6').serialize(request('grok-4.6'), 'grok-4.6', new Map())
     expect(chat).toMatchObject({ model: 'grok-4.6', messages: [{ role: 'user', content: 'hi' }] })
   })
 })

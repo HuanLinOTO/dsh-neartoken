@@ -1,6 +1,7 @@
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { NearTokenRoute } from './pricing.ts';
+import type { ImageSource } from './wire-images.ts';
 /** Display name of the single provider route this adapter owns. */
 export declare const NEARTOKEN_PROVIDER_NAME = "NearToken";
 /** What an operator may state about one bare model name in the plugin configuration. */
@@ -35,6 +36,8 @@ export interface NearTokenDeps {
     defaultContextWindow: () => number;
     /** The operator's configuration for one bare model name, when they wrote any. */
     modelOverride: (model: string) => NearTokenModelOverride | undefined;
+    /** The attachment service, which owns the bytes behind a message's images. */
+    attachments: () => ImageSource | undefined;
 }
 /**
  * Decode one catalog model id into its routing parts.

@@ -1,4 +1,5 @@
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { WireImages } from './wire-images.ts';
 /**
  * Serialize one harness request into a genai request body.
  * @param options - the harness request.
@@ -6,7 +7,7 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
  * it in the URL, so the body does not repeat it.
  * @returns the ready-to-JSON body object.
  */
-export declare function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown>;
+export declare function serializeRequest(options: GenerateOptions, model: string, images?: WireImages): Record<string, unknown>;
 /**
  * Parse one streamed genai response into harness chunks.
  * @param response - the streaming fetch response.

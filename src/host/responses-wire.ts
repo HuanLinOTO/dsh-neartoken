@@ -11,6 +11,8 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { dataUrlOf, imageOf } from './wire-images.ts'
+import type { WireImages } from './wire-images.ts'
 
 /** One responses input item, as sent. */
 type InputItem = Record<string, unknown>
@@ -38,14 +40,22 @@ function textOf(content: readonly unknown[]): string {
  * @param message - one conversation message.
  * @returns the items, empty when the message carries nothing.
  */
-function serializeMessage(message: RequestMessage): InputItem[] {
+function serializeMessage(message: RequestMessage, images: WireImages = new Map()): InputItem[] {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
     case 'system':
     case 'developer': {
       const text = textOf(content)
-      return text === '' ? [] : [{ role: 'user', content: text }]
+      const parts: Record<string, unknown>[] = []
+      if (text !== '') parts.push({ type: 'input_text', text })
+      // The responses API names its own text and image part types.
+      for (const block of content) {
+        const image = imageOf(block, images)
+        if (image !== undefined) parts.push({ type: 'input_image', image_url: dataUrlOf(image) })
+      }
+      const hasImage = parts.some(part => part.type === 'input_image')
+      return parts.length === 0 ? [] : [{ role: 'user', content: hasImage ? parts : text }]
     }
     case 'assistant': {
       const text = textOf(content)
@@ -76,9 +86,11 @@ function serializeMessage(message: RequestMessage): InputItem[] {
  * @param model - the real model id the provider should route to.
  * @returns the ready-to-JSON body object.
  */
-export function serializeRequest(options: GenerateOptions, model: string): Record<string, unknown> {
+export function serializeRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
   const input: InputItem[] = []
-  for (const message of options.messages) input.push(...serializeMessage(message))
+  for (const message of options.messages) input.push(...serializeMessage(message, images))
   const body: Record<string, unknown> = { model, input, stream: true }
   if (options.system !== undefined && options.system.length > 0) body.instructions = options.system
   if (options.tools !== undefined && options.tools.length > 0) {
