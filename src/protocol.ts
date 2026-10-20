@@ -107,8 +107,11 @@ export type BeginAuthorizationOutcome =
   | { readonly status: 'pending'; readonly pending: NearTokenPendingAuthorization }
   | { readonly status: 'failed'; readonly message: string }
 
-/** Which request shape one picture model speaks: the images endpoint or a chat completion. */
-export type NearTokenImageChannel = 'images' | 'chat'
+/**
+ * Which request shape one picture model speaks: the images endpoint, Gemini's
+ * own generateContent, or a chat completion.
+ */
+export type NearTokenImageChannel = 'images' | 'genai' | 'chat'
 
 /** One picture model the image-generation setting can enable. */
 export interface NearTokenImageModelEntry {

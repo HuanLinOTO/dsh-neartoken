@@ -32,8 +32,12 @@ describe('imageChannel', () => {
     expect(imageChannel(['image-generation', 'openai'])).toBe('images')
   })
 
-  it('routes everything else to chat completions', () => {
-    expect(imageChannel(['gemini', 'openai'])).toBe('chat')
+  it('routes a Gemini model to its own generateContent surface', () => {
+    expect(imageChannel(['gemini', 'openai'])).toBe('genai')
+  })
+
+  it('routes anything else to chat completions', () => {
+    expect(imageChannel(['openai'])).toBe('chat')
     expect(imageChannel(undefined)).toBe('chat')
   })
 })

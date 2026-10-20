@@ -14,7 +14,7 @@
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment';
 import type { NearTokenRoute } from './pricing.ts';
 /** How one image model is asked for a picture. */
-export type ImageChannel = 'images' | 'chat';
+export type ImageChannel = 'images' | 'genai' | 'chat';
 /**
  * Whether a catalog route is a picture generator.
  * @param model - the bare model name.
@@ -24,10 +24,23 @@ export type ImageChannel = 'images' | 'chat';
 export declare function isImageModel(model: string, endpoints?: readonly string[]): boolean;
 /**
  * Which request shape one image model speaks.
+ *
+ * The Gemini family declares `gemini` and a compatible `openai` surface; the
+ * native one answers the picture as a structured `inlineData` part, where the
+ * compatible one wraps it in assistant text as a data URL. Native measured 74 s
+ * against chat's 110 s for the same model and prompt, and it does not depend on
+ * a gateway conversion, so it is the route when the site declares it.
  * @param endpoints - the surfaces the site declares for the model.
- * @returns `images` for a model the catalog marks `image-generation`, `chat` otherwise.
+ * @returns `images` for an `image-generation` model, `genai` for a Gemini one, `chat` otherwise.
  */
 export declare function imageChannel(endpoints?: readonly string[]): ImageChannel;
+/** One reference picture, in the form every channel can encode for itself. */
+export interface ImagePayload {
+    /** Media type the bytes were verified as. */
+    readonly mediaType: string;
+    /** Base64 payload without a data-URL prefix. */
+    readonly data: string;
+}
 /** One picture the site answered with, before its bytes exist. */
 export type ImageReply = {
     readonly kind: 'base64';
@@ -94,8 +107,8 @@ export declare class NearTokenImageClient {
         readonly size?: string;
         readonly quality?: string;
         readonly background?: string;
-        /** Reference pictures as data URLs, in the order the caller gave them. */
-        readonly images?: readonly string[];
+        /** Reference pictures, in the order the caller gave them. */
+        readonly images?: readonly ImagePayload[];
         readonly signal?: AbortSignal;
     }): Promise<NearTokenGeneratedImage>;
     /**

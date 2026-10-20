@@ -74,6 +74,7 @@ export declare const zh: {
     'images.intro': string;
     'images.enable': string;
     'images.channel.images': string;
+    'images.channel.genai': string;
     'images.channel.chat': string;
     'images.save': string;
     'images.saving': string;
@@ -160,6 +161,7 @@ export declare const en: {
     'images.intro': string;
     'images.enable': string;
     'images.channel.images': string;
+    'images.channel.genai': string;
     'images.channel.chat': string;
     'images.save': string;
     'images.saving': string;

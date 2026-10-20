@@ -26,7 +26,7 @@ import type { GenericCallView, ToolExecution } from '@deepseek-ai/dsh-tools'
 // Type-only: pulls the ctx.workingDirectory service face used for relative paths.
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { sniffImageMediaType } from './images.ts'
-import type { NearTokenImageClient } from './images.ts'
+import type { ImagePayload, NearTokenImageClient } from './images.ts'
 
 /** File extension per accepted media type, so a stored picture has a name that matches its bytes. */
 const EXTENSIONS: Readonly<Record<ImageMediaType, string>> = {
@@ -165,12 +165,12 @@ async function resolveOptions(
  * @param ctx - a context carrying `fs`.
  * @param exec - the current tool execution.
  * @param paths - model-supplied file paths.
- * @returns one data URL per picture.
+ * @returns one payload per picture.
  * @throws {Error} when a path cannot be read as a supported image.
  */
 async function readReferences(
   ctx: Context, exec: ToolExecution, paths: readonly string[],
-): Promise<readonly string[]> {
+): Promise<readonly ImagePayload[]> {
   if (paths.length === 0) return []
   if (paths.length > MAX_REFERENCE_IMAGES) {
     throw new Error(`at most ${String(MAX_REFERENCE_IMAGES)} reference images per call; ${String(paths.length)} were given`)
@@ -178,7 +178,7 @@ async function readReferences(
   const fs = ctx.get('fs')
   if (fs === undefined) throw new Error('cannot read reference images: no filesystem service is mounted')
   const options = await resolveOptions(ctx, exec)
-  const urls: string[] = []
+  const pictures: ImagePayload[] = []
   for (const requested of paths) {
     const target = await fs.resolve(requested, options)
     const info = await fs.stat(target, exec.signal)
@@ -191,9 +191,9 @@ async function readReferences(
     if (mediaType === undefined) {
       throw new Error(`cannot use "${target.displayPath}" as a reference image: not a PNG/JPEG/WebP/GIF file`)
     }
-    urls.push(`data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}`)
+    pictures.push({ mediaType, data: Buffer.from(bytes).toString('base64') })
   }
-  return urls
+  return pictures
 }
 
 /**

@@ -137,8 +137,11 @@
 
 | 通道 | 判定 | 请求 | 响应 |
 |---|---|---|---|
-| `images` | `supported_endpoint_types` 含 `image-generation`（gpt-image 系） | `POST /v1/images/generations` | `data[0].b64_json` 或临时 `url` |
-| `chat` | 其余（nano-banana、`gemini-*-image`、grok-imagine） | `POST /v1/chat/completions` | 回复文本里的 `data:image/...;base64,` 或图片链接 |
+| `images` | 声明含 `image-generation`（gpt-image 系） | `POST /v1/images/generations` | `data[0].b64_json` 或临时 `url` |
+| `genai` | 声明含 `gemini`（nano-banana、`gemini-*-image`） | `POST /v1beta/models/<model>:generateContent` | `candidates[0].content.parts[].inlineData`（结构化） |
+| `chat` | 其余（只有 `openai` 的，如 grok-imagine） | `POST /v1/chat/completions` | 回复文本里的 `data:image/...;base64,` 或图片链接 |
+
+Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词实测 **74 秒**（原生，返回 `inlineData`）对 **110 秒**（chat，返回 markdown data URL）。原生拿的是结构化字段，不用从文本里抠图，也不依赖网关的转换实现。
 
 实测数据：`gpt-image-2.5-flare` 走促销分组 `#39` 约 43 秒返回 1.3 MB PNG（base64）；`nano-banana-pro` 打 images 端点会被站点拒绝（`only imagen models are supported`），走 chat 才出图；`grok-imagine-image` 两条都通。拿到 bytes 后按 magic bytes 判格式（PNG/JPEG/WebP/GIF），再交给 attachment 服务落盘。
 
@@ -148,10 +151,11 @@
 
 `images` 传工作区里的图片路径，工具读成 data URL 后按通道发送：
 
-- **images 通道**：作为 `image` 数组发给 `/v1/images/generations`（站点 DTO 里没有可用的 `edits` 路由，参考图只能搭生成请求）
+- **images 通道**：作为 `image` 数组（data URL）发给 `/v1/images/generations`（站点 DTO 里没有可用的 `edits` 路由，参考图只能搭生成请求）
+- **genai 通道**：作为 `inlineData` part 与提示词一起进 `contents[0].parts`
 - **chat 通道**：作为 `image_url` content part 与提示词一起进 `messages`
 
-实测（`nano-banana-pro` + 一张 2.1 MB 的 PNG 参考图）：chat 通道 110 秒出图，返回 jpeg。参考图在**发请求前**读盘并校验（存在、是普通文件、是 PNG/JPEG/WebP/GIF、≤ 20 MB），所以缺文件不会白花一次生成。
+实测（`nano-banana-pro` + 一张 2.1 MB 的 PNG 参考图）：chat 通道 110 秒出图返回 jpeg；同一模型单轮文生图走 genai 通道 74 秒返回 PNG。参考图在**发请求前**读盘并校验（存在、是普通文件、是 PNG/JPEG/WebP/GIF、≤ 20 MB），所以缺文件不会白花一次生成。
 
 ### 落盘
 

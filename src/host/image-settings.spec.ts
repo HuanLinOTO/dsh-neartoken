@@ -49,7 +49,7 @@ describe('imageCatalog', () => {
   it('names the request shape each model speaks', () => {
     expect(CATALOG[1]).toEqual({
       model: 'nano-banana-pro',
-      channel: 'chat',
+      channel: 'genai',
       groups: [{ group: '[生图] Gemini', ratio: '1x' }],
       minRatio: 1,
     })

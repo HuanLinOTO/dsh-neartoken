@@ -594,7 +594,9 @@ function ImageGeneration({ api, t }: NearTokenSectionInjected) {
                         ))}
                       </select>
                       <span className={css.rowMeta}>
-                        {t(entry.channel === 'images' ? 'images.channel.images' : 'images.channel.chat')}
+                        {t(entry.channel === 'images'
+                          ? 'images.channel.images'
+                          : entry.channel === 'genai' ? 'images.channel.genai' : 'images.channel.chat')}
                       </span>
                     </label>
                   ))}

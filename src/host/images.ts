@@ -26,7 +26,7 @@ const IMAGE_NAME = /image|imagine|nano-banana|imagen|flux|seedream|dall-?e|midjo
 const NON_IMAGE_NAME = /tts|transcri|\basr\b|speech|embed|rerank|veo|video|lyria|music|sora|whisper/i
 
 /** How one image model is asked for a picture. */
-export type ImageChannel = 'images' | 'chat'
+export type ImageChannel = 'images' | 'genai' | 'chat'
 
 /**
  * Whether a catalog route is a picture generator.
@@ -42,11 +42,19 @@ export function isImageModel(model: string, endpoints?: readonly string[]): bool
 
 /**
  * Which request shape one image model speaks.
+ *
+ * The Gemini family declares `gemini` and a compatible `openai` surface; the
+ * native one answers the picture as a structured `inlineData` part, where the
+ * compatible one wraps it in assistant text as a data URL. Native measured 74 s
+ * against chat's 110 s for the same model and prompt, and it does not depend on
+ * a gateway conversion, so it is the route when the site declares it.
  * @param endpoints - the surfaces the site declares for the model.
- * @returns `images` for a model the catalog marks `image-generation`, `chat` otherwise.
+ * @returns `images` for an `image-generation` model, `genai` for a Gemini one, `chat` otherwise.
  */
 export function imageChannel(endpoints?: readonly string[]): ImageChannel {
-  return endpoints?.includes('image-generation') === true ? 'images' : 'chat'
+  if (endpoints?.includes('image-generation') === true) return 'images'
+  if (endpoints?.includes('gemini') === true) return 'genai'
+  return 'chat'
 }
 
 /** The request members only the images endpoint understands. */
@@ -71,9 +79,18 @@ function assertChannelParameters(
   if (unsupported.length === 0) return
   throw new Error(
     `${unsupported.join(', ')} can only be sent to an image-generation model; `
-    + `${request.model} answers chat completions, so drop ${unsupported.length === 1 ? 'it' : 'them'} `
+    + `${request.model} answers ${channel === 'genai' ? 'Gemini generateContent' : 'chat completions'}, `
+    + `so drop ${unsupported.length === 1 ? 'it' : 'them'} `
     + 'or enable a model such as gpt-image-2.5-flare for these settings',
   )
+}
+
+/** One reference picture, in the form every channel can encode for itself. */
+export interface ImagePayload {
+  /** Media type the bytes were verified as. */
+  readonly mediaType: string
+  /** Base64 payload without a data-URL prefix. */
+  readonly data: string
 }
 
 /** One picture the site answered with, before its bytes exist. */
@@ -108,6 +125,21 @@ export function extractImageReply(body: unknown): ImageReply | undefined {
     if (typeof message !== 'object' || message === null) continue
     const reply = replyFromMessage(message as Record<string, unknown>)
     if (reply !== undefined) return reply
+  }
+  // Gemini answers with a structured part rather than text wrapping a link.
+  for (const candidate of Array.isArray(root.candidates) ? root.candidates : []) {
+    if (typeof candidate !== 'object' || candidate === null) continue
+    const content = (candidate as Record<string, unknown>).content
+    if (typeof content !== 'object' || content === null) continue
+    const parts = (content as Record<string, unknown>).parts
+    if (!Array.isArray(parts)) continue
+    for (const part of parts) {
+      if (typeof part !== 'object' || part === null) continue
+      const inline = (part as Record<string, unknown>).inlineData ?? (part as Record<string, unknown>).inline_data
+      if (typeof inline !== 'object' || inline === null) continue
+      const data = (inline as Record<string, unknown>).data
+      if (typeof data === 'string' && data.length > 0) return { kind: 'base64', data }
+    }
   }
   return undefined
 }
@@ -245,8 +277,8 @@ export class NearTokenImageClient {
     readonly size?: string
     readonly quality?: string
     readonly background?: string
-    /** Reference pictures as data URLs, in the order the caller gave them. */
-    readonly images?: readonly string[]
+    /** Reference pictures, in the order the caller gave them. */
+    readonly images?: readonly ImagePayload[]
     readonly signal?: AbortSignal
   }): Promise<NearTokenGeneratedImage> {
     const route = (await this.deps.routes())
@@ -284,7 +316,7 @@ export class NearTokenImageClient {
     readonly size?: string
     readonly quality?: string
     readonly background?: string
-    readonly images?: readonly string[]
+    readonly images?: readonly ImagePayload[]
     readonly channel: ImageChannel
     readonly route: NearTokenRoute | undefined
     readonly key: string
@@ -292,45 +324,67 @@ export class NearTokenImageClient {
     readonly send: typeof fetch
     readonly timeoutMs: number
   }): Promise<NearTokenGeneratedImage> {
-    const response = await request.send(
-      `${this.deps.baseURL()}/v1/${request.channel === 'images' ? 'images/generations' : 'chat/completions'}`,
-      {
-        method: 'POST',
-        headers: {
-          ...attributionHeaders(),
-          'content-type': 'application/json',
-          authorization: `Bearer ${request.key}`,
-          ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
-        },
-        body: JSON.stringify(request.channel === 'images'
+    const pictures = request.images ?? []
+    const path = request.channel === 'images'
+      ? '/v1/images/generations'
+      : request.channel === 'genai'
+        ? `/v1beta/models/${request.model}:generateContent`
+        : '/v1/chat/completions'
+    const response = await request.send(`${this.deps.baseURL()}${path}`, {
+      method: 'POST',
+      headers: {
+        ...attributionHeaders(),
+        'content-type': 'application/json',
+        // Gemini reads its own credential header; the compatible surfaces take
+        // a bearer token.
+        ...request.channel === 'genai'
+          ? { 'x-goog-api-key': request.key }
+          : { authorization: `Bearer ${request.key}` },
+        ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
+      },
+      body: JSON.stringify(request.channel === 'images'
+        ? {
+          model: request.model,
+          prompt: request.prompt,
+          n: 1,
+          ...request.size === undefined ? {} : { size: request.size },
+          ...request.quality === undefined ? {} : { quality: request.quality },
+          ...request.background === undefined ? {} : { background: request.background },
+          // The site's own field for reference pictures is `image`; the edit
+          // route is not usable here, so a picture to start from rides the
+          // generation call instead.
+          ...pictures.length === 0
+            ? {}
+            : { image: pictures.map(picture => `data:${picture.mediaType};base64,${picture.data}`) },
+        }
+        : request.channel === 'genai'
           ? {
-            model: request.model,
-            prompt: request.prompt,
-            n: 1,
-            ...request.size === undefined ? {} : { size: request.size },
-            ...request.quality === undefined ? {} : { quality: request.quality },
-            ...request.background === undefined ? {} : { background: request.background },
-            // The site's own field for reference pictures is `image`; the
-            // edit route is not usable here, so a picture to start from rides
-            // the generation call instead.
-            ...request.images === undefined || request.images.length === 0 ? {} : { image: [...request.images] },
+            contents: [{
+              role: 'user',
+              parts: [
+                { text: request.prompt },
+                ...pictures.map(picture => ({ inlineData: { mimeType: picture.mediaType, data: picture.data } })),
+              ],
+            }],
           }
           : {
             model: request.model,
             messages: [{
               role: 'user',
-              content: request.images === undefined || request.images.length === 0
+              content: pictures.length === 0
                 ? request.prompt
                 : [
                   { type: 'text', text: request.prompt },
-                  ...request.images.map(url => ({ type: 'image_url', image_url: { url } })),
+                  ...pictures.map(picture => ({
+                    type: 'image_url',
+                    image_url: { url: `data:${picture.mediaType};base64,${picture.data}` },
+                  })),
                 ],
             }],
             stream: false,
           }),
-        signal: request.signal,
-      },
-    )
+      signal: request.signal,
+    })
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 400)
       throw new Error(`the site refused ${request.model} with HTTP ${String(response.status)}: ${detail}`)
