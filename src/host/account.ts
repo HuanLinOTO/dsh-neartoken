@@ -9,13 +9,14 @@
  *
  * @module
  */
-import { readFile, unlink, writeFile } from 'node:fs/promises'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type {
   BeginAuthorizationOutcome, NearTokenAccountSummary, NearTokenPendingAuthorization, NearTokenStatus,
+  NearTokenVoucher,
 } from '../protocol.ts'
 import { DeviceAuthorizationClient, type DeviceAuthorization, type DevicePollOutcome } from './device-flow.ts'
 import { NewApiError, asObject, callNewApiBody, type JsonObject } from './new-api.ts'
@@ -28,6 +29,15 @@ const DEFAULT_TOKEN_NAME = 'DSH'
 
 /** How long one `/api/status` currency lookup stays fresh. */
 const CURRENCY_TTL_MS = 300_000
+
+/**
+ * How often the wallet facts are re-read while a key is stored. Five minutes
+ * matches how stale the card's money numbers may look on an open settings page.
+ */
+export const WALLET_REFRESH_MS = 300_000
+
+/** The live wallet read: quota, spent quota, and the per-group vouchers. */
+const DEVICE_WALLET_PATH = '/api/dsh/device/wallet'
 
 /** Extra wait added after the site answers `slow_down`. */
 const SLOW_DOWN_PENALTY_MS = 2_000
@@ -119,7 +129,28 @@ function asSummary(record: JsonObject): NearTokenAccountSummary | undefined {
     read.push(value)
   }
   const [username, displayName, group, balance, used] = read as [string, string, string, string, string]
-  return { username, displayName, group, balance, used }
+  const summary: NearTokenAccountSummary = { username, displayName, group, balance, used }
+  const vouchers = asVouchers(record.vouchers)
+  return vouchers === undefined ? summary : { ...summary, vouchers }
+}
+
+/**
+ * Read stored vouchers back, dropping every entry that is not one.
+ * @param value - the snapshot's `vouchers` member.
+ * @returns the vouchers, or undefined when the snapshot carries none (a grant
+ * wrote it, or an older plugin version did).
+ */
+function asVouchers(value: unknown): readonly NearTokenVoucher[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const vouchers: NearTokenVoucher[] = []
+  for (const item of value) {
+    const credit = asObject(item)
+    const group = text(credit?.group)
+    const amount = text(credit?.amount)
+    if (group === undefined || amount === undefined) continue
+    vouchers.push({ group, groupId: num(credit?.groupId) ?? 0, amount })
+  }
+  return vouchers
 }
 
 /**
@@ -173,6 +204,8 @@ export class NearTokenAccount {
   private summary: NearTokenAccountSummary | undefined
   /** The read that restores those facts from the stored key, while one is running. */
   private summaryLoad: Promise<void> | undefined
+  /** The last snapshot write, so two of them never race on one file. */
+  private summaryWrite: Promise<void> = Promise.resolve()
   /** The site-side token name behind the stored key. */
   private tokenName = DEFAULT_TOKEN_NAME
   /** Why the last attempt ended without a key. */
@@ -223,6 +256,81 @@ export class NearTokenAccount {
       ...pending === undefined ? {} : { pending },
       ...this.error === undefined ? {} : { error: this.error },
     }
+  }
+
+  /**
+   * Keep the card's money facts live: while a key is stored, re-read the site's
+   * wallet endpoint on a fixed cadence, starting immediately.
+   *
+   * The grant that minted the key carried the account facts exactly once, and
+   * wallet balances move with every billed request and every rebate — without
+   * this the card would freeze at the moment of authorization forever.
+   * @param intervalMs - cadence of one wallet read.
+   */
+  startWalletRefresh(intervalMs: number = WALLET_REFRESH_MS): void {
+    this.ctx.effect(() => {
+      const timer = setInterval(() => { void this.refreshWallet() }, intervalMs)
+      return () => { clearInterval(timer) }
+    }, 'neartoken: wallet refresh')
+    void this.refreshWallet()
+  }
+
+  /**
+   * Read the wallet once: balance, spent quota, and every per-group voucher,
+   * formatted in the site's own display currency.
+   *
+   * A site that does not serve the endpoint yet (or one that cannot be reached)
+   * keeps the last known facts: a refresh must never cost the card its numbers.
+   * @returns after the read settles, either way.
+   */
+  async refreshWallet(): Promise<void> {
+    const key = await this.read(this.site.apiKeyRef())
+    if (key === undefined) return
+    let body: JsonObject
+    try {
+      body = await callNewApiBody({
+        baseURL: this.site.baseURL(),
+        path: DEVICE_WALLET_PATH,
+        method: 'GET',
+        sessionToken: key,
+      })
+    } catch (_error) {
+      // An unreachable site, or a deployment older than the endpoint.
+      return
+    }
+    if (body.success !== true) return
+    const data = asObject(body.data)
+    const quota = num(data?.quota)
+    const used = num(data?.used_quota)
+    const credits = Array.isArray(data?.group_credits) ? data.group_credits : []
+    if (quota === undefined && used === undefined && credits.length === 0) return
+    // The summary names the account the numbers belong to; without it there is
+    // nothing to fold the answer into yet.
+    await this.loadSummary()
+    const summary = this.summary
+    if (summary === undefined) return
+    let currency: CurrencyInfo
+    try {
+      currency = await this.currencyInfo()
+    } catch (_error) {
+      currency = { quotaPerUnit: 1, rate: 1, display: false }
+    }
+    const vouchers: NearTokenVoucher[] = []
+    for (const item of credits) {
+      const credit = asObject(item)
+      const group = text(credit?.group)
+      const amount = num(credit?.amount)
+      if (group === undefined || amount === undefined || amount <= 0) continue
+      vouchers.push({ group, groupId: num(credit?.group_id) ?? 0, amount: money(amount, currency) })
+    }
+    this.summary = {
+      ...summary,
+      ...quota !== undefined ? { balance: money(quota, currency) } : {},
+      ...used !== undefined ? { used: money(used, currency) } : {},
+      vouchers,
+    }
+    // The snapshot is the restart fallback; a fresh wallet keeps it fresh too.
+    await this.persistSummary()
   }
 
   /**
@@ -420,29 +528,51 @@ export class NearTokenAccount {
     if (summary !== undefined) this.summary = summary
   }
 
-  /** Record the facts a grant carried, so they outlive this process. */
-  private async persistSummary(): Promise<void> {
-    const path = this.snapshotPath()
-    const summary = this.summary
-    if (path === undefined || summary === undefined) return
-    try {
-      await writeFile(path, JSON.stringify(summary), 'utf8')
-    } catch (error) {
-      this.ctx.logger.warn('neartoken: could not store the account facts', error)
-    }
+  /**
+   * Record the facts a grant carried, so they outlive this process.
+   *
+   * A grant and a wallet read can both want to store the card within the same
+   * tick, so writes are queued behind one another and each lands atomically: a
+   * reader (a restarted process) must never open a half-written file.
+   * @returns after this write landed, or was found unnecessary.
+   */
+  private persistSummary(): Promise<void> {
+    const write = this.summaryWrite.then(async () => {
+      const path = this.snapshotPath()
+      const summary = this.summary
+      if (path === undefined || summary === undefined) return
+      // The staging file sits beside the target, so the rename stays on one
+      // filesystem and replaces the old snapshot in a single step.
+      const staging = `${path}.tmp`
+      try {
+        await writeFile(staging, JSON.stringify(summary), 'utf8')
+        await rename(staging, path)
+      } catch (error) {
+        this.ctx.logger.warn('neartoken: could not store the account facts', error)
+      }
+    })
+    this.summaryWrite = write
+    return write
   }
 
-  /** Drop the snapshot once the key it describes is gone. */
-  private async forgetSummary(): Promise<void> {
-    const path = this.snapshotPath()
-    if (path === undefined) return
-    try {
-      await unlink(path)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.ctx.logger.warn('neartoken: could not remove the stored account facts', error)
+  /**
+   * Drop the snapshot once the key it describes is gone.
+   * @returns after the file is gone, behind any write still queued.
+   */
+  private forgetSummary(): Promise<void> {
+    const remove = this.summaryWrite.then(async () => {
+      const path = this.snapshotPath()
+      if (path === undefined) return
+      try {
+        await unlink(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.ctx.logger.warn('neartoken: could not remove the stored account facts', error)
+        }
       }
-    }
+    })
+    this.summaryWrite = remove
+    return remove
   }
 
   /** Read one credential reference, or undefined when nothing is stored. */

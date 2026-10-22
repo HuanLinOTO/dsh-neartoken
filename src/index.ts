@@ -20,6 +20,7 @@ import { imageCatalog, NearTokenImageSettings, parseImagePatch } from './host/im
 import { registerGenerateImageTool } from './host/image-tool.ts'
 import { NearTokenImageClient } from './host/images.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
+import { openInSystemBrowser } from './host/browser.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
 import type { ImageSource } from './host/wire-images.ts'
 import { NearTokenWhitelist } from './host/whitelist.ts'
@@ -233,6 +234,10 @@ export function apply(ctx: Context, config: Options): void {
     baseURL: () => config.baseURL,
     apiKeyRef: () => config.apiKeyEnv,
   }, () => { provider.mount() })
+  // The card's money facts would otherwise freeze at the moment of
+  // authorization: the wallet read keeps balance, spent quota, and the
+  // per-group vouchers live while a key is stored.
+  account.startWalletRefresh()
   // The route follows the stored key, not the other way round: mounting it for
   // an account with no key would advertise models whose every call fails.
   const sync = (): void => {
@@ -255,6 +260,11 @@ export function apply(ctx: Context, config: Options): void {
     registerNearTokenRoutes(webCtx, {
       account,
       onDisconnect: () => { provider.unmount() },
+      // The page cannot open the user's browser by itself: a window it opens
+      // stays inside the shell hosting it (a desktop build opens another app
+      // window, macOS may refuse outright). The Host is a process on the user's
+      // machine, so the platform launcher is asked here.
+      openInBrowser: openInSystemBrowser,
       models: () => whitelist.state(),
       // A save changes what `listModels` answers, and a browser only refetches
       // after `llm/adapters-updated` — so the route is re-announced here. Doing

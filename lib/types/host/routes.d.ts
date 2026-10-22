@@ -20,6 +20,11 @@ export interface NearTokenRouteDeps {
     account: NearTokenAccount;
     /** Runs after the stored key was removed, so the provider route can unmount. */
     onDisconnect: () => void;
+    /**
+     * Open one address in the user's own browser.
+     * @param address - the pending confirmation page.
+     */
+    openInBrowser: (address: string) => Promise<void>;
     /** The site's catalog beside the stored whitelist. */
     models: () => Promise<NearTokenModelsState>;
     /** Persist a whitelist; an empty list restores the whole catalog. */

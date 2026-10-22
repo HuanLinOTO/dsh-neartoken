@@ -9,6 +9,11 @@ export interface NearTokenApi {
     begin(): Promise<BeginAuthorizationOutcome>;
     /** Abandon the authorization in progress. */
     cancel(): Promise<void>;
+    /**
+     * Hand the pending confirmation page to the user's own browser. The page
+     * cannot do that itself: a window it opens stays inside the shell hosting it.
+     */
+    openBrowser(): Promise<void>;
     /** Forget the stored key and revoke it on the site. */
     signOut(): Promise<void>;
     /** Read the site's model catalog beside the stored whitelist. */

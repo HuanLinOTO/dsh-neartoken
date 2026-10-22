@@ -233,3 +233,53 @@ DSH 的自动压缩按“上下文窗口 × 阈值比例”算摘要预算。模
 4. 只支持图片/嵌入/重排的模型，即便填了容量也不该被聊天客户端提供 —— 由 `supported_endpoint_types` 判定，与容量无关。
 5. 后台给某多模态模型勾上 `image` → 该模型在 DSH 里立刻可以 `read_image`、可以贴图对话；取消勾选 → 图片在发出前被拦下，不会打到上游。
 6. 站点未声明时，插件用自己的能力表兜底，不会因此拒绝聊天。
+
+---
+
+# 第四部分：实时钱包（余额 + 代金券）
+
+## 8. 用 relay key 读取的钱包端点
+
+**已由 new-api 侧实现**（`controller/dsh_device.go` 的 `DshDeviceWallet`，路由挂 `middleware.TokenAuthReadOnly()`）。
+
+### 端点契约（字段名已冻结，不得改）
+
+```
+GET /api/dsh/device/wallet
+Authorization: Bearer <relay key>       # 与 /v1/chat/completions 同一把 key
+
+200 {
+  "success": true,
+  "data": {
+    "quota": 500000,
+    "used_quota": 120000,
+    "group_credits": [
+      { "group": "[低价] Grok", "group_id": 7, "amount": 300000 }
+    ]
+  }
+}
+```
+
+语义：
+
+1. 认证走 `TokenAuthReadOnly`：禁用的 token 401，封禁的用户 403；与 `/api/usage/token/` 同一套。
+2. `quota` / `used_quota` 是**用户维度**的原始额度（int，quota 单位），不受 `DisplayTokenStatEnabled` 影响——插件自行按 `/api/status` 的汇率格式化。
+3. `group_credits` 与 `/api/user/self/group-credits` 完全同语义：每项 `{group, group_id, amount}`，**只含 `amount > 0` 的行**，按 id 升序。
+4. 没有代金券时 `group_credits` 是 `[]`（空数组），不是 null。
+
+### DSH 侧的消费方式（已实现）
+
+| 项 | 行为 |
+|---|---|
+| 刷新节奏 | Host 每 **5 分钟**读一次（`startWalletRefresh`），启动时立即读一次 |
+| 快照回写 | 每次成功的钱包读都回写 `neartoken-account.json`，重启后无需授权即显示最新数字 |
+| 降级 | 端点 404 / 站点不可达 / `success:false` → 静默保留上一次已知值；老版本站点零影响 |
+| UI | 设置页卡片新增「代金券」行（分组名 + 金额，站点货币格式），页面每 5 分钟随 Host 重读一次 |
+
+### 验收用例
+
+1. 授权接入后，卡片余额在 5 分钟内随站点消费变化（此前永远停留在授权时刻）。
+2. 管理员发一张分组代金券 → 5 分钟内卡片「代金券」行出现该分组与金额。
+3. 该分组消费至券耗尽 → 刷新后该行消失（`amount > 0` 过滤）。
+4. 撤到没有本端点的旧版站点 → 卡片保留最后已知数字，无报错弹窗。
+5. 令牌被禁用 → 端点 401，插件静默降级；重新授权后恢复刷新。

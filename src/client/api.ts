@@ -1,11 +1,11 @@
 /**
- * The browser half of the settings-page carrier: four same-origin calls to the
- * Host routes declared in ../protocol.ts.
+ * The browser half of the settings-page carrier: same-origin calls to the Host
+ * routes declared in ../protocol.ts.
  *
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH,
 } from '../protocol.ts'
 import type {
   BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
@@ -23,6 +23,11 @@ export interface NearTokenApi {
   begin(): Promise<BeginAuthorizationOutcome>
   /** Abandon the authorization in progress. */
   cancel(): Promise<void>
+  /**
+   * Hand the pending confirmation page to the user's own browser. The page
+   * cannot do that itself: a window it opens stays inside the shell hosting it.
+   */
+  openBrowser(): Promise<void>
   /** Forget the stored key and revoke it on the site. */
   signOut(): Promise<void>
   /** Read the site's model catalog beside the stored whitelist. */
@@ -67,6 +72,17 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
     },
     async cancel() {
       await post<unknown>(CANCEL_PATH)
+    },
+    async openBrowser() {
+      // No body: the Host opens the page it is already waiting on, so this route
+      // can never be asked to launch an arbitrary address.
+      const response = await fetcher(OPEN_PATH, { method: 'POST' })
+      if (!response.ok) {
+        // The Host names why the platform launcher did not run; that reason is
+        // what the reader needs, not a status code.
+        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
+        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
+      }
     },
     async signOut() {
       await post<unknown>(LOGOUT_PATH)

@@ -22,8 +22,17 @@ import css from './NearTokenSection.module.css'
 /** How often the page re-reads the Host while an authorization is pending. */
 const PENDING_REFRESH_MS = 1_500
 
+/**
+ * How often the page re-reads the Host while connected, so the card shows the
+ * wallet numbers the Host re-reads at the same cadence.
+ */
+const CONNECTED_REFRESH_MS = 300_000
+
 /** How long a burst of checkbox clicks waits before one save is written. */
 const AUTOSAVE_DELAY_MS = 400
+
+/** How long the copy button acknowledges a copied address before resetting. */
+const COPIED_RESET_MS = 2_000
 
 /** What this section receives from its registration. */
 export interface NearTokenSectionInjected {
@@ -45,6 +54,8 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
   const [status, setStatus] = useState<NearTokenStatus | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+  /** Whether the confirmation address was just copied to the clipboard. */
+  const [copied, setCopied] = useState(false)
 
   /** Re-read the Host state and publish it. */
   const refresh = useCallback(async (): Promise<void> => {
@@ -63,6 +74,13 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
 
   const pendingCode = status?.pending?.userCode
   const waiting = pendingCode !== undefined
+  // A new attempt offers a new address, so the copy acknowledgement starts over.
+  useEffect(() => { setCopied(false) }, [pendingCode])
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => { setCopied(false) }, COPIED_RESET_MS)
+    return () => { clearTimeout(timer) }
+  }, [copied])
   // While the Host polls the site, the page polls the Host: the grant, the
   // refusal, and the expiry all arrive as a changed status.
   useEffect(() => {
@@ -70,6 +88,15 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
     const timer = setInterval(() => { void refresh() }, PENDING_REFRESH_MS)
     return () => { clearInterval(timer) }
   }, [waiting, pendingCode, refresh])
+
+  // While connected, the Host refreshes the wallet on its own cadence; the
+  // page re-reads the status at the same rate so those numbers reach the card.
+  const connected = status?.configured === true
+  useEffect(() => {
+    if (!connected) return
+    const timer = setInterval(() => { void refresh() }, CONNECTED_REFRESH_MS)
+    return () => { clearInterval(timer) }
+  }, [connected, refresh])
 
   /** Run one Host call with the busy flag and the error channel wired. */
   const run = useCallback(async (action: () => Promise<void>): Promise<void> => {
@@ -96,6 +123,39 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
       await api.cancel()
       await refresh()
     })
+  }
+
+  /**
+   * Hand the confirmation page to the user's own browser, through the Host: a
+   * window the page opens stays inside the shell hosting it — a desktop build
+   * shows another application window, and macOS may refuse outright. The
+   * address is printed below as well, for a machine with no launcher at all.
+   */
+  const openAddress = (): void => {
+    void (async (): Promise<void> => {
+      setError(undefined)
+      try {
+        await api.openBrowser()
+      } catch (failure: unknown) {
+        setError(t('account.openFailed', { message: messageOf(failure) }))
+      }
+    })()
+  }
+
+  /**
+   * Copy the confirmation address, for a machine where nothing can be launched.
+   */
+  const copyAddress = (): void => {
+    const address = status?.pending?.verificationUriComplete
+    if (address === undefined) return
+    void (async (): Promise<void> => {
+      try {
+        await navigator.clipboard.writeText(address)
+        setCopied(true)
+      } catch {
+        setError(t('account.copyFailed'))
+      }
+    })()
   }
   const signOut = (): void => {
     void run(async () => {
@@ -137,6 +197,21 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                   <dt className={css.factLabel}>{t('account.token')}</dt>
                   <dd className={css.factValue}>{status.tokenName}</dd>
                 </div>
+                {account !== undefined && (account.vouchers?.length ?? 0) > 0
+                  ? (
+                    <div className={`${css.fact} ${css.voucherFact}`}>
+                      <dt className={css.factLabel}>{t('account.vouchers')}</dt>
+                      <dd className={css.voucherList}>
+                        {account.vouchers?.map(voucher => (
+                          <span key={`${voucher.groupId}:${voucher.group}`} className={css.voucherRow}>
+                            <span className={css.voucherGroup}>{voucher.group}</span>
+                            <span className={css.voucherAmount}>{voucher.amount}</span>
+                          </span>
+                        ))}
+                      </dd>
+                    </div>
+                  )
+                  : null}
               </dl>
               <div className={css.actions}>
                 <button type="button" className={css.button} disabled={busy} onClick={signOut}>
@@ -172,13 +247,30 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                     <div className={css.actions}>
                       <button
                         type="button" className={`${css.button} ${css.buttonPrimary}`}
-                        onClick={() => { window.open(pending.verificationUriComplete, '_blank', 'noopener,noreferrer') }}
+                        onClick={openAddress}
                       >
                         {t('account.openBrowser')}
                       </button>
                       <button type="button" className={css.button} disabled={busy} onClick={cancel}>
                         {busy ? t('account.cancelling') : t('account.cancel')}
                       </button>
+                    </div>
+                    {/* Some platforms (macOS among them) let the automatic
+                        browser launch do nothing, so the address is also handed
+                        over as selectable text that can be copied by hand. */}
+                    <div className={css.linkRow}>
+                      <span className={css.label}>{t('account.manualLink')}</span>
+                      <div className={css.linkLine}>
+                        <a
+                          className={css.link} href={pending.verificationUriComplete}
+                          target="_blank" rel="noopener noreferrer"
+                        >
+                          {pending.verificationUriComplete}
+                        </a>
+                        <button type="button" className={css.button} onClick={copyAddress}>
+                          {copied ? t('account.copied') : t('account.copyLink')}
+                        </button>
+                      </div>
                     </div>
                     <p className={css.hint}>{t('account.expiresIn', { minutes: String(minutes) })}</p>
                   </div>

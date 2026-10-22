@@ -42,6 +42,8 @@
 1. 装插件、重启 `dsh web`、硬刷新。
 2. 打开 **设置 → NearToken**，点「连接 NearToken」。
 3. 设置页显示确认码；点「打开浏览器确认」，在站点自己的页面登录（密码、2FA、passkey 都走站点原生流程）并批准。
+   这个按钮走 Host：页面自己 `window.open` 开出来的窗口会被困在承载页面的外壳里（Electron 桌面端会另开一个应用窗口、macOS 上甚至没有任何反应），所以由 Host 调平台启动器交给**系统默认浏览器**（macOS `open` / Windows `rundll32 url.dll,FileProtocolHandler` / Linux `xdg-open`）。地址固定取 Host 自己等待的那个，页面无法让 Host 打开任意 URL。
+   卡片同时把确认地址当作可选文字列出来（带「复制链接」按钮）—— 没有桌面环境的机器（远程、容器）启动器可能不存在，把地址贴进自己的浏览器即可。
 4. 插件轮询到批准后自动完成：把站点为该插件铸造的 API key 写进 credentials 的 `NEARTOKEN_API_KEY`，并挂上 `neartoken` provider。
 5. 「断开连接」删掉本地凭据、撤掉 provider，并调用站点的撤销端点。
 6. 卡片下方的「模型白名单」勾选即自动保存 —— 未勾选的不再出现在模型选择器里，且当场生效（Host 用 `AdapterRegistrationHandle.replace()` 重新声明同一条路由，同步发布 `llm/adapters-updated`，浏览器重拉目录）。没设置过白名单时默认全部显示，「全部显示」清空白名单。

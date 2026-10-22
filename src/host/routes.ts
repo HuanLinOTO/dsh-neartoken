@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH,
 } from '../protocol.ts'
 import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
@@ -31,6 +31,11 @@ export interface NearTokenRouteDeps {
   account: NearTokenAccount
   /** Runs after the stored key was removed, so the provider route can unmount. */
   onDisconnect: () => void
+  /**
+   * Open one address in the user's own browser.
+   * @param address - the pending confirmation page.
+   */
+  openInBrowser: (address: string) => Promise<void>
   /** The site's catalog beside the stored whitelist. */
   models: () => Promise<NearTokenModelsState>
   /** Persist a whitelist; an empty list restores the whole catalog. */
@@ -80,6 +85,35 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, await deps.account.begin())
     },
   }), `neartoken: POST ${AUTHORIZE_PATH}`)
+
+  // The confirmation page belongs in the user's own browser: a page-opened
+  // window stays inside the desktop shell, so the Host hands the address to the
+  // platform launcher instead. The address is the Host's own pending one — the
+  // page cannot ask this route to open an arbitrary URL.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: OPEN_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'POST')
+        return
+      }
+      req.resume()
+      const { pending } = await deps.account.status()
+      if (pending === undefined) {
+        sendJson(res, 409, { code: 'no-authorization', message: '没有正在进行的授权' })
+        return
+      }
+      try {
+        await deps.openInBrowser(pending.verificationUriComplete)
+      } catch (error: unknown) {
+        sendJson(res, 500, { code: 'open-failed', message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+    },
+  }), `neartoken: POST ${OPEN_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

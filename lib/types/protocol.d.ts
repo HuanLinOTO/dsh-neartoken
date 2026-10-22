@@ -1,5 +1,5 @@
 /**
- * The wire vocabulary shared by the Host routes and the browser section: four
+ * The wire vocabulary shared by the Host routes and the browser section: the
  * route paths and the JSON each answers. Both build faces import this file, so
  * a route rename cannot leave the browser calling a path the Host stopped
  * serving.
@@ -16,12 +16,30 @@ export declare const STATUS_PATH = "/neartoken/status";
 export declare const AUTHORIZE_PATH = "/neartoken/authorize";
 /** Abandon the authorization in progress. */
 export declare const CANCEL_PATH = "/neartoken/cancel";
+/**
+ * Ask the Host to open the pending confirmation page in the user's own browser.
+ * The request carries no address: the Host opens the one it is waiting on.
+ */
+export declare const OPEN_PATH = "/neartoken/open";
 /** Forget the stored key and revoke it on the site. */
 export declare const LOGOUT_PATH = "/neartoken/logout";
 /** Read the catalog beside the stored whitelist; POST a new whitelist. */
 export declare const MODELS_PATH = "/neartoken/models";
 /** Read the picture models and the image-generation setting; POST one change to it. */
 export declare const IMAGES_PATH = "/neartoken/images";
+/**
+ * One group voucher the wallet carries: a balance that can only pay for its
+ * own group. Amounts arrive as raw quota and are shown in the site's own
+ * display currency, like every other money figure on the card.
+ */
+export interface NearTokenVoucher {
+    /** Group name exactly as the site publishes it, badge prefixes included. */
+    readonly group: string;
+    /** The group's stable id, as the site's group registry numbers it. */
+    readonly groupId: number;
+    /** Remaining voucher balance, formatted in the site's display currency. */
+    readonly amount: string;
+}
 /** One account's facts, as the settings card shows them. */
 export interface NearTokenAccountSummary {
     /** The dashboard user name. */
@@ -34,6 +52,11 @@ export interface NearTokenAccountSummary {
     readonly balance: string;
     /** Quota already spent, formatted the same way. */
     readonly used: string;
+    /**
+     * The per-group vouchers of the last wallet read, absent until one answered.
+     * A grant does not carry them; they arrive with the first wallet refresh.
+     */
+    readonly vouchers?: readonly NearTokenVoucher[];
 }
 /** One authorization the human must finish in their browser. */
 export interface NearTokenPendingAuthorization {

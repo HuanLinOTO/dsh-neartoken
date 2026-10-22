@@ -35,6 +35,11 @@ export declare const zh: {
     'account.waiting': string;
     'account.userCode': string;
     'account.openBrowser': string;
+    'account.manualLink': string;
+    'account.copyLink': string;
+    'account.copied': string;
+    'account.copyFailed': string;
+    'account.openFailed': string;
     'account.expiresIn': string;
     'account.cancel': string;
     'account.cancelling': string;
@@ -43,6 +48,7 @@ export declare const zh: {
     'account.group': string;
     'account.balance': string;
     'account.used': string;
+    'account.vouchers': string;
     'account.token': string;
     'account.signOut': string;
     'account.signingOut': string;
@@ -122,6 +128,11 @@ export declare const en: {
     'account.waiting': string;
     'account.userCode': string;
     'account.openBrowser': string;
+    'account.manualLink': string;
+    'account.copyLink': string;
+    'account.copied': string;
+    'account.copyFailed': string;
+    'account.openFailed': string;
     'account.expiresIn': string;
     'account.cancel': string;
     'account.cancelling': string;
@@ -130,6 +141,7 @@ export declare const en: {
     'account.group': string;
     'account.balance': string;
     'account.used': string;
+    'account.vouchers': string;
     'account.token': string;
     'account.signOut': string;
     'account.signingOut': string;

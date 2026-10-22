@@ -95,6 +95,42 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* The voucher fact spans the whole facts row: group names run long, and a
+   per-group balance means nothing squeezed into one narrow grid cell. */
+.voucherFact {
+  grid-column: 1 / -1;
+}
+
+.voucherList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.voucherRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.voucherGroup {
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voucherAmount {
+  color: var(--dsw-alias-state-success-primary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .form {
   display: flex;
   flex-direction: column;
@@ -122,6 +158,31 @@
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-button-elevated-fill);
   color: var(--dsw-alias-label-primary);
+  user-select: all;
+}
+
+/* The address handed over by hand: long and unbreakable, so it wraps instead
+   of pushing the card wide, and one click selects all of it. */
+.linkRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.linkLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.link {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+  color: var(--dsw-alias-label-secondary);
   user-select: all;
 }
 

@@ -43,6 +43,19 @@ const AUTHORIZED = {
 /** The answer a granted poll returns: the key, its name, and the account behind it. */
 const GRANT = { success: true, data: { access_token: KEY, token_type: 'Bearer', token_name: 'DSH', user: USER } }
 
+/** A live wallet answer: 2,000,000 quota left, 800,000 spent, one voucher. */
+const WALLET = {
+  success: true,
+  data: {
+    quota: 2_000_000,
+    used_quota: 800_000,
+    group_credits: [
+      { group: '[低价] Grok', group_id: 7, amount: 500_000 },
+      { group: 'spent-group', group_id: 8, amount: 0 },
+    ],
+  },
+}
+
 /** Every request the code under test issued, in order. */
 let requests: string[] = []
 
@@ -55,7 +68,11 @@ function stubFetch(answer: (path: string, method: string) => unknown): void {
     const url = new URL(String(input))
     const path = `${url.pathname}${url.search}`
     requests.push(`${init?.method ?? 'GET'} ${path}`)
-    return new Response(JSON.stringify(answer(path, init?.method ?? 'GET')), {
+    const body = answer(path, init?.method ?? 'GET')
+    // A ready Response models the un-JSON answers a real site gives (a 404
+    // page from a deployment without the endpoint).
+    if (body instanceof Response) return body
+    return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })
@@ -97,7 +114,7 @@ async function makeHome(): Promise<string> {
  */
 function accountOver(
   polls: readonly unknown[] = [],
-  options: { store?: Map<string, string>; home?: string } = {},
+  options: { store?: Map<string, string>; home?: string; wallet?: unknown } = {},
 ): {
   account: NearTokenAccount
   store: Map<string, string>
@@ -111,6 +128,14 @@ function accountOver(
     if (path === '/api/dsh/device/authorize') return AUTHORIZED
     if (path === '/api/dsh/device/token') return queue.shift() ?? { success: false, message: 'authorization_pending' }
     if (path === '/api/dsh/device/revoke') return { success: true }
+    if (path === '/api/dsh/device/wallet') {
+      // 'unreachable' models a deployment older than the endpoint: a 404 page
+      // whose body is not JSON.
+      if (options.wallet === 'unreachable') {
+        return new Response('<html>404</html>', { status: 404, headers: { 'content-type': 'text/html' } })
+      }
+      return options.wallet ?? { success: true, data: { quota: 2_000_000, used_quota: 800_000, group_credits: [] } }
+    }
     throw new Error(`unexpected request ${path}`)
   })
   const credentials = {
@@ -128,6 +153,9 @@ function accountOver(
   const ctx = {
     get: (name: string) => services[name],
     logger: { warn: () => { /* the card's facts are best-effort */ } },
+    // The wallet cadence registers its interval through the context; a plain
+    // synchronous register is all the cases below need.
+    effect: (register: () => () => void) => register(),
   } as unknown as Context
   let grants = 0
   const account = new NearTokenAccount(ctx, {
@@ -326,5 +354,74 @@ describe('status', () => {
     await first.account.signOut()
     const second = accountOver([], { home, store })
     expect((await second.account.status()).account).toBeUndefined()
+  })
+})
+
+describe('wallet refresh', () => {
+  it('folds a live wallet into the card: balance, spent quota, and vouchers', async () => {
+    vi.useFakeTimers()
+    const { account, store } = accountOver([GRANT], { wallet: WALLET })
+    await account.begin()
+    await tick(1_000)
+    // The grant froze the card at ￥7.00 / ￥3.50; the wallet read moves it.
+    await account.refreshWallet()
+    const status = await account.status()
+    expect(status.account).toEqual({
+      username: 'tester',
+      displayName: '测试账号',
+      group: 'default',
+      balance: '￥14.00',
+      used: '￥5.60',
+      vouchers: [{ group: '[低价] Grok', groupId: 7, amount: '￥3.50' }],
+    })
+    expect(store.get(API_KEY_REF)).toBe(KEY)
+  })
+
+  it('re-reads the wallet on the cadence the refresh was started with', async () => {
+    vi.useFakeTimers()
+    const { account } = accountOver([GRANT])
+    await account.begin()
+    await tick(1_000)
+    account.startWalletRefresh(5_000)
+    await settleIo()
+    const before = requests.filter(path => path === 'GET /api/dsh/device/wallet').length
+    // One immediate read at start, then one per interval.
+    expect(before).toBeGreaterThanOrEqual(1)
+    await tick(5_000)
+    expect(requests.filter(path => path === 'GET /api/dsh/device/wallet').length).toBe(before + 1)
+    await tick(5_000)
+    expect(requests.filter(path => path === 'GET /api/dsh/device/wallet').length).toBe(before + 2)
+  })
+
+  it('keeps the last known facts when the site has no wallet endpoint yet', async () => {
+    vi.useFakeTimers()
+    const { account } = accountOver([GRANT], { wallet: 'unreachable' })
+    await account.begin()
+    await tick(1_000)
+    await account.refreshWallet()
+    const status = await account.status()
+    expect(status.account).toEqual({
+      username: 'tester',
+      displayName: '测试账号',
+      group: 'default',
+      balance: '￥7.00',
+      used: '￥3.50',
+    })
+  })
+
+  it('persists the refreshed wallet so a restart shows it without a grant', async () => {
+    vi.useFakeTimers()
+    const home = await makeHome()
+    const store = new Map<string, string>()
+    const first = accountOver([GRANT], { home, store, wallet: WALLET })
+    await first.account.begin()
+    await tick(1_000)
+    await first.account.refreshWallet()
+    await settleIo()
+
+    const second = accountOver([], { home, store })
+    const status = await second.account.status()
+    expect(status.account?.balance).toBe('￥14.00')
+    expect(status.account?.vouchers).toEqual([{ group: '[低价] Grok', groupId: 7, amount: '￥3.50' }])
   })
 })

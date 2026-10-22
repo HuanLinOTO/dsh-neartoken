@@ -3,11 +3,14 @@
  * page — GET answers the catalog beside the stored list, POST stores a list
  * the page built. The fence, the method, the media type, and the body bound
  * are the same refusals the other routes make.
+ *
+ * The open route is covered here too: the page cannot launch the user's browser
+ * itself, so the Host does it — and only ever for its own pending address.
  */
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { IMAGES_PATH, MODELS_PATH, STATUS_PATH } from '../protocol.ts'
+import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH } from '../protocol.ts'
 import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import type { NearTokenAccount } from './account.ts'
@@ -59,10 +62,12 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   answer: (path: string, req: IncomingMessage) => Promise<Answer>
   saves: (readonly string[])[]
   imageSaves: unknown[]
+  opened: string[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   const saves: (readonly string[])[] = []
   const imageSaves: unknown[] = []
+  const opened: string[] = []
   const ctx = {
     effect: (register: () => unknown) => register(),
     get: () => undefined,
@@ -80,11 +85,13 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saveModels: async (enabled) => { saves.push(enabled) },
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
+    openInBrowser: async (address) => { opened.push(address) },
     ...deps,
   })
   return {
     saves,
     imageSaves,
+    opened,
     async answer(path, req) {
       const handler = handlers.get(path)
       if (handler === undefined) throw new Error(`no route ${path}`)
@@ -185,6 +192,7 @@ describe('the same-origin fence', () => {
       saveModels: async (enabled) => { saves.push(enabled) },
       images: async () => IMAGES,
       saveImages: async () => undefined,
+      openInBrowser: async () => {},
     })
     let status = 0
     const res = { statusCode: 0, setHeader() {}, end() { status = res.statusCode } } as unknown as ServerResponse
@@ -240,3 +248,64 @@ describe('the images route', () => {
     expect(JSON.parse(body).code).toBe('save-failed')
   })
 })
+
+describe('POST /neartoken/open', () => {
+  /** One authorization the page is waiting on. */
+  const PENDING = {
+    userCode: 'ABCD-EFGH',
+    verificationUri: 'https://site/device',
+    verificationUriComplete: 'https://site/device?code=ABCD-EFGH',
+    expiresAt: Date.now() + 60_000,
+  }
+
+  /**
+   * @param pending - the authorization the account reports.
+   * @returns an account stand-in for the open route.
+   */
+  function accountWith(pending: typeof PENDING | undefined): NearTokenAccount {
+    return {
+      async status() {
+        return {
+          configured: false,
+          baseURL: 'https://site',
+          tokenName: 'dsh',
+          ...pending === undefined ? {} : { pending },
+        }
+      },
+    } as unknown as NearTokenAccount
+  }
+
+  it('launches the pending confirmation page in the user browser', async () => {
+    const { answer, opened } = routesOver({ account: accountWith(PENDING) })
+    const { status } = await answer(OPEN_PATH, request('POST'))
+    expect(status).toBe(200)
+    expect(opened).toEqual([PENDING.verificationUriComplete])
+  })
+
+  it('refuses when no authorization is running', async () => {
+    const { answer, opened } = routesOver({ account: accountWith(undefined) })
+    const { status, body } = await answer(OPEN_PATH, request('POST'))
+    expect(status).toBe(409)
+    expect(JSON.parse(body).code).toBe('no-authorization')
+    expect(opened).toEqual([])
+  })
+
+  it('reports a launcher the platform refused', async () => {
+    const { answer } = routesOver({
+      account: accountWith(PENDING),
+      openInBrowser: async () => { throw new Error('当前平台 aix 没有已知的浏览器打开方式') },
+    })
+    const { status, body } = await answer(OPEN_PATH, request('POST'))
+    expect(status).toBe(500)
+    expect(JSON.parse(body)).toEqual({ code: 'open-failed', message: '当前平台 aix 没有已知的浏览器打开方式' })
+  })
+
+  it('refuses a method it does not serve', async () => {
+    const { answer, opened } = routesOver({ account: accountWith(PENDING) })
+    const { status, headers } = await answer(OPEN_PATH, request('GET'))
+    expect(status).toBe(405)
+    expect(headers.allow).toBe('POST')
+    expect(opened).toEqual([])
+  })
+})
+

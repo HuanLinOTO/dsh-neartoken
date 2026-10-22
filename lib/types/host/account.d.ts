@@ -1,5 +1,10 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { BeginAuthorizationOutcome, NearTokenStatus } from '../protocol.ts';
+/**
+ * How often the wallet facts are re-read while a key is stored. Five minutes
+ * matches how stale the card's money numbers may look on an open settings page.
+ */
+export declare const WALLET_REFRESH_MS = 300000;
 /** External facts the account reads from the plugin configuration. */
 export interface NearTokenSite {
     /** Site root without a trailing slash. */
@@ -19,6 +24,8 @@ export declare class NearTokenAccount {
     private summary;
     /** The read that restores those facts from the stored key, while one is running. */
     private summaryLoad;
+    /** The last snapshot write, so two of them never race on one file. */
+    private summaryWrite;
     /** The site-side token name behind the stored key. */
     private tokenName;
     /** Why the last attempt ended without a key. */
@@ -42,6 +49,25 @@ export declare class NearTokenAccount {
      * @returns the current status.
      */
     status(): Promise<NearTokenStatus>;
+    /**
+     * Keep the card's money facts live: while a key is stored, re-read the site's
+     * wallet endpoint on a fixed cadence, starting immediately.
+     *
+     * The grant that minted the key carried the account facts exactly once, and
+     * wallet balances move with every billed request and every rebate — without
+     * this the card would freeze at the moment of authorization forever.
+     * @param intervalMs - cadence of one wallet read.
+     */
+    startWalletRefresh(intervalMs?: number): void;
+    /**
+     * Read the wallet once: balance, spent quota, and every per-group voucher,
+     * formatted in the site's own display currency.
+     *
+     * A site that does not serve the endpoint yet (or one that cannot be reached)
+     * keeps the last known facts: a refresh must never cost the card its numbers.
+     * @returns after the read settles, either way.
+     */
+    refreshWallet(): Promise<void>;
     /**
      * Start an authorization, or report the one already running.
      * @returns the codes the human needs, or why the site refused to issue them.
@@ -98,9 +124,19 @@ export declare class NearTokenAccount {
     private snapshotPath;
     /** Read the snapshot a previous process recorded when the grant arrived. */
     private restoreSummary;
-    /** Record the facts a grant carried, so they outlive this process. */
+    /**
+     * Record the facts a grant carried, so they outlive this process.
+     *
+     * A grant and a wallet read can both want to store the card within the same
+     * tick, so writes are queued behind one another and each lands atomically: a
+     * reader (a restarted process) must never open a half-written file.
+     * @returns after this write landed, or was found unnecessary.
+     */
     private persistSummary;
-    /** Drop the snapshot once the key it describes is gone. */
+    /**
+     * Drop the snapshot once the key it describes is gone.
+     * @returns after the file is gone, behind any write still queued.
+     */
     private forgetSummary;
     /** Read one credential reference, or undefined when nothing is stored. */
     private read;
