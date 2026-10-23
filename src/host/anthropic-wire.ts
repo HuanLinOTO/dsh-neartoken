@@ -10,6 +10,12 @@
  * - `message_start.usage` carries the gateway's own prompt estimate; the real
  *   counts arrive with `message_delta`. Both are read, the later one winning.
  *
+ * Prompt caching is explicit on this wire: Anthropic writes a cache entry only
+ * where a `cache_control` breakpoint marks the end of a prefix, and charges the
+ * whole prompt as fresh input without one. The harness replays the conversation
+ * on every call, so the breakpoints are placed once per request over the bytes
+ * the next call will reuse (see `serializeRequest`).
+ *
  * @module
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -91,6 +97,39 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
   }
 }
 
+/** How many trailing messages carry a breakpoint; with the tool and system
+ * marks this stays within the four the messages API accepts per request. */
+const TAIL_BREAKPOINTS = 2
+
+/**
+ * The breakpoint that marks a cacheable prefix end.
+ * @returns a fresh `cache_control` value; a new object each time, so no caller
+ * can mutate another block's mark through the shared one.
+ */
+function cacheBreakpoint(): WireBlock {
+  return { type: 'ephemeral' }
+}
+
+/**
+ * Mark the last block of the trailing messages as the end of a cacheable prefix.
+ *
+ * The next call replays every message this one sent, so the longest prefix the
+ * two share ends inside the final message. The message before it is marked as
+ * well: a turn that ends with a fresh user message leaves the previous call's
+ * trailing breakpoint on the second-to-last message, and a mark that misses
+ * costs a cache write rather than nothing.
+ * @param messages - the serialized conversation, in send order.
+ */
+function markTailBreakpoints(messages: readonly WireBlock[]): void {
+  for (const message of messages.slice(-TAIL_BREAKPOINTS)) {
+    const blocks: unknown = message.content
+    if (!Array.isArray(blocks) || blocks.length === 0) continue
+    const last: unknown = blocks[blocks.length - 1]
+    if (typeof last !== 'object' || last === null) continue
+    ;(last as WireBlock).cache_control = cacheBreakpoint()
+  }
+}
+
 /**
  * The effort the messages API accepts for one harness level.
  *
@@ -139,15 +178,26 @@ export function serializeRequest(
   }
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
   if (options.temperature !== undefined) body.temperature = options.temperature
-  if (options.system !== undefined && options.system.length > 0) body.system = options.system
+  // A plain string cannot carry a breakpoint, and the system prompt is the most
+  // reused bytes of the request: it travels as one marked text block.
+  if (options.system !== undefined && options.system.length > 0) {
+    body.system = [{ type: 'text', text: options.system, cache_control: cacheBreakpoint() }]
+  }
   if (options.tools !== undefined && options.tools.length > 0) {
-    body.tools = options.tools.map(tool => ({
+    const tools: WireBlock[] = options.tools.map(tool => ({
       name: tool.name,
       description: tool.description,
       input_schema: tool.parameters,
     }))
+    // Tool definitions precede the system prompt on the wire, so the last one
+    // ends the request's most stable prefix: a tool set that does not change
+    // from turn to turn is read from cache for the whole session.
+    const lastTool = tools[tools.length - 1]
+    if (lastTool !== undefined) lastTool.cache_control = cacheBreakpoint()
+    body.tools = tools
   }
   if (options.stop !== undefined && options.stop.length > 0) body.stop_sequences = options.stop
+  markTailBreakpoints(messages)
   return body
 }
 

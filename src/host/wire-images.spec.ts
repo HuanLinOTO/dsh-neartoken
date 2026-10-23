@@ -69,7 +69,13 @@ describe('each wire sends the picture', () => {
     const body = wireFor('claude-sonnet-4.5').serialize(request(WITH_IMAGE), 'claude-sonnet-4.5', IMAGES) as { messages: { content: unknown }[] }
     expect(body.messages[0]?.content).toEqual([
       { type: 'text', text: 'what is this' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      // The picture is the last block, so it carries the request's tail cache
+      // breakpoint: the bytes are re-inlined identically on every call.
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+        cache_control: { type: 'ephemeral' },
+      },
     ])
   })
 

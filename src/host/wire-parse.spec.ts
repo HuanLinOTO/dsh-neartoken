@@ -209,6 +209,54 @@ describe('anthropic messages wire', () => {
   it('sends no max_tokens when the caller set none and no thinking was asked for', () => {
     expect(serializeAnthropic(request(), 'claude-opus-5-5').max_tokens).toBeUndefined()
   })
+
+  it('marks the prefix the next call replays, at the tool set, the system prompt, and the message tail', () => {
+    // Without a breakpoint Anthropic writes no cache entry at all and bills the
+    // whole prompt as fresh input, which is the entire cost of a long session.
+    const body = serializeAnthropic(
+      {
+        ...request(),
+        system: 'be brief',
+        tools: [{ name: 'read', description: 'read a file', parameters: { type: 'object' } }],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'one' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+          { role: 'user', content: [{ type: 'text', text: 'three' }] },
+        ],
+      } as unknown as GenerateOptions,
+      'claude-opus-5-5',
+    )
+    const ephemeral = { type: 'ephemeral' }
+    expect(body.system).toEqual([{ type: 'text', text: 'be brief', cache_control: ephemeral }])
+    expect(body.tools).toEqual([
+      { name: 'read', description: 'read a file', input_schema: { type: 'object' }, cache_control: ephemeral },
+    ])
+    const messages = body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    expect(messages.map(message => message.content.map(block => block.cache_control))).toEqual([
+      [undefined],
+      [ephemeral],
+      [ephemeral],
+    ])
+  })
+
+  it('marks a turn that ends with a tool result, which is the usual shape of a replayed call', () => {
+    const body = serializeAnthropic({
+      provider: 'NearToken',
+      model: 'x',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'read it' }] },
+        { role: 'assistant', content: [{ type: 'tool-call', id: 'call_1', name: 'read', arguments: '{}' }] },
+        { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: 'contents' }] },
+      ],
+    } as unknown as GenerateOptions, 'claude-opus-5-5')
+    const messages = body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    expect(messages.at(-1)?.content.at(-1)).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'call_1',
+      content: 'contents',
+      cache_control: { type: 'ephemeral' },
+    })
+  })
 })
 
 describe('genai wire', () => {
