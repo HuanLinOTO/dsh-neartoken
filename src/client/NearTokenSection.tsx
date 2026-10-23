@@ -7,11 +7,11 @@
  * offers the site's confirmation page, and re-reads the Host while the Host polls
  * — the key and the provider insertion both happen on the Host side of a grant.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { IconChevronDownOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelsState, NearTokenStatus,
+  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState, NearTokenStatus,
 } from '../protocol.ts'
 import type { NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
@@ -360,6 +360,14 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
   const [open, setOpen] = useState(false)
   /** The queued save, while a burst of clicks is still settling. */
   const pending = useRef<number | undefined>(undefined)
+  /** The stored per-model meta overrides, mirrored from the host answer. */
+  const [meta, setMeta] = useState<Readonly<Record<string, NearTokenModelMeta>>>({})
+  /** The model whose meta editor is open; one editor at a time. */
+  const [editing, setEditing] = useState<string | undefined>(undefined)
+  /** The editor's draft: strings for the numeric fields, boxes for the modalities. */
+  const [draft, setDraft] = useState<{ contextWindow: string; maxTokens: string; text: boolean; image: boolean }>({
+    contextWindow: '', maxTokens: '', text: true, image: false,
+  })
   // The row whose group detail is showing, positioned in viewport coordinates:
   // the list scrolls, so the panel must escape its clip box rather than live in
   // the row's flow.
@@ -369,6 +377,7 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
   const adopt = useCallback((next: NearTokenModelsState): void => {
     setState(next)
     setSelected(new Set(next.enabled.length === 0 ? next.models.map(entry => entry.model) : next.enabled))
+    setMeta(next.meta)
   }, [])
 
   const load = useCallback(async (): Promise<void> => {
@@ -488,6 +497,75 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
     void persist([])
   }
 
+  /**
+   * Open one model's meta editor, seeded from its stored override.
+   * @param entry - the model row the editor belongs to.
+   */
+  const openEditor = (entry: NearTokenModelEntry): void => {
+    const stored = meta[entry.model]
+    setEditing(entry.model)
+    setNotice(undefined)
+    setDraft({
+      contextWindow: stored?.contextWindow === undefined ? '' : String(stored.contextWindow),
+      maxTokens: stored?.maxTokens === undefined ? '' : String(stored.maxTokens),
+      text: stored?.input === undefined ? true : stored.input.includes('text'),
+      image: stored?.input === undefined ? false : stored.input.includes('image'),
+    })
+  }
+
+  /**
+   * Write one model's override away, or remove it.
+   *
+   * The numeric fields stay unoverridden when left blank; the modality boxes
+   * always state their whole set, because a box cannot tell "left alone" from
+   * "chosen".
+   * @param model - the bare model name.
+   * @param facts - the override to store, or undefined to remove the entry.
+   */
+  const persistMeta = (model: string, facts: NearTokenModelMeta | undefined): void => {
+    const next: Record<string, NearTokenModelMeta> = { ...meta }
+    if (facts === undefined) delete next[model]
+    else next[model] = facts
+    const enabled = models.filter(entry => selected.has(entry.model)).map(entry => entry.model)
+    setSaving(true)
+    setError(undefined)
+    void (async () => {
+      try {
+        await api.saveModels(enabled, next)
+        setMeta(next)
+        setEditing(undefined)
+        setSaved(true)
+      } catch (failure: unknown) {
+        setError(t('whitelist.failed', { message: messageOf(failure) }))
+      } finally {
+        setSaving(false)
+      }
+    })()
+  }
+
+  /** Validate the draft and write it; a refusal explains itself inline. */
+  const saveEditor = (entry: NearTokenModelEntry): void => {
+    const contextWindow = draft.contextWindow.trim()
+    const maxTokens = draft.maxTokens.trim()
+    const context = contextWindow === '' ? undefined : Number(contextWindow)
+    const output = maxTokens === '' ? undefined : Number(maxTokens)
+    if ((context !== undefined && (!Number.isSafeInteger(context) || context <= 0))
+      || (output !== undefined && (!Number.isSafeInteger(output) || output <= 0))) {
+      setNotice(t('meta.badNumber'))
+      return
+    }
+    if (!draft.text && !draft.image) {
+      setNotice(t('meta.needModality'))
+      return
+    }
+    const input: ('text' | 'image')[] = [...(draft.text ? ['text' as const] : []), ...(draft.image ? ['image' as const] : [])]
+    persistMeta(entry.model, {
+      ...context === undefined ? {} : { contextWindow: context },
+      ...output === undefined ? {} : { maxTokens: output },
+      input,
+    })
+  }
+
   return (
     <section className={css.card}>
       <button
@@ -543,30 +621,117 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
                   {visible.length === 0
                     ? <p className={css.hint}>{t('whitelist.noMatch')}</p>
                     : visible.map(entry => (
-                      <label
-                        key={entry.model}
-                        className={css.row}
-                        onMouseEnter={(event) => { showTip(entry, event.currentTarget) }}
-                        onMouseLeave={() => { setTip(undefined) }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selected.has(entry.model)}
-                          onChange={() => { toggle(entry.model) }}
-                        />
-                        <span className={css.rowName}>{entry.model}</span>
-                        <span className={css.rowMeta}>
-                          {entry.groups.length === 0 ? null : (
-                            <span>{t('whitelist.groupsCount', { count: String(entry.groups.length) })}</span>
-                          )}
-                          {entry.minRatio === undefined ? null : (
-                            <>
-                              <span className={css.rowRatio}>{t('whitelist.minRatio')}</span>
-                              <RatioChip ratio={String(entry.minRatio) + 'x'} />
-                            </>
-                          )}
-                        </span>
-                      </label>
+                      <Fragment key={entry.model}>
+                        <label
+                          className={css.row}
+                          onMouseEnter={(event) => { showTip(entry, event.currentTarget) }}
+                          onMouseLeave={() => { setTip(undefined) }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(entry.model)}
+                            onChange={() => { toggle(entry.model) }}
+                          />
+                          <span className={css.rowName}>{entry.model}</span>
+                          <span className={css.rowMeta}>
+                            {entry.groups.length === 0 ? null : (
+                              <span>{t('whitelist.groupsCount', { count: String(entry.groups.length) })}</span>
+                            )}
+                            {entry.minRatio === undefined ? null : (
+                              <>
+                                <span className={css.rowRatio}>{t('whitelist.minRatio')}</span>
+                                <RatioChip ratio={String(entry.minRatio) + 'x'} />
+                              </>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            className={meta[entry.model] === undefined ? css.metaBtn : css.metaBtn + ' ' + css.metaBtnOn}
+                            onClick={() => {
+                              if (editing === entry.model) setEditing(undefined)
+                              else openEditor(entry)
+                            }}
+                          >
+                            {meta[entry.model] === undefined ? t('meta.edit') : t('meta.overridden')}
+                          </button>
+                        </label>
+                        {editing !== entry.model ? null : (
+                          <div className={css.metaEditor}>
+                            <span className={css.metaTitle}>{t('meta.editorTitle')}</span>
+                            <p className={css.metaIntro}>{t('meta.editorIntro')}</p>
+                            <label className={css.metaField}>
+                              <span className={css.metaLabel}>{t('meta.contextWindow')}</span>
+                              <input
+                                className={css.metaInput}
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={draft.contextWindow}
+                                placeholder={entry.contextWindow === undefined ? t('meta.undeclared') : String(entry.contextWindow)}
+                                onChange={(event) => { setDraft((current) => ({ ...current, contextWindow: event.target.value })) }}
+                              />
+                              <span className={css.metaHint}>
+                                {entry.contextWindow === undefined ? t('meta.undeclared') : t('meta.declaredContext', { value: String(entry.contextWindow) })}
+                              </span>
+                            </label>
+                            <label className={css.metaField}>
+                              <span className={css.metaLabel}>{t('meta.maxTokens')}</span>
+                              <input
+                                className={css.metaInput}
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={draft.maxTokens}
+                                placeholder={entry.maxTokens === undefined ? t('meta.undeclared') : String(entry.maxTokens)}
+                                onChange={(event) => { setDraft((current) => ({ ...current, maxTokens: event.target.value })) }}
+                              />
+                              <span className={css.metaHint}>
+                                {entry.maxTokens === undefined ? t('meta.undeclared') : t('meta.declaredMaxTokens', { value: String(entry.maxTokens) })}
+                              </span>
+                            </label>
+                            <div className={css.metaField}>
+                              <span className={css.metaLabel}>{t('meta.input')}</span>
+                              <label className={css.metaCheck}>
+                                <input
+                                  type="checkbox"
+                                  checked={draft.text}
+                                  onChange={(event) => { setDraft((current) => ({ ...current, text: event.target.checked })) }}
+                                />
+                                {t('meta.inputText')}
+                              </label>
+                              <label className={css.metaCheck}>
+                                <input
+                                  type="checkbox"
+                                  checked={draft.image}
+                                  onChange={(event) => { setDraft((current) => ({ ...current, image: event.target.checked })) }}
+                                />
+                                {t('meta.inputImage')}
+                              </label>
+                              <span className={css.metaHint}>
+                                {entry.input === undefined || entry.input.length === 0
+                                  ? t('meta.undeclared')
+                                  : t('meta.declaredInput', { value: entry.input.join(' + ') })}
+                              </span>
+                            </div>
+                            <div className={css.metaActions}>
+                              <button type="button" className={css.buttonPrimary} disabled={saving} onClick={() => { saveEditor(entry) }}>
+                                {saving ? t('meta.saving') : t('meta.save')}
+                              </button>
+                              <button
+                                type="button"
+                                className={css.button}
+                                disabled={saving || meta[entry.model] === undefined}
+                                onClick={() => { persistMeta(entry.model, undefined) }}
+                              >
+                                {t('meta.clear')}
+                              </button>
+                              <button type="button" className={css.button} disabled={saving} onClick={() => { setEditing(undefined) }}>
+                                {t('meta.cancel')}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </Fragment>
                     ))}
                   {tip === undefined ? null : (
                     <div className={css.tip} style={{ top: tip.top, left: tip.left }} role="tooltip">

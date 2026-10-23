@@ -14,10 +14,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
 } from '../protocol.ts'
-import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
+import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
-import { parseEnabled } from './whitelist.ts'
+import { parseEnabled, parseMeta } from './whitelist.ts'
 
 /** Bodies here are at most one short object; anything larger is hostile. */
 const MAX_BODY_BYTES = 8 * 1024
@@ -38,8 +38,12 @@ export interface NearTokenRouteDeps {
   openInBrowser: (address: string) => Promise<void>
   /** The site's catalog beside the stored whitelist. */
   models: () => Promise<NearTokenModelsState>
-  /** Persist a whitelist; an empty list restores the whole catalog. */
-  saveModels: (enabled: readonly string[]) => Promise<void>
+  /**
+   * Persist a whitelist, and the meta overrides when the save names them.
+   * @param enabled - model names to keep visible; an empty list restores the whole catalog.
+   * @param meta - the complete per-model overrides; absent keeps the stored ones.
+   */
+  saveModels: (enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined) => Promise<void>
   /** The picture models beside the stored image-generation setting. */
   images: () => Promise<NearTokenImagesState>
   /**
@@ -183,10 +187,20 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
         sendJson(res, 400, { code: 'bad-request', message: 'enabled 必须是模型名数组' })
         return
       }
+      // Absent keeps the stored overrides: the whitelist autosaves without
+      // them, and such a save must not erase what the meta editor wrote.
+      let meta: Record<string, NearTokenModelMeta> | undefined
+      if (body.meta !== undefined) {
+        meta = parseMeta(body.meta)
+        if (meta === undefined) {
+          sendJson(res, 400, { code: 'bad-request', message: 'meta 必须是每模型的 { contextWindow?, maxTokens?, input? }' })
+          return
+        }
+      }
       // A save the settings service refused is this page's failure to report,
       // not a request to retry silently: the whitelist did NOT move.
       try {
-        await deps.saveModels(enabled)
+        await deps.saveModels(enabled, meta)
       } catch (error: unknown) {
         sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
         return

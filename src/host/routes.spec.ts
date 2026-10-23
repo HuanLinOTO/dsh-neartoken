@@ -20,6 +20,7 @@ import type { NearTokenRouteDeps } from './routes.ts'
 const STATE: NearTokenModelsState = {
   models: [{ model: 'glm-5.3', groups: [{ group: 'default', ratio: '2x' }] }],
   enabled: [],
+  meta: {},
 }
 
 /** The picture catalog the image route answers. */
@@ -60,12 +61,12 @@ function request(method: string, body?: string, contentType = 'application/json'
  */
 function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   answer: (path: string, req: IncomingMessage) => Promise<Answer>
-  saves: (readonly string[])[]
+  saves: { enabled: readonly string[]; meta: unknown }[]
   imageSaves: unknown[]
   opened: string[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
-  const saves: (readonly string[])[] = []
+  const saves: { enabled: readonly string[]; meta: unknown }[] = []
   const imageSaves: unknown[] = []
   const opened: string[] = []
   const ctx = {
@@ -82,7 +83,7 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     account: {} as NearTokenAccount,
     onDisconnect: () => {},
     models: async () => STATE,
-    saveModels: async (enabled) => { saves.push(enabled) },
+    saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
     openInBrowser: async (address) => { opened.push(address) },
@@ -164,18 +165,43 @@ describe('POST /neartoken/models', () => {
     const { answer, saves } = routesOver()
     const { status } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: [' glm-5.3 ', 'glm-5.3'] })))
     expect(status).toBe(200)
-    expect(saves).toEqual([['glm-5.3']])
+    expect(saves).toEqual([{ enabled: ['glm-5.3'], meta: undefined }])
   })
 
   it('stores an empty list, which shows every model again', async () => {
     const { answer, saves } = routesOver()
     await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: [] })))
-    expect(saves).toEqual([[]])
+    expect(saves).toEqual([{ enabled: [], meta: undefined }])
   })
 
   it('refuses a body whose enabled member is not a list of model names', async () => {
     const { answer, saves } = routesOver()
     const { status, body } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: 'glm-5.3' })))
+    expect(status).toBe(400)
+    expect(JSON.parse(body).code).toBe('bad-request')
+    expect(saves).toEqual([])
+  })
+
+  it('stores the meta overrides the page sent beside the list', async () => {
+    const { answer, saves } = routesOver()
+    const meta = { 'glm-5.3': { contextWindow: 500_000, input: ['text', 'image'] } }
+    const { status } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: ['glm-5.3'], meta })))
+    expect(status).toBe(200)
+    expect(saves).toEqual([{ enabled: ['glm-5.3'], meta: { 'glm-5.3': { contextWindow: 500_000, input: ['text', 'image'] } } }])
+  })
+
+  it('keeps the stored overrides when the body names none', async () => {
+    const { answer, saves } = routesOver()
+    // The whitelist autosaves without meta; such a save must not erase what
+    // the meta editor wrote.
+    const { status } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: ['glm-5.3'] })))
+    expect(status).toBe(200)
+    expect(saves).toEqual([{ enabled: ['glm-5.3'], meta: undefined }])
+  })
+
+  it('refuses a body whose meta member is not per-model facts', async () => {
+    const { answer, saves } = routesOver()
+    const { status, body } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: [], meta: { m: { contextWindows: 5 } } })))
     expect(status).toBe(400)
     expect(JSON.parse(body).code).toBe('bad-request')
     expect(saves).toEqual([])
@@ -216,12 +242,12 @@ describe('the same-origin fence', () => {
         },
       },
     } as unknown as Context
-    const saves: (readonly string[])[] = []
+    const saves: { enabled: readonly string[]; meta: unknown }[] = []
     registerNearTokenRoutes(ctx, {
       account: {} as NearTokenAccount,
       onDisconnect: () => {},
       models: async () => STATE,
-      saveModels: async (enabled) => { saves.push(enabled) },
+      saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
       images: async () => IMAGES,
       saveImages: async () => undefined,
       openInBrowser: async () => {},
@@ -239,7 +265,7 @@ describe('the models route body', () => {
     const { answer, saves } = routesOver()
     const { status } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: ['glm-5.3'] })))
     expect(status).toBe(200)
-    expect(saves).toEqual([['glm-5.3']])
+    expect(saves).toEqual([{ enabled: ['glm-5.3'], meta: undefined }])
   })
 })
 

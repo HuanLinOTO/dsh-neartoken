@@ -38,8 +38,12 @@ export interface NearTokenApi {
   signOut(): Promise<void>
   /** Read the site's model catalog beside the stored whitelist. */
   models(): Promise<NearTokenModelsState>
-  /** Save a whitelist; an empty list shows every model again. */
-  saveModels(enabled: readonly string[]): Promise<void>
+  /**
+   * Save a whitelist; an empty list shows every model again. The meta
+   * overrides are stored only when named, so the whitelist's own autosave
+   * leaves them alone.
+   */
+  saveModels(enabled: readonly string[], meta?: Readonly<Record<string, import('../protocol.ts').NearTokenModelMeta>>): Promise<void>
   /** Read the picture models beside the stored image-generation setting. */
   images(): Promise<NearTokenImagesState>
   /** Save the image-generation setting: the tool's switch and one group per enabled model. */
@@ -99,11 +103,11 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
     async models() {
       return await jsonOf<NearTokenModelsState>(await fetcher(MODELS_PATH, { headers: { accept: 'application/json' } }))
     },
-    async saveModels(enabled) {
+    async saveModels(enabled, meta) {
       await jsonOf<unknown>(await fetcher(MODELS_PATH, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled } satisfies NearTokenModelsPatch),
+        body: JSON.stringify({ enabled, ...meta === undefined ? {} : { meta } } satisfies NearTokenModelsPatch),
       }))
     },
     async images() {

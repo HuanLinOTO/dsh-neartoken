@@ -116,6 +116,28 @@ export interface NearTokenModelEntry {
    * the hover panel.
    */
   readonly minRatio?: number
+  /** Context window the site declared for this model, in tokens. */
+  readonly contextWindow?: number
+  /** Output ceiling the site declared for this model, in tokens. */
+  readonly maxTokens?: number
+  /** Input modalities the site declared, reduced to the ones this harness knows. */
+  readonly input?: readonly string[]
+}
+
+/**
+ * The facts the settings page may state about one bare model name, winning over
+ * both the site's declaration and the operator's `modelOverrides` entry.
+ *
+ * Every member is optional; an omitted member falls through to the next source.
+ * A model whose value ends up with no member carries no entry at all.
+ */
+export interface NearTokenModelMeta {
+  /** Context capacity in tokens; the fallback is the plugin's default. */
+  readonly contextWindow?: number
+  /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
+  readonly maxTokens?: number
+  /** Input modalities (`text` / `image`); without `image` the harness refuses image requests. */
+  readonly input?: readonly ('text' | 'image')[]
 }
 
 /** The `GET /neartoken/models` answer. */
@@ -124,12 +146,20 @@ export interface NearTokenModelsState {
   readonly models: readonly NearTokenModelEntry[]
   /** The stored whitelist; empty means no whitelist, so every model is shown. */
   readonly enabled: readonly string[]
+  /** The stored per-model meta overrides; a model with no override carries no entry. */
+  readonly meta: Readonly<Record<string, NearTokenModelMeta>>
 }
 
 /** The `POST /neartoken/models` request body. */
 export interface NearTokenModelsPatch {
   /** Model names to keep visible; an empty list restores the whole catalog. */
   readonly enabled: readonly string[]
+  /**
+   * The complete per-model meta overrides. Absent keeps the stored ones: the
+   * whitelist autosaves without them, and such a save must not erase what the
+   * meta editor wrote.
+   */
+  readonly meta?: Readonly<Record<string, NearTokenModelMeta>>
 }
 
 /** The `POST /neartoken/authorize` answer. */

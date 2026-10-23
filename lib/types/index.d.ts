@@ -11,6 +11,7 @@
 import z from '@deepseek-ai/schemastery';
 import type { Context, Volatile } from '@deepseek-ai/cordis';
 import type { NearTokenModelOverride } from './host/adapter.ts';
+import type { NearTokenModelMeta } from './protocol.ts';
 /** Resolved configuration shape the loader hands to {@link apply}. */
 export interface Options {
     baseURL: string;
@@ -22,6 +23,8 @@ export interface Options {
     modelOverrides: Record<string, NearTokenModelOverride>;
     /** Model names kept visible in the model picker; empty shows every model. */
     enabledModels: Volatile<string[]>;
+    /** Per-model meta overrides the settings page edits beside the whitelist. */
+    modelMeta: Volatile<Record<string, NearTokenModelMeta>>;
     /** How long one image generation may take, in milliseconds. */
     imageTimeoutMs: number;
     /** The image-generation setting: the tool's switch and one group per enabled model. */
@@ -70,6 +73,22 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * without remounting it.
      */
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    /**
+     * Per-model meta overrides the settings page edits beside the whitelist,
+     * keyed by bare model name. Each member wins over the operator's
+     * `modelOverrides` entry and the site's declaration alike; omitted members
+     * fall through. Volatile like the whitelist, so the page's save reaches the
+     * running plugin without a remount.
+     */
+    modelMeta: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<{
+        contextWindow?: number | null | undefined;
+        maxTokens?: number | null | undefined;
+        input?: ("text" | "image")[] | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
+        contextWindow: z<number, number, "plain">;
+        maxTokens: z<number, number, "plain">;
+        input: z<("text" | "image")[], ("text" | "image")[], "plain">;
+    }>>, string>>, "volatile-defined">;
     /**
      * How long one picture may take. The site's image models routinely need
      * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
@@ -133,6 +152,22 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * without remounting it.
      */
     enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    /**
+     * Per-model meta overrides the settings page edits beside the whitelist,
+     * keyed by bare model name. Each member wins over the operator's
+     * `modelOverrides` entry and the site's declaration alike; omitted members
+     * fall through. Volatile like the whitelist, so the page's save reaches the
+     * running plugin without a remount.
+     */
+    modelMeta: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<{
+        contextWindow?: number | null | undefined;
+        maxTokens?: number | null | undefined;
+        input?: ("text" | "image")[] | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<Schemastery.ObjectT<NoInfer<{
+        contextWindow: z<number, number, "plain">;
+        maxTokens: z<number, number, "plain">;
+        input: z<("text" | "image")[], ("text" | "image")[], "plain">;
+    }>>, string>>, "volatile-defined">;
     /**
      * How long one picture may take. The site's image models routinely need
      * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so

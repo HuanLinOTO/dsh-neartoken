@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { NearTokenRoute } from './pricing.ts'
 import {
-  NearTokenWhitelist, parseEnabled, selectedRoutes, summarizeModels,
+  NearTokenWhitelist, parseEnabled, parseMeta, selectedRoutes, summarizeModels,
 } from './whitelist.ts'
 import type { WhitelistSettings } from './whitelist.ts'
 
@@ -21,11 +21,14 @@ const ROUTES: readonly NearTokenRoute[] = [
 /**
  * Build a whitelist over in-memory facts and a recording settings service.
  * @param enabled - the stored list handed to the whitelist.
+ * @param meta - the stored meta overrides handed to the whitelist.
  * @param settings - the settings service a save reaches, when one exists.
  * @returns the whitelist and the writes it made.
  */
 function whitelistOver(
-  enabled: readonly string[] = [], settings: WhitelistSettings | undefined = undefined,
+  enabled: readonly string[] = [],
+  meta: Readonly<Record<string, import('../protocol.ts').NearTokenModelMeta>> = {},
+  settings: WhitelistSettings | undefined = undefined,
 ): { whitelist: NearTokenWhitelist; writes: { ns: string; patch: Record<string, unknown> }[] } {
   const writes: { ns: string; patch: Record<string, unknown> }[] = []
   const recorder: WhitelistSettings = settings ?? {
@@ -34,6 +37,7 @@ function whitelistOver(
   return {
     whitelist: new NearTokenWhitelist({
       enabled: () => enabled,
+      meta: () => meta,
       routes: async () => ROUTES,
       entryId: 'ui-neartoken-provider',
       settings: () => recorder,
@@ -101,6 +105,40 @@ describe('parseEnabled', () => {
   })
 })
 
+describe('parseMeta', () => {
+  it('accepts per-model facts with any mix of the three members', () => {
+    expect(parseMeta({
+      'grok-4.6': { contextWindow: 500_000 },
+      'glm-5.3': { maxTokens: 8_192, input: ['text', 'image'] },
+    })).toEqual({
+      'grok-4.6': { contextWindow: 500_000 },
+      'glm-5.3': { maxTokens: 8_192, input: ['text', 'image'] },
+    })
+  })
+
+  it('drops a model whose facts end up empty, which is how a removal is stated', () => {
+    expect(parseMeta({ 'grok-4.6': {}, 'glm-5.3': { maxTokens: 4_096 } })).toEqual({ 'glm-5.3': { maxTokens: 4_096 } })
+  })
+
+  it('de-duplicates the modality names it accepts', () => {
+    expect(parseMeta({ m: { input: ['image', 'image', 'text'] } })).toEqual({ m: { input: ['image', 'text'] } })
+  })
+
+  it.each([
+    ['not an object', 'x'],
+    ['a non-object member', { m: 3 }],
+    ['a fractional count', { m: { contextWindow: 1.5 } }],
+    ['a non-positive count', { m: { maxTokens: 0 } }],
+    ['an unknown member', { m: { contextWindows: 5 } }],
+    ['a non-array input', { m: { input: 'text' } }],
+    ['an empty input array', { m: { input: [] } }],
+    ['an unknown modality', { m: { input: ['audio'] } }],
+    ['an over-long name', { [ 'm'.repeat(201) ]: { maxTokens: 5 } }],
+  ])('rejects %s', (_label, value) => {
+    expect(parseMeta(value)).toBeUndefined()
+  })
+})
+
 describe('NearTokenWhitelist', () => {
   it('reports every model beside the stored list', async () => {
     const { whitelist } = whitelistOver(['grok-4.6'])
@@ -116,23 +154,41 @@ describe('NearTokenWhitelist', () => {
 
   it('writes the list into the profile entry this plugin owns', async () => {
     const { whitelist, writes } = whitelistOver()
-    await whitelist.save(['glm-5.3'])
+    await whitelist.save(['glm-5.3'], undefined)
     expect(writes).toEqual([{ ns: 'ui-neartoken-provider', patch: { enabledModels: ['glm-5.3'] } }])
+  })
+
+  it('writes the list and the meta overrides in the same profile write', async () => {
+    const { whitelist, writes } = whitelistOver()
+    await whitelist.save(['glm-5.3'], { 'glm-5.3': { contextWindow: 500_000, input: ['text'] } })
+    expect(writes).toEqual([{
+      ns: 'ui-neartoken-provider',
+      patch: {
+        enabledModels: ['glm-5.3'],
+        modelMeta: { 'glm-5.3': { contextWindow: 500_000, input: ['text'] } },
+      },
+    }])
   })
 
   it('writes an empty list to clear the whitelist', async () => {
     const { whitelist, writes } = whitelistOver(['glm-5.3'])
-    await whitelist.save([])
+    await whitelist.save([], undefined)
     expect(writes).toEqual([{ ns: 'ui-neartoken-provider', patch: { enabledModels: [] } }])
+  })
+
+  it('reports the stored meta overrides beside the catalog', async () => {
+    const { whitelist } = whitelistOver(['grok-4.6'], { 'grok-4.6': { contextWindow: 500_000 } })
+    expect((await whitelist.state()).meta).toEqual({ 'grok-4.6': { contextWindow: 500_000 } })
   })
 
   it('fails loud when the composition has no settings service', async () => {
     const withoutSettings = new NearTokenWhitelist({
       enabled: () => [],
+      meta: () => ({}),
       routes: async () => ROUTES,
       entryId: 'ui-neartoken-provider',
       settings: () => undefined,
     })
-    await expect(withoutSettings.save([])).rejects.toThrow('settings service')
+    await expect(withoutSettings.save([], undefined)).rejects.toThrow('settings service')
   })
 })

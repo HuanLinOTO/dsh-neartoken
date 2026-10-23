@@ -14,7 +14,7 @@
  *
  * @module
  */
-import type { NearTokenModelEntry, NearTokenModelsState } from '../protocol.ts'
+import type { NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenRoute } from './pricing.ts'
 
 /** Longest model name a save may carry, in characters. */
@@ -25,6 +25,9 @@ const MAX_MODELS = 2000
 
 /** The ratio caption the catalog stores in a route's description (`分组倍率 0.4x`). */
 const RATIO_PATTERN = /([0-9]+(?:\.[0-9]+)?)x/
+
+/** The modality names a meta override may state. */
+const MODALITIES = ['text', 'image'] as const
 
 /** The slice of the settings service a save uses. */
 export interface WhitelistSettings {
@@ -41,6 +44,8 @@ export interface WhitelistSettings {
 export interface NearTokenWhitelistDeps {
   /** The stored whitelist; empty when the user never set one. */
   enabled: () => readonly string[]
+  /** The stored per-model meta overrides; empty when the user never set one. */
+  meta: () => Readonly<Record<string, NearTokenModelMeta>>
   /** The full catalog, unfiltered. */
   routes: () => Promise<readonly NearTokenRoute[]>
   /** The profile entry id this plugin's configuration lives in. */
@@ -70,12 +75,23 @@ export function selectedRoutes(
  */
 export function summarizeModels(routes: readonly NearTokenRoute[]): readonly NearTokenModelEntry[] {
   const byModel = new Map<string, { group: string; ratio?: string }[]>()
+  const declared = new Map<string, { contextWindow?: number; maxTokens?: number; input?: readonly string[] }>()
   for (const route of routes) {
     const ratio = RATIO_PATTERN.exec(route.description)?.[1]
     const groups = byModel.get(route.model)
     const entry = ratio === undefined ? { group: route.group } : { group: route.group, ratio: `${ratio}x` }
     if (groups === undefined) byModel.set(route.model, [entry])
     else groups.push(entry)
+    // The site states one capacity per model, but a group can under-declare;
+    // the first declaration that answers wins, so the page shows what the
+    // adapter would fall back to.
+    const facts = declared.get(route.model) ?? {}
+    declared.set(route.model, {
+      ...facts,
+      ...facts.contextWindow === undefined && route.contextWindow !== undefined ? { contextWindow: route.contextWindow } : {},
+      ...facts.maxTokens === undefined && route.maxTokens !== undefined ? { maxTokens: route.maxTokens } : {},
+      ...facts.input === undefined && route.input !== undefined && route.input.length > 0 ? { input: route.input } : {},
+    })
   }
   return [...byModel].map(([model, groups]) => {
     const cheapest = groups.reduce<number | undefined>((low, group) => {
@@ -84,7 +100,15 @@ export function summarizeModels(routes: readonly NearTokenRoute[]): readonly Nea
       if (!Number.isFinite(value)) return low
       return low === undefined || value < low ? value : low
     }, undefined)
-    return cheapest === undefined ? { model, groups } : { model, groups, minRatio: cheapest }
+    const facts = declared.get(model) ?? {}
+    return {
+      model,
+      groups,
+      ...cheapest === undefined ? {} : { minRatio: cheapest },
+      ...facts.contextWindow === undefined ? {} : { contextWindow: facts.contextWindow },
+      ...facts.maxTokens === undefined ? {} : { maxTokens: facts.maxTokens },
+      ...facts.input === undefined ? {} : { input: facts.input },
+    }
   })
 }
 
@@ -109,6 +133,49 @@ export function parseEnabled(value: unknown): string[] | undefined {
   return names
 }
 
+/**
+ * Validate one `POST /neartoken/models` body's meta overrides.
+ *
+ * A model whose value carries no member is dropped: an empty entry would read
+ * as an override while overriding nothing, and the page's "clear this model's
+ * override" action is exactly a value that ends up empty.
+ * @param value - the raw `meta` member.
+ * @returns the cleaned overrides keyed by model name, or undefined when the
+ * value is not an object of well-formed per-model facts.
+ */
+export function parseMeta(value: unknown): Record<string, NearTokenModelMeta> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length > MAX_MODELS) return undefined
+  const meta: Record<string, NearTokenModelMeta> = {}
+  for (const [model, raw] of entries) {
+    const name = model.trim()
+    if (name.length === 0 || name.length > MAX_MODEL_NAME) return undefined
+    if (typeof raw !== 'object' || raw === null) return undefined
+    const facts: NearTokenModelMeta = {}
+    for (const [key, member] of Object.entries(raw as Record<string, unknown>)) {
+      // Unknown keys are refused rather than dropped: a typo like
+      // "contextWindows" would otherwise save clean and change nothing.
+      if (key === 'contextWindow' || key === 'maxTokens') {
+        if (typeof member !== 'number' || !Number.isSafeInteger(member) || member <= 0) return undefined
+        ;(facts as Record<string, unknown>)[key] = member
+        continue
+      }
+      if (key !== 'input') return undefined
+      if (!Array.isArray(member) || member.length === 0) return undefined
+      const modalities: ('text' | 'image')[] = []
+      for (const item of member) {
+        if (item !== 'text' && item !== 'image') return undefined
+        if (!modalities.includes(item)) modalities.push(item)
+      }
+      ;(facts as Record<string, unknown>)[key] = modalities
+    }
+    // An empty fact set is a removal, not an entry.
+    if (Object.keys(facts).length > 0) meta[name] = facts
+  }
+  return meta
+}
+
 /** The whitelist's read and write faces, mounted on the settings routes. */
 export class NearTokenWhitelist {
   /**
@@ -117,25 +184,33 @@ export class NearTokenWhitelist {
   constructor(private readonly deps: NearTokenWhitelistDeps) {}
 
   /**
-   * Read the catalog and the stored whitelist together.
-   * @returns every model the site offers, plus the list the user kept.
+   * Read the catalog, the stored whitelist, and the stored meta overrides.
+   * @returns every model the site offers, plus the list and meta the user kept.
    */
   async state(): Promise<NearTokenModelsState> {
-    return { models: summarizeModels(await this.deps.routes()), enabled: [...this.deps.enabled()] }
+    return {
+      models: summarizeModels(await this.deps.routes()),
+      enabled: [...this.deps.enabled()],
+      meta: { ...this.deps.meta() },
+    }
   }
 
   /**
-   * Persist one whitelist.
+   * Persist one whitelist, and the meta overrides when the save names them.
    * @param enabled - model names to keep visible; empty restores every model.
+   * @param meta - the complete meta overrides; absent keeps the stored ones.
    * @returns resolution after the profile write and its live application.
    * @throws {Error} when the composition has no settings service, so nothing
    * could persist the list.
    */
-  async save(enabled: readonly string[]): Promise<void> {
+  async save(enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined): Promise<void> {
     const settings = this.deps.settings()
     if (settings === undefined) {
       throw new Error('neartoken: the model whitelist needs the settings service')
     }
-    await settings.update(this.deps.entryId, { enabledModels: [...enabled] })
+    await settings.update(this.deps.entryId, {
+      enabledModels: [...enabled],
+      ...meta === undefined ? {} : { modelMeta: meta },
+    })
   }
 }

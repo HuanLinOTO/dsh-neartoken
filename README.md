@@ -99,13 +99,16 @@
 
 | 优先级 | 来源 | 维护方式 |
 |---|---|---|
-| 1 | `modelOverrides.*.contextWindow` | 改 profile 配置，重启 |
-| 2 | 站点 `/api/pricing` 的 `context_window` | 在 New API 管理后台维护 |
-| 3 | `defaultContextWindow` | 改 profile 配置 |
+| 1 | 设置页「模型白名单 → 覆盖」填的上下文（`modelMeta`，volatile，保存即生效） | 设置页模型行点「覆盖」 |
+| 2 | `modelOverrides.*.contextWindow` | 改 profile 配置，重启 |
+| 3 | 站点 `/api/pricing` 的 `context_window` | 在 New API 管理后台维护 |
+| 4 | `defaultContextWindow` | 改 profile 配置 |
+
+设置页的「覆盖」编辑器（模型白名单每行右侧按钮）可给单个模型改**上下文 / 最大输出 / 输入类型**三项：填了的字段逐项盖过 `modelOverrides` 与站点声明，留空的字段沿用下一级；输入类型（文本/图像）整体生效、至少留一项。数据存 `modelMeta`（volatile，与白名单同一次 profile 写入），保存后路由即重申、模型选择器立刻刷新，「清除覆盖」回到站点声明。编辑器里同时显示站点声明值作参照。
 
 最大输出（`max_tokens`）只在**站点或配置明确给出**时才写进请求。站点可能把同一个名字路由到上限更低的渠道，照抄厂商口径会把「回答被截断」换成「请求被拒」。不给出该字段时由上游默认值决定。
 
-输入模态（`text` / `image`）优先级：`modelOverrides.*.input` > 站点 `input_modalities` > `['text']`。**站点没声明的模型一律当纯文本**，因为 harness 把「没有声明」当成「没有权限」：只有声明了 `image` 的模型才允许 `read_image` 和携带图片的请求，否则图片会在发出前被拦下。所以后台忘了勾 `image` 的模型，症状是「贴图被拦」而不是「报错」。
+输入模态（`text` / `image`）优先级：设置页「覆盖」的输入类型（`modelMeta.*.input`）> `modelOverrides.*.input` > 站点 `input_modalities` > `['text']`。**站点没声明的模型一律当纯文本**，因为 harness 把「没有声明」当成「没有权限」：只有声明了 `image` 的模型才允许 `read_image` 和携带图片的请求，否则图片会在发出前被拦下。所以后台忘了勾 `image` 的模型，症状是「贴图被拦」而不是「报错」。
 
 推理档位（`minimal` / `low` / `medium` / `high` / `xhigh` / `max`）优先级：`modelOverrides.*.reasoning` > 站点 `reasoning_levels` > 无档位。**站点没声明就没有档位选择器** —— 与其发一个上游不认的档位换来 400，不如不提供。
 

@@ -21,6 +21,7 @@ import { registerGenerateImageTool } from './host/image-tool.ts'
 import { NearTokenImageClient } from './host/images.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
 import { openInSystemBrowser } from './host/browser.ts'
+import type { NearTokenModelMeta } from './protocol.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
 import type { ImageSource } from './host/wire-images.ts'
 import { NearTokenWhitelist } from './host/whitelist.ts'
@@ -79,6 +80,8 @@ export interface Options {
   modelOverrides: Record<string, NearTokenModelOverride>
   /** Model names kept visible in the model picker; empty shows every model. */
   enabledModels: Volatile<string[]>
+  /** Per-model meta overrides the settings page edits beside the whitelist. */
+  modelMeta: Volatile<Record<string, NearTokenModelMeta>>
   /** How long one image generation may take, in milliseconds. */
   imageTimeoutMs: number
   /** The image-generation setting: the tool's switch and one group per enabled model. */
@@ -111,6 +114,18 @@ export const Config = z.object({
    * without remounting it.
    */
   enabledModels: z.array(z.string()).default([]).volatile(),
+  /**
+   * Per-model meta overrides the settings page edits beside the whitelist,
+   * keyed by bare model name. Each member wins over the operator's
+   * `modelOverrides` entry and the site's declaration alike; omitted members
+   * fall through. Volatile like the whitelist, so the page's save reaches the
+   * running plugin without a remount.
+   */
+  modelMeta: z.dict(z.object({
+    contextWindow: z.number().step(1).min(1),
+    maxTokens: z.number().step(1).min(1),
+    input: z.array(z.union([z.const('text'), z.const('image')])),
+  })).default({}).volatile(),
   /**
    * How long one picture may take. The site's image models routinely need
    * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
@@ -174,7 +189,14 @@ export function apply(ctx: Context, config: Options): void {
     enabled: () => config.enabledModels.get(),
     catalogTtlMs: () => config.catalogTtlMs,
     defaultContextWindow: () => config.defaultContextWindow,
-    modelOverride: (model) => config.modelOverrides[model],
+    // The page's meta overrides win per member; the operator's entry is the
+    // base, so an untouched member still applies.
+    modelOverride: (model) => {
+      const base = config.modelOverrides[model]
+      const page = config.modelMeta.get()[model]
+      if (base === undefined && page === undefined) return undefined
+      return { ...base, ...page }
+    },
     // The adapter reads a message's images from here; without it a request
     // carrying one fails loudly instead of arriving as text only.
     attachments: () => ctx.get('attachments') as ImageSource | undefined,
@@ -184,6 +206,7 @@ export function apply(ctx: Context, config: Options): void {
   // commits the volatile field into this already-running fiber.
   const whitelist = new NearTokenWhitelist({
     enabled: () => config.enabledModels.get(),
+    meta: () => config.modelMeta.get(),
     routes: () => provider.catalog(),
     // The id of this plugin's own row: the bundle patch inserts it under this
     // name, and Settings addresses configuration by that row id.
@@ -270,8 +293,8 @@ export function apply(ctx: Context, config: Options): void {
       // after `llm/adapters-updated` — so the route is re-announced here. Doing
       // it from the route (not from a listener) keeps the ordering obvious: the
       // stored list is the one the next fetch sees.
-      saveModels: async (enabled) => {
-        await whitelist.save(enabled)
+      saveModels: async (enabled, meta) => {
+        await whitelist.save(enabled, meta)
         provider.refresh()
       },
       images: () => imageSettings.state(),

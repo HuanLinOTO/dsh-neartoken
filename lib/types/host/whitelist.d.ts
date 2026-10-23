@@ -14,7 +14,7 @@
  *
  * @module
  */
-import type { NearTokenModelEntry, NearTokenModelsState } from '../protocol.ts';
+import type { NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts';
 import type { NearTokenRoute } from './pricing.ts';
 /** The slice of the settings service a save uses. */
 export interface WhitelistSettings {
@@ -30,6 +30,8 @@ export interface WhitelistSettings {
 export interface NearTokenWhitelistDeps {
     /** The stored whitelist; empty when the user never set one. */
     enabled: () => readonly string[];
+    /** The stored per-model meta overrides; empty when the user never set one. */
+    meta: () => Readonly<Record<string, NearTokenModelMeta>>;
     /** The full catalog, unfiltered. */
     routes: () => Promise<readonly NearTokenRoute[]>;
     /** The profile entry id this plugin's configuration lives in. */
@@ -57,6 +59,17 @@ export declare function summarizeModels(routes: readonly NearTokenRoute[]): read
  * value is not a list of short non-empty strings.
  */
 export declare function parseEnabled(value: unknown): string[] | undefined;
+/**
+ * Validate one `POST /neartoken/models` body's meta overrides.
+ *
+ * A model whose value carries no member is dropped: an empty entry would read
+ * as an override while overriding nothing, and the page's "clear this model's
+ * override" action is exactly a value that ends up empty.
+ * @param value - the raw `meta` member.
+ * @returns the cleaned overrides keyed by model name, or undefined when the
+ * value is not an object of well-formed per-model facts.
+ */
+export declare function parseMeta(value: unknown): Record<string, NearTokenModelMeta> | undefined;
 /** The whitelist's read and write faces, mounted on the settings routes. */
 export declare class NearTokenWhitelist {
     private readonly deps;
@@ -65,16 +78,17 @@ export declare class NearTokenWhitelist {
      */
     constructor(deps: NearTokenWhitelistDeps);
     /**
-     * Read the catalog and the stored whitelist together.
-     * @returns every model the site offers, plus the list the user kept.
+     * Read the catalog, the stored whitelist, and the stored meta overrides.
+     * @returns every model the site offers, plus the list and meta the user kept.
      */
     state(): Promise<NearTokenModelsState>;
     /**
-     * Persist one whitelist.
+     * Persist one whitelist, and the meta overrides when the save names them.
      * @param enabled - model names to keep visible; empty restores every model.
+     * @param meta - the complete meta overrides; absent keeps the stored ones.
      * @returns resolution after the profile write and its live application.
      * @throws {Error} when the composition has no settings service, so nothing
      * could persist the list.
      */
-    save(enabled: readonly string[]): Promise<void>;
+    save(enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined): Promise<void>;
 }
