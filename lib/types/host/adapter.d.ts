@@ -6,11 +6,11 @@ import type { ImageSource } from './wire-images.ts';
 export declare const NEARTOKEN_PROVIDER_NAME = "NearToken";
 /** What an operator may state about one bare model name in the plugin configuration. */
 export interface NearTokenModelOverride {
-    /** Context capacity in tokens, overriding both the site and the catalog. */
+    /** Context capacity in tokens, overriding what the site declares. */
     readonly contextWindow?: number;
     /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
     readonly maxTokens?: number;
-    /** Selectable reasoning levels, for a model no catalog entry describes. */
+    /** Selectable reasoning levels, for a model whose levels the site does not declare. */
     readonly reasoning?: readonly string[];
     /** Input modalities; the harness only permits an image request to a model that declares `image`. */
     readonly input?: readonly string[];

@@ -9,6 +9,7 @@
  * Gemini frame.
  */
 import { describe, expect, it } from 'vitest'
+import { brandString } from '@deepseek-ai/dsh-brand'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { parseSse as parseChat, serializeRequest as serializeChat } from './openai-wire.ts'
 import { parseSse as parseAnthropic, serializeRequest as serializeAnthropic } from './anthropic-wire.ts'
@@ -360,5 +361,37 @@ describe('chat wire serialization', () => {
   it('keeps the bare model and streaming usage request', () => {
     const body = serializeChat(request(), 'grok-4.6')
     expect(body).toMatchObject({ model: 'grok-4.6', stream: true, stream_options: { include_usage: true } })
+  })
+})
+
+describe('session affinity key', () => {
+  /**
+   * One request carrying a session identity.
+   * @param sessionId - the session the loop stamped on the request.
+   * @returns the harness request.
+   */
+  function inSession(sessionId: string): GenerateOptions {
+    return { ...request(), sessionId: brandString<NonNullable<GenerateOptions['sessionId']>>(sessionId) }
+  }
+
+  it('presents the session to the responses wire, whose path the affinity rule matches', () => {
+    expect(serializeResponses(inSession('sess-1'), 'gpt-5.5').prompt_cache_key).toBe('sess-1')
+  })
+
+  it('presents the session to the chat wire too', () => {
+    expect(serializeChat(inSession('sess-1'), 'grok-4.6').prompt_cache_key).toBe('sess-1')
+  })
+
+  it('routes a Claude request by the session, which is the field this gateway reads', () => {
+    expect(serializeAnthropic(inSession('sess-1'), 'claude-opus-5-5').metadata).toEqual({ user_id: 'sess-1' })
+  })
+
+  it('sends no key at all when the request carries no session', () => {
+    // An empty key would match the affinity rule and then bind to nothing,
+    // which is worse than leaving the field out.
+    expect(serializeResponses(request(), 'gpt-5.5').prompt_cache_key).toBeUndefined()
+    expect(serializeChat(request(), 'grok-4.6').prompt_cache_key).toBeUndefined()
+    expect(serializeAnthropic(request(), 'claude-opus-5-5').metadata).toBeUndefined()
+    expect(serializeResponses(inSession(''), 'gpt-5.5').prompt_cache_key).toBeUndefined()
   })
 })

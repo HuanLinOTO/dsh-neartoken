@@ -94,14 +94,14 @@ export const Config = z.object({
   /** How long one pricing load stays fresh, in milliseconds. */
   catalogTtlMs: z.number().default(300_000),
   /**
-   * The capacity every model reports when neither the site nor the generated
-   * catalog answers. Set it below the smallest model the site offers.
+   * The capacity every model reports when the site does not declare one. Set it
+   * below the smallest model the site offers.
    */
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
   /**
    * Per-model corrections, keyed by bare model name: the way to fix a capacity
    * or teach a brand-new model its reasoning levels without publishing a new
-   * plugin version. Anything here wins over both the site and the catalog.
+   * plugin version. Anything here wins over the site.
    */
   modelOverrides: z.dict(modelOverride).default({}),
   /**

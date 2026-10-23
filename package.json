@@ -1,6 +1,6 @@
 {
   "name": "dsh-neartoken",
-  "version": "0.11.0",
+  "version": "0.13.0",
   "publishConfig": {
     "access": "public"
   },
@@ -47,8 +47,7 @@
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "vitest run",
-    "gen:model-caps": "node scripts/gen-model-caps.mjs"
+    "test": "vitest run"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5-alpha.2",
@@ -165,7 +164,6 @@
     "@deepseek-ai/dsh-typert-protocol": "link:D:/Projects/deepseek-harness/dsh/packages/typert/protocol",
     "@deepseek-ai/dsh-working-directory": "link:D:/Projects/deepseek-harness/dsh/packages/session/working-directory",
     "@deepseek-ai/schemastery": "link:D:/Projects/deepseek-harness/dsh/vendor/schemastery",
-    "@earendil-works/pi-ai": "1.1.0",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",

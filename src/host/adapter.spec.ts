@@ -78,8 +78,8 @@ describe('listModels', () => {
   /** Two models over two groups, so a whitelist can hide one and keep both of another's groups. */
   const catalog = {
     data: [
-      { model_name: 'grok-4.6', enable_groups: ['[低价] Grok', 'default'] },
-      { model_name: 'glm-5.3', enable_groups: ['default'] },
+      { model_name: 'grok-4.6', enable_groups: ['[低价] Grok', 'default'], input_modalities: ['text', 'image'] },
+      { model_name: 'glm-5.3', enable_groups: ['default'], input_modalities: ['text'] },
     ],
   }
 
@@ -140,7 +140,7 @@ describe('resolveModel capacity', () => {
     expect(resolved.defaultMaxTokens).toBe(8_192)
   })
 
-  it('lets a configured override win over both the site and the catalog', async () => {
+  it('lets a configured override win over the site', async () => {
     const resolved = await configured(expandRoutes(parsePricing(stated))).resolveModel('neartoken', 'default::grok-4.6')
     expect(resolved.context).toEqual({ contextWindow: 1_048_576 })
     expect(resolved.defaultMaxTokens).toBe(65_536)
@@ -153,6 +153,24 @@ describe('resolveModel capacity', () => {
     expect(resolved.context).toEqual({ contextWindow: 64_000 })
     // No explicit output ceiling means the request omits max_tokens entirely.
     expect(resolved.defaultMaxTokens).toBeUndefined()
+    // Nothing declared an effort name, so the selector stays off.
+    expect(resolved.reasoning).toBeUndefined()
+    expect(resolved.inputModalities).toEqual(['text'])
+  })
+
+  it('reports the reasoning levels the site declared', async () => {
+    const routes = expandRoutes(parsePricing({
+      data: [
+        { model_name: 'grok-4.6', enable_groups: ['default'], reasoning_levels: ['low', 'medium', 'high'] },
+        { model_name: 'glm-5.3', enable_groups: ['default'] },
+      ],
+    }))
+    const adapter = adapterOver(routes)
+    const declared = await adapter.resolveModel('neartoken', 'default::grok-4.6')
+    expect(declared.reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'medium', 'high'])
+    expect(declared.reasoning?.defaultEffort).toBe('medium')
+    const undeclared = await adapter.resolveModel('neartoken', 'default::glm-5.3')
+    expect(undeclared.reasoning).toBeUndefined()
   })
 })
 

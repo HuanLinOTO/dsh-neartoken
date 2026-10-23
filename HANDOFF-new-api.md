@@ -148,6 +148,19 @@ Authorization: Bearer <access_token>
 
 参考实现位置：`middleware/distributor.go` 里 `isPlaygroundRelayPath` 分支旁边加一个对称的 header 分支，逻辑几乎照抄 L90-104（把 `playgroundRequest.Group` 换成按 `#<id>` 反查出的组名）。
 
+## 3.1 会话亲和键：让提示词缓存真的命中
+
+**DSH 侧已发**：chat 与 responses 线在 body 里带 `prompt_cache_key`，anthropic 线带 `metadata.user_id`，值都是 DSH 的 `GenerateOptions.sessionId`（一次会话内恒定）。
+
+站点侧现状与要求：
+
+1. 内置「codex cli trace」规则（`model_regex ^gpt-.*$` + `path_regex /v1/responses` + `key_sources [{gjson, prompt_cache_key}]`）已经能吃到 responses 路径的键——**这正是当前 gpt 缓存命中的唯一来源**，不要改它的 `ValueRegex`，一旦收紧成非空匹配，DSH 发的会话 id 就可能匹配不上而被跳过。
+2. 键为空时该规则整体跳过（`channel_affinity.go` 里 `if affinityValue == "" { continue }`），请求回到按权重随机选渠道。提示词缓存按上游账号存，随机路由 = 缓存永不命中：实测同一 6k token 前缀不带键连发 4 次 `cached_tokens` 全 0；带固定键后第 2 次起 5888/6011 ≈ 98%。
+3. **建议新增一条匹配 `/v1/chat/completions` 的同类规则**（模型仍 `^gpt-.*$`，键仍取 `prompt_cache_key`）。chat 线已带上该字段，但没有规则时实测只有偶发命中（3 次里 1 次）。
+4. 键值只用于选渠道，不需要落库；TTL 走 `default_ttl_seconds` 即可。
+
+验收：同一会话连续两次相同长前缀的 `/v1/responses` 请求，第二次响应 `usage.input_tokens_details.cached_tokens` 应显著大于 0（实测 ≈98%）。
+
 ## 4. 前置确认（站点运营侧）
 
 - `CanUseGroup` 基于 `UserUsableGroups[userGroup]`。若某令牌所属分组看不到目标分组，header 会被 403。**需要保证目标用户分组的 usable groups 覆盖要切的分组。**
@@ -193,7 +206,8 @@ Authorization: Bearer <access_token>
       "supported_endpoint_types": ["anthropic"],
       "context_window": 200000,
       "max_tokens": 64000,
-      "input_modalities": ["text", "image"]
+      "input_modalities": ["text", "image"],
+      "reasoning_levels": ["low", "medium", "high", "max"]
     }
   ]
 }
@@ -204,9 +218,10 @@ Authorization: Bearer <access_token>
 1. `context_window`：该模型**请求 + 响应**合计的上下文窗口，单位 token，正整数。
 2. `max_tokens`：该模型单次响应的最大输出 token，单位 token，正整数。
 3. `input_modalities`：该模型接受的输入类型，取值只允许 `text` / `image`；空数组等同于未维护，整个字段省略。
-4. **未维护就不出现**：数值为 0、模态为空数组或缺省时整个字段省略。客户端必须容忍缺失（走自己的兜底值），不得把 0 当成有效容量。
-5. 三个字段都由管理员在 New API 管理后台按模型维护，属于运营数据而非代码；渠道换代只需改值或勾选，不需要发客户端版本。
-5. 老客户端忽略未知字段，新客户端容忍字段缺失 —— 双向兼容，不需要版本协商。
+4. `reasoning_levels`：该模型可选的思考档位，取值为客户端自己的线缆词表 —— `minimal` / `low` / `medium` / `high` / `xhigh` / `max`，按展示顺序排列；空数组等同于未维护，整个字段省略。
+5. **未维护就不出现**：数值为 0、列表为空数组或缺省时整个字段省略。客户端必须容忍缺失（走自己的兜底值），不得把 0 当成有效容量。
+6. 这四个字段都由管理员在 New API 管理后台按模型维护，属于运营数据而非代码；渠道换代只需改值或勾选，不需要发客户端版本。
+7. 老客户端忽略未知字段，新客户端容忍字段缺失 —— 双向兼容，不需要版本协商。
 
 ### 为什么需要
 
@@ -214,16 +229,19 @@ DSH 的自动压缩按“上下文窗口 × 阈值比例”算摘要预算。模
 
 `input_modalities` 是权限而不是提示：harness 把「没有声明」读成「没有权限」——`read_image` 直接拒绝读取文件，携带图片的请求在发出前被剥掉。所以一个多模态模型只要站点没有声明，客户端就当它是纯文本，图片根本进不去。反之声明了 `image` 而渠道实际不吃图，请求会被上游拒绝——两边的错都要避免。
 
+`reasoning_levels` 是选择器而不是提示：站点没声明，客户端就不给这个模型任何思考档位选择器（不会发 `reasoning_effort`）。发一个上游不认的档位换来的是 400，所以宁可没有。**客户端不再内置任何档位表**，缺档位的模型必须在后台补。
+
 ### 客户端侧优先级（dsh-neartoken，已实现）
 
 | 优先级 | 来源 |
 |---|---|
 | 1 | 用户在插件配置里的 `modelOverrides` |
-| 2 | 本站 `/api/pricing` 的 `context_window` / `input_modalities` |
-| 3 | 插件内置的 pi-ai 生成表（容量与模态） |
-| 4 | 插件配置的 `defaultContextWindow`（默认 200000）/ 未知模型一律 `['text']` |
+| 2 | 本站 `/api/pricing` 的 `context_window` / `input_modalities` / `reasoning_levels` |
+| 3 | 插件配置的 `defaultContextWindow`（默认 200000）/ 未知模型一律 `['text']` / 无档位 |
 
-`max_tokens` 只在优先级 1、2 给出时才写进请求：内置生成表里的值是厂商口径，站点可能把同一个名字路由到上限更低的渠道，照发会把“回答被截断”换成“请求被拒”。
+**插件不再内置任何模型表**（v0.12.0 起删除 `model-caps.generated.ts`）：站点是唯一真源，站点没声明就是没有，不猜。
+
+`max_tokens` 只在优先级 1、2 给出时才写进请求：站点可能把同一个名字路由到上限更低的渠道，照抄厂商口径会把“回答被截断”换成“请求被拒”。
 
 ### 验收用例
 
@@ -232,7 +250,9 @@ DSH 的自动压缩按“上下文窗口 × 阈值比例”算摘要预算。模
 3. 改数字后无需重启客户端：插件目录 TTL 到期（默认 5 分钟）即生效。
 4. 只支持图片/嵌入/重排的模型，即便填了容量也不该被聊天客户端提供 —— 由 `supported_endpoint_types` 判定，与容量无关。
 5. 后台给某多模态模型勾上 `image` → 该模型在 DSH 里立刻可以 `read_image`、可以贴图对话；取消勾选 → 图片在发出前被拦下，不会打到上游。
-6. 站点未声明时，插件用自己的能力表兜底，不会因此拒绝聊天。
+6. 站点未声明容量时，插件仍能列出该模型并走 `defaultContextWindow` 兜底，不会因此拒绝聊天。
+7. 后台给某模型勾上档位（如 `low/medium/high`）→ DSH 的模型选择器出现三档，默认 `medium`；清空勾选 → 选择器消失，且请求不再带 `reasoning_effort`。
+8. 后台填错档位名（不在词表内）→ 写入被拒绝并报错，不会落库污染 `/api/pricing`。
 
 ---
 

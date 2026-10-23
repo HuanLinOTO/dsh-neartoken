@@ -6,7 +6,8 @@
  * needs: the model list, each model's `enable_groups`, the `group_ratio`
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
- * `context_window` / `max_tokens` capacities. Group names carry their own badge
+ * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
+ * facts. Group names carry their own badge
  * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
  *
@@ -23,6 +24,8 @@ interface PricingModel {
     readonly endpoints?: readonly string[];
     /** Input modalities the console states for this model; absent when unmaintained. */
     readonly input?: readonly string[];
+    /** Thinking-effort names the console states for this model; absent when unmaintained. */
+    readonly reasoning?: readonly string[];
 }
 /** The parts of `/api/pricing` this adapter consumes. */
 export interface NearTokenPricing {
@@ -56,6 +59,8 @@ export interface NearTokenRoute {
     readonly endpoints?: readonly string[];
     /** Input modalities the site declared for this model. */
     readonly input?: readonly string[];
+    /** Thinking-effort names the site declared for this model. */
+    readonly reasoning?: readonly string[];
 }
 /**
  * Expand one pricing payload into one route per (group, model) pair.

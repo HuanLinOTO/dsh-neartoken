@@ -6,7 +6,8 @@
  * needs: the model list, each model's `enable_groups`, the `group_ratio`
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
- * `context_window` / `max_tokens` capacities. Group names carry their own badge
+ * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
+ * facts. Group names carry their own badge
  * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
  *
@@ -33,6 +34,8 @@ interface PricingModel {
   readonly endpoints?: readonly string[]
   /** Input modalities the console states for this model; absent when unmaintained. */
   readonly input?: readonly string[]
+  /** Thinking-effort names the console states for this model; absent when unmaintained. */
+  readonly reasoning?: readonly string[]
 }
 
 /** The parts of `/api/pricing` this adapter consumes. */
@@ -68,6 +71,8 @@ export interface NearTokenRoute {
   readonly endpoints?: readonly string[]
   /** Input modalities the site declared for this model. */
   readonly input?: readonly string[]
+  /** Thinking-effort names the site declared for this model. */
+  readonly reasoning?: readonly string[]
 }
 
 /**
@@ -102,6 +107,17 @@ function inputModalities(value: unknown): readonly string[] | undefined {
 }
 
 /**
+ * Read one model's declared thinking-effort names.
+ * @param value - the raw `reasoning_levels` member.
+ * @returns the declared names in the site's order, or undefined when the site declared none.
+ */
+function reasoningLevelNames(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  return names.length === 0 ? undefined : names
+}
+
+/**
  * Expand one pricing payload into one route per (group, model) pair.
  * @param pricing - the loaded endpoint payload.
  * @returns routes in endpoint order, group order preserved per model.
@@ -123,6 +139,7 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
         ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
         ...model.endpoints === undefined ? {} : { endpoints: model.endpoints },
         ...model.input === undefined ? {} : { input: model.input },
+        ...model.reasoning === undefined ? {} : { reasoning: model.reasoning },
       })
     }
   }
@@ -149,6 +166,7 @@ export function parsePricing(value: unknown): NearTokenPricing {
     const maxTokens = tokenCount(row.max_tokens)
     const endpoints = endpointTypes(row.supported_endpoint_types)
     const input = inputModalities(row.input_modalities)
+    const reasoning = reasoningLevelNames(row.reasoning_levels)
     models.push({
       model_name: name,
       enable_groups: groups.filter((group): group is string => typeof group === 'string'),
@@ -156,6 +174,7 @@ export function parsePricing(value: unknown): NearTokenPricing {
       ...maxTokens === undefined ? {} : { maxTokens },
       ...endpoints === undefined ? {} : { endpoints },
       ...input === undefined ? {} : { input },
+      ...reasoning === undefined ? {} : { reasoning },
     })
   }
   const ratio: Record<string, number> = {}

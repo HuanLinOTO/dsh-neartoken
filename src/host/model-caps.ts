@@ -2,22 +2,21 @@
  * What one site model name can actually do: whether it answers chat at all, and
  * how much context it holds.
  *
- * Three sources answer, in falling priority, and each answers something the
- * others cannot:
+ * The site is the only authority. `/api/pricing` answers everything an operator
+ * maintains in the New API console: `supported_endpoint_types` says which
+ * downstream surfaces the model serves, and `context_window` / `max_tokens` /
+ * `input_modalities` / `reasoning_levels` are the facts behind the picker (see
+ * the capacity section of `HANDOFF-new-api.md`). This plugin ships no model
+ * table of its own: a model the console does not describe is offered bare —
+ * configured context window, text-only input, no effort selector — instead of
+ * with capabilities nothing declared.
  *
- * 1. the site itself, through `/api/pricing` — `supported_endpoint_types` says
- *    which downstream surfaces the model serves, and `context_window` /
- *    `max_tokens` are the capacities an operator maintained in the New API
- *    console (see the `HANDOFF-new-api.md` capacity section);
- * 2. this plugin's own configuration — `modelOverrides` (per bare model name)
- *    and `defaultContextWindow` (everything else), so a capacity can be
- *    corrected without publishing a new plugin version;
- * 3. the generated pi-ai table beside this module, which describes the models
- *    the catalog knows even when the site declares nothing.
+ * The plugin configuration still sits on top (`modelOverrides` per bare model
+ * name, `defaultContextWindow` for everything else), so a value the console gets
+ * wrong can be corrected without publishing a new plugin version.
  *
  * @module
  */
-import { CHAT_MODELS, MODEL_CONTEXT_WINDOW, MODEL_INPUT, MODEL_TIERS, TIER_SETS } from './model-caps.generated.ts'
 
 /**
  * Variants the site marks as unfit for coding: it pairs every such name with a
@@ -25,8 +24,18 @@ import { CHAT_MODELS, MODEL_CONTEXT_WINDOW, MODEL_INPUT, MODEL_TIERS, TIER_SETS 
  */
 const CODING_VARIANT = /-c$/i
 
-/** Media routes that carry a model name but never answer a chat request. */
-const NON_TEXT = /(image|tts|transcribe|asr)/i
+/**
+ * Routes that carry a model name but never answer a chat request.
+ *
+ * A name convention, not capability metadata, and the only judge available: the
+ * site files its image, embedding, music, and video models under the same
+ * `openai` / `gemini` surfaces a chat model uses, because that is genuinely the
+ * path they are called on. So `supported_endpoint_types` cannot tell a chat
+ * model from a media model that shares the surface, and a model the console
+ * does not describe has no other declaration to read. Delete this pattern the
+ * day the site publishes the model's kind.
+ */
+const NON_TEXT = /(image|tts|transcribe|asr|embedding|lyria|midjourney|nano-banana|veo|imagen|dall-e|^sd\d)/i
 
 /**
  * The downstream surfaces that answer a chat request. A model the site
@@ -35,32 +44,7 @@ const NON_TEXT = /(image|tts|transcribe|asr)/i
  */
 const CHAT_ENDPOINTS: ReadonlySet<string> = new Set(['openai', 'openai-response', 'anthropic', 'gemini'])
 
-/** What the deployment measured about one model the catalog has not learned yet. */
-interface UncalledCapability {
-  /** Selectable reasoning levels, or null when the model names none. */
-  readonly levels: readonly string[] | null
-  /** Input modalities measured against the live gateway. */
-  readonly input: readonly string[]
-}
-
-/**
- * Chat models the site publishes before the pi-ai catalog learns them.
- *
- * Only the name-based fallback below consults this list; a site that declares
- * `supported_endpoint_types` needs no allowlist at all. A model listed here is
- * offered with the reasoning levels measured against the live gateway;
- * `null` offers it without claiming any. Delete an entry once the catalog
- * describes the model, since the catalog is the better authority.
- *
- * `gemini-4-argon`: Gemini 4 replaced the thinking token budget with a level
- * name. Its accepted levels are low/medium/high/max; minimal and xhigh are
- * rejected by the upstream.
- */
-const UNCALLED_MODELS: Readonly<Record<string, UncalledCapability>> = {
-  'gemini-4-argon': { levels: ['low', 'medium', 'high', 'max'], input: ['text', 'image'] },
-}
-
-/** Display spelling of each level the catalog names. */
+/** Display spelling of each level the site may declare. */
 const LEVEL_LABELS: Readonly<Record<string, string>> = {
   minimal: 'Minimal',
   low: 'Low',
@@ -71,29 +55,14 @@ const LEVEL_LABELS: Readonly<Record<string, string>> = {
 }
 
 /**
- * Whether the name-based fallback keeps this model.
- *
- * Three exclusions: a coding-suffixed twin, a media route, and any name neither
- * the catalog nor {@link UNCALLED_MODELS} describes — an unknown model would
- * otherwise be advertised with invented capabilities. Only a site that declares
- * no endpoint types reaches this rule; see {@link isChatOffering}.
- * @param model - a bare model name from the pricing endpoint.
- * @returns whether the model stays in the catalog.
- */
-export function isOfferedModel(model: string): boolean {
-  if (CODING_VARIANT.test(model)) return false
-  if (NON_TEXT.test(model)) return false
-  if (Object.hasOwn(UNCALLED_MODELS, model)) return true
-  return CHAT_MODELS.has(model)
-}
-
-/**
  * Whether the catalog should offer this model at all.
  *
- * The site's declared endpoint types decide when it declares any: that is what
- * lets a model the catalog has never heard of appear the day the site adds it,
- * instead of waiting for a plugin release. A site that declares nothing falls
- * back to the name rules, which is the only answer available there.
+ * The site's declared endpoint types decide it. A model declared without any is
+ * a media route whatever its name looks like; a model whose declaration is
+ * missing entirely is offered, because a site too old to declare surfaces must
+ * not lose its whole catalog over it. Two name rules outlive every declaration:
+ * a media route filed under a chat surface (see {@link NON_TEXT}), and a
+ * coding-suffixed twin.
  * @param model - a bare model name from the pricing endpoint.
  * @param endpoints - the site's declared downstream surfaces, if any.
  * @returns whether the model stays in the catalog.
@@ -103,39 +72,8 @@ export function isChatOffering(model: string, endpoints?: readonly string[]): bo
   // declares for it: the pricing endpoint files image, TTS, and embedding routes
   // under the same `openai` surface a chat model has.
   if (NON_TEXT.test(model) || CODING_VARIANT.test(model)) return false
-  if (endpoints === undefined || endpoints.length === 0) return isOfferedModel(model)
+  if (endpoints === undefined || endpoints.length === 0) return true
   return endpoints.some(endpoint => CHAT_ENDPOINTS.has(endpoint))
-}
-
-/**
- * The selectable reasoning levels for one model.
- * @param model - a bare model name.
- * @param declared - levels configured for this exact model, which win when given.
- * @returns the level names, or undefined when nothing names any.
- */
-export function reasoningLevels(model: string, declared?: readonly string[]): readonly string[] | undefined {
-  if (declared !== undefined) return declared.length === 0 ? undefined : declared
-  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.levels ?? undefined
-  const index = MODEL_TIERS[model]
-  return index === undefined ? undefined : TIER_SETS[index]
-}
-
-/**
- * Input modalities read from the vendor documentation, which win over the
- * catalog vote.
- *
- * Only models where the documentation and the catalog disagree, or where the
- * catalog has no entry at all, belong here — this table is a correction list,
- * not a second catalog.
- */
-const DOCUMENTED_INPUT: Readonly<Record<string, readonly string[]>> = {
-  // Alibaba Cloud Model Studio lists Input Modality: Image / Text / Video.
-  'qwen3-max': ['text', 'image'],
-  'qwen3-coder-plus': ['text', 'image'],
-  'qwen3.8-max': ['text', 'image'],
-  'qwen3.8-27b': ['text', 'image'],
-  // V4 Flash is the text model; vision ships as a separate -Vision-Exp route.
-  'deepseek-flash': ['text'],
 }
 
 /** Everything that can answer one model's input modalities. */
@@ -152,21 +90,42 @@ export interface ModalitySources {
  * The harness treats a declared modality list as the only permission a request
  * has: the `read_image` tool refuses to load a file for a model without
  * `image`, and a request carrying an image is rejected before it is sent. So
- * this answers for every model — a name nothing describes is stated as text-only
- * rather than left unknown, which keeps an image out of a request that would fail.
+ * this answers for every model — a model the site does not describe is stated as
+ * text-only rather than left unknown, which keeps an image out of a request that
+ * would fail.
  *
- * Priority: operator configuration, the site's own statement, the documented
- * corrections, the deployment-measured models, then the generated catalog.
- * @param model - a bare model name.
+ * Priority: operator configuration, then the site's own statement, then text.
  * @param sources - the two candidates supplied at call time.
  * @returns the modalities, always including `text`.
  */
-export function inputModalitiesOf(model: string, sources: ModalitySources = {}): readonly string[] {
+export function inputModalitiesOf(sources: ModalitySources = {}): readonly string[] {
   if (sources.declared !== undefined && sources.declared.length > 0) return sources.declared
   if (sources.reported !== undefined && sources.reported.length > 0) return sources.reported
-  if (Object.hasOwn(DOCUMENTED_INPUT, model)) return DOCUMENTED_INPUT[model] ?? ['text']
-  if (Object.hasOwn(UNCALLED_MODELS, model)) return UNCALLED_MODELS[model]?.input ?? ['text']
-  return MODEL_INPUT[model] ?? ['text']
+  return ['text']
+}
+
+/** Everything that can answer one model's reasoning levels. */
+export interface ReasoningSources {
+  /** What the site's console states for this exact model. */
+  reported?: readonly string[]
+  /** The operator's configuration for this bare model name. */
+  declared?: readonly string[]
+}
+
+/**
+ * The selectable reasoning levels for one model.
+ *
+ * Only an explicit answer counts. The site is where an operator declares which
+ * effort names a model takes; a model without that declaration is offered with
+ * no selector at all, because a level the upstream rejects turns every request
+ * into a 400.
+ * @param sources - the two candidates supplied at call time.
+ * @returns the level names in the site's order, or undefined when nothing names any.
+ */
+export function reasoningLevels(sources: ReasoningSources = {}): readonly string[] | undefined {
+  if (sources.declared !== undefined && sources.declared.length > 0) return sources.declared
+  if (sources.reported !== undefined && sources.reported.length > 0) return sources.reported
+  return undefined
 }
 
 /** Everything that can answer one model's context capacity. */
@@ -186,26 +145,21 @@ export interface CapacitySources {
  * — the compaction backend refuses to size a summary budget it cannot bound —
  * so this always answers, falling back to the configured capacity rather than
  * declining. Priority: operator override, then the site's own declaration, then
- * the generated catalog, then the configured fallback.
- * @param model - a bare model name.
- * @param sources - the four candidate answers.
+ * the configured fallback.
+ * @param sources - the three candidate answers.
  * @returns a positive token count.
  */
-export function contextWindowOf(model: string, sources: CapacitySources): number {
-  return sources.override
-    ?? sources.reported
-    ?? MODEL_CONTEXT_WINDOW[model]
-    ?? sources.fallback
+export function contextWindowOf(sources: CapacitySources): number {
+  return sources.override ?? sources.reported ?? sources.fallback
 }
 
 /**
  * Resolve one model's maximum output tokens.
  *
- * Only an explicit answer counts: the generated catalog's `maxTokens` is the
- * vendor's own ceiling, and the site may route the name to a channel with a
- * lower one, so sending it would trade a truncated reply for a rejected
- * request. Without an explicit answer the request omits the field and the
- * upstream default applies.
+ * Only an explicit answer counts: the site may route a name to a channel with a
+ * lower ceiling than the vendor states, so a guessed value would trade a
+ * truncated reply for a rejected request. Without an explicit answer the request
+ * omits the field and the upstream default applies.
  * @param reported - what the site declared for this exact model.
  * @param override - the operator's configuration for this bare model name.
  * @returns the output ceiling, or undefined to leave it to the upstream.
@@ -226,7 +180,7 @@ export function defaultReasoningLevel(levels: readonly string[]): string {
 
 /**
  * Display name of one level.
- * @param level - a level id from the catalog.
+ * @param level - a level id declared by the site.
  * @returns the capitalized name the selector shows.
  */
 export function reasoningLevelLabel(level: string): string {

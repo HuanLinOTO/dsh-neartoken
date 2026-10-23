@@ -10,6 +10,7 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { sessionKeyOf } from './session-key.ts'
 import { dataUrlOf, imageOf } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
@@ -54,6 +55,8 @@ export function serializeRequest(
     stream: true,
     stream_options: { include_usage: true },
   }
+  const affinityKey = sessionKeyOf(options)
+  if (affinityKey !== undefined) body.prompt_cache_key = affinityKey
   if (options.tools !== undefined && options.tools.length > 0) {
     body.tools = options.tools.map(tool => ({
       type: 'function',

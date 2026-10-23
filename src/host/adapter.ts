@@ -24,7 +24,7 @@ import type { NearTokenRoute } from './pricing.ts'
 import {
   contextWindowOf, defaultReasoningLevel, inputModalitiesOf, maxTokensOf, reasoningLevelLabel, reasoningLevels,
 } from './model-caps.ts'
-import type { ModalitySources } from './model-caps.ts'
+import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
 import { inlineImages } from './wire-images.ts'
 import type { ImageSource } from './wire-images.ts'
@@ -35,39 +35,37 @@ export const NEARTOKEN_PROVIDER_NAME = 'NearToken'
 
 /** What an operator may state about one bare model name in the plugin configuration. */
 export interface NearTokenModelOverride {
-  /** Context capacity in tokens, overriding both the site and the catalog. */
+  /** Context capacity in tokens, overriding what the site declares. */
   readonly contextWindow?: number
   /** Output ceiling in tokens; the only source that puts `max_tokens` on the wire. */
   readonly maxTokens?: number
-  /** Selectable reasoning levels, for a model no catalog entry describes. */
+  /** Selectable reasoning levels, for a model whose levels the site does not declare. */
   readonly reasoning?: readonly string[]
   /** Input modalities; the harness only permits an image request to a model that declares `image`. */
   readonly input?: readonly string[]
 }
 
 /**
- * The configured or catalogued modalities as the harness vocabulary.
- * @param model - the bare model name.
- * @param declared - the operator's configured modalities for this model, if any.
+ * The configured or declared modalities as the harness vocabulary.
+ * @param sources - the site's statement and the operator's configuration.
  * @returns only the modalities this harness version understands.
  */
-function modalitiesOf(model: string, sources: ModalitySources): readonly ModelModality[] {
-  return inputModalitiesOf(model, sources)
+function modalitiesOf(sources: ModalitySources): readonly ModelModality[] {
+  return inputModalitiesOf(sources)
     .filter((modality): modality is ModelModality => modality === 'text' || modality === 'image')
 }
 
 /**
  * The reasoning offering for one model, or nothing.
  *
- * Configured levels win; otherwise they come from the catalog's own table. A
- * model neither source describes is advertised without any, rather than with
- * levels it may not have.
- * @param model - the bare model name the route serves.
- * @param declared - the operator's configured levels for this model, if any.
+ * Configured levels win; otherwise they are the ones the site declares. A model
+ * neither source describes is advertised without any, rather than with levels it
+ * may not have.
+ * @param sources - the site's statement and the operator's configuration.
  * @returns the reasoning metadata, or undefined for a model without levels.
  */
-function reasoningOf(model: string, declared?: readonly string[]): LlmModelReasoningInfo | undefined {
-  const levels = reasoningLevels(model, declared)
+function reasoningOf(sources: ReasoningSources): LlmModelReasoningInfo | undefined {
+  const levels = reasoningLevels(sources)
   if (levels === undefined) return undefined
   return {
     efforts: levels.map(level => ({
@@ -145,7 +143,7 @@ export class NearTokenAdapter extends LlmAdapter {
       id: route.id,
       name: route.name,
       description: route.description,
-      inputModalities: modalitiesOf(route.model, {
+      inputModalities: modalitiesOf({
         ...route.input === undefined ? {} : { reported: route.input },
         ...this.deps.modelOverride(route.model)?.input === undefined
           ? {}
@@ -166,8 +164,11 @@ export class NearTokenAdapter extends LlmAdapter {
     const route = routes.find(entry => entry.id === model)
     const bare = route?.model ?? decodeRoute(model).model
     const override = this.deps.modelOverride(bare)
-    const reasoning = reasoningOf(bare, override?.reasoning)
-    const contextWindow = contextWindowOf(bare, {
+    const reasoning = reasoningOf({
+      ...route?.reasoning === undefined ? {} : { reported: route.reasoning },
+      ...override?.reasoning === undefined ? {} : { declared: override.reasoning },
+    })
+    const contextWindow = contextWindowOf({
       ...override?.contextWindow === undefined ? {} : { override: override.contextWindow },
       ...route?.contextWindow === undefined ? {} : { reported: route.contextWindow },
       fallback: this.deps.defaultContextWindow(),
@@ -175,7 +176,7 @@ export class NearTokenAdapter extends LlmAdapter {
     const maxTokens = maxTokensOf(route?.maxTokens, override?.maxTokens)
     const facts = {
       context: { contextWindow },
-      inputModalities: modalitiesOf(bare, {
+      inputModalities: modalitiesOf({
         ...route?.input === undefined ? {} : { reported: route.input },
         ...override?.input === undefined ? {} : { declared: override.input },
       }),

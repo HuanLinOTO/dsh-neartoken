@@ -1,33 +1,36 @@
 /**
- * Whether the name-based fallback keeps this model.
+ * What one site model name can actually do: whether it answers chat at all, and
+ * how much context it holds.
  *
- * Three exclusions: a coding-suffixed twin, a media route, and any name neither
- * the catalog nor {@link UNCALLED_MODELS} describes — an unknown model would
- * otherwise be advertised with invented capabilities. Only a site that declares
- * no endpoint types reaches this rule; see {@link isChatOffering}.
- * @param model - a bare model name from the pricing endpoint.
- * @returns whether the model stays in the catalog.
+ * The site is the only authority. `/api/pricing` answers everything an operator
+ * maintains in the New API console: `supported_endpoint_types` says which
+ * downstream surfaces the model serves, and `context_window` / `max_tokens` /
+ * `input_modalities` / `reasoning_levels` are the facts behind the picker (see
+ * the capacity section of `HANDOFF-new-api.md`). This plugin ships no model
+ * table of its own: a model the console does not describe is offered bare —
+ * configured context window, text-only input, no effort selector — instead of
+ * with capabilities nothing declared.
+ *
+ * The plugin configuration still sits on top (`modelOverrides` per bare model
+ * name, `defaultContextWindow` for everything else), so a value the console gets
+ * wrong can be corrected without publishing a new plugin version.
+ *
+ * @module
  */
-export declare function isOfferedModel(model: string): boolean;
 /**
  * Whether the catalog should offer this model at all.
  *
- * The site's declared endpoint types decide when it declares any: that is what
- * lets a model the catalog has never heard of appear the day the site adds it,
- * instead of waiting for a plugin release. A site that declares nothing falls
- * back to the name rules, which is the only answer available there.
+ * The site's declared endpoint types decide it. A model declared without any is
+ * a media route whatever its name looks like; a model whose declaration is
+ * missing entirely is offered, because a site too old to declare surfaces must
+ * not lose its whole catalog over it. Two name rules outlive every declaration:
+ * a media route filed under a chat surface (see {@link NON_TEXT}), and a
+ * coding-suffixed twin.
  * @param model - a bare model name from the pricing endpoint.
  * @param endpoints - the site's declared downstream surfaces, if any.
  * @returns whether the model stays in the catalog.
  */
 export declare function isChatOffering(model: string, endpoints?: readonly string[]): boolean;
-/**
- * The selectable reasoning levels for one model.
- * @param model - a bare model name.
- * @param declared - levels configured for this exact model, which win when given.
- * @returns the level names, or undefined when nothing names any.
- */
-export declare function reasoningLevels(model: string, declared?: readonly string[]): readonly string[] | undefined;
 /** Everything that can answer one model's input modalities. */
 export interface ModalitySources {
     /** What the site's console states for this exact model. */
@@ -41,16 +44,33 @@ export interface ModalitySources {
  * The harness treats a declared modality list as the only permission a request
  * has: the `read_image` tool refuses to load a file for a model without
  * `image`, and a request carrying an image is rejected before it is sent. So
- * this answers for every model — a name nothing describes is stated as text-only
- * rather than left unknown, which keeps an image out of a request that would fail.
+ * this answers for every model — a model the site does not describe is stated as
+ * text-only rather than left unknown, which keeps an image out of a request that
+ * would fail.
  *
- * Priority: operator configuration, the site's own statement, the documented
- * corrections, the deployment-measured models, then the generated catalog.
- * @param model - a bare model name.
+ * Priority: operator configuration, then the site's own statement, then text.
  * @param sources - the two candidates supplied at call time.
  * @returns the modalities, always including `text`.
  */
-export declare function inputModalitiesOf(model: string, sources?: ModalitySources): readonly string[];
+export declare function inputModalitiesOf(sources?: ModalitySources): readonly string[];
+/** Everything that can answer one model's reasoning levels. */
+export interface ReasoningSources {
+    /** What the site's console states for this exact model. */
+    reported?: readonly string[];
+    /** The operator's configuration for this bare model name. */
+    declared?: readonly string[];
+}
+/**
+ * The selectable reasoning levels for one model.
+ *
+ * Only an explicit answer counts. The site is where an operator declares which
+ * effort names a model takes; a model without that declaration is offered with
+ * no selector at all, because a level the upstream rejects turns every request
+ * into a 400.
+ * @param sources - the two candidates supplied at call time.
+ * @returns the level names in the site's order, or undefined when nothing names any.
+ */
+export declare function reasoningLevels(sources?: ReasoningSources): readonly string[] | undefined;
 /** Everything that can answer one model's context capacity. */
 export interface CapacitySources {
     /** What the site declared for this exact model, in tokens. */
@@ -67,20 +87,18 @@ export interface CapacitySources {
  * — the compaction backend refuses to size a summary budget it cannot bound —
  * so this always answers, falling back to the configured capacity rather than
  * declining. Priority: operator override, then the site's own declaration, then
- * the generated catalog, then the configured fallback.
- * @param model - a bare model name.
- * @param sources - the four candidate answers.
+ * the configured fallback.
+ * @param sources - the three candidate answers.
  * @returns a positive token count.
  */
-export declare function contextWindowOf(model: string, sources: CapacitySources): number;
+export declare function contextWindowOf(sources: CapacitySources): number;
 /**
  * Resolve one model's maximum output tokens.
  *
- * Only an explicit answer counts: the generated catalog's `maxTokens` is the
- * vendor's own ceiling, and the site may route the name to a channel with a
- * lower one, so sending it would trade a truncated reply for a rejected
- * request. Without an explicit answer the request omits the field and the
- * upstream default applies.
+ * Only an explicit answer counts: the site may route a name to a channel with a
+ * lower ceiling than the vendor states, so a guessed value would trade a
+ * truncated reply for a rejected request. Without an explicit answer the request
+ * omits the field and the upstream default applies.
  * @param reported - what the site declared for this exact model.
  * @param override - the operator's configuration for this bare model name.
  * @returns the output ceiling, or undefined to leave it to the upstream.
@@ -94,7 +112,7 @@ export declare function maxTokensOf(reported?: number, override?: number): numbe
 export declare function defaultReasoningLevel(levels: readonly string[]): string;
 /**
  * Display name of one level.
- * @param level - a level id from the catalog.
+ * @param level - a level id declared by the site.
  * @returns the capitalized name the selector shows.
  */
 export declare function reasoningLevelLabel(level: string): string;

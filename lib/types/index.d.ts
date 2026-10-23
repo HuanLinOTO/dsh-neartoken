@@ -39,14 +39,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     /** How long one pricing load stays fresh, in milliseconds. */
     catalogTtlMs: z<number, number, "defined">;
     /**
-     * The capacity every model reports when neither the site nor the generated
-     * catalog answers. Set it below the smallest model the site offers.
+     * The capacity every model reports when the site does not declare one. Set it
+     * below the smallest model the site offers.
      */
     defaultContextWindow: z<number, number, "defined">;
     /**
      * Per-model corrections, keyed by bare model name: the way to fix a capacity
      * or teach a brand-new model its reasoning levels without publishing a new
-     * plugin version. Anything here wins over both the site and the catalog.
+     * plugin version. Anything here wins over the site.
      */
     modelOverrides: z<import("@deepseek-ai/cosmokit").Dict<{
         contextWindow?: number | null | undefined;
@@ -102,14 +102,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     /** How long one pricing load stays fresh, in milliseconds. */
     catalogTtlMs: z<number, number, "defined">;
     /**
-     * The capacity every model reports when neither the site nor the generated
-     * catalog answers. Set it below the smallest model the site offers.
+     * The capacity every model reports when the site does not declare one. Set it
+     * below the smallest model the site offers.
      */
     defaultContextWindow: z<number, number, "defined">;
     /**
      * Per-model corrections, keyed by bare model name: the way to fix a capacity
      * or teach a brand-new model its reasoning levels without publishing a new
-     * plugin version. Anything here wins over both the site and the catalog.
+     * plugin version. Anything here wins over the site.
      */
     modelOverrides: z<import("@deepseek-ai/cosmokit").Dict<{
         contextWindow?: number | null | undefined;

@@ -80,6 +80,32 @@ describe('declared capacities and surfaces', () => {
     const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], supported_endpoint_types: [] }] })
     expect(pricing.models[0]?.endpoints).toBeUndefined()
   })
+
+  it('reads the reasoning levels an operator maintained in the console', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], reasoning_levels: ['low', 'medium', 'high'],
+    }] })
+    expect(pricing.models[0]?.reasoning).toEqual(['low', 'medium', 'high'])
+  })
+
+  it('drops level names that are not strings and keeps the rest', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], reasoning_levels: ['medium', '', 3],
+    }] })
+    expect(pricing.models[0]?.reasoning).toEqual(['medium'])
+  })
+
+  it('treats an empty level list as no declaration at all', () => {
+    const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], reasoning_levels: [] }] })
+    expect(pricing.models[0]?.reasoning).toBeUndefined()
+  })
+
+  it('carries declared levels onto every group route of one model', () => {
+    const routes = expandRoutes(parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['a', 'b'], reasoning_levels: ['max'],
+    }] }))
+    expect(routes.map(route => route.reasoning)).toEqual([['max'], ['max']])
+  })
 })
 
 describe('expandRoutes', () => {

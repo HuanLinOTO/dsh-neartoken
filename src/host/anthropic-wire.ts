@@ -17,6 +17,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
+import { sessionKeyOf } from './session-key.ts'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { imageOf } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
@@ -127,6 +128,11 @@ export function serializeRequest(
     if (wire !== undefined) messages.push(wire)
   }
   const body: Record<string, unknown> = { model, messages, stream: true }
+  // The messages API has no cache key of its own; this gateway routes a Claude
+  // request by `metadata.user_id` instead, and a per-session value is what
+  // keeps the session's cache on one upstream account.
+  const affinityKey = sessionKeyOf(options)
+  if (affinityKey !== undefined) body.metadata = { user_id: affinityKey }
   if (options.reasoningEffort !== undefined) {
     body.thinking = { type: 'adaptive' }
     body.output_config = { effort: claudeEffort(options.reasoningEffort) }
