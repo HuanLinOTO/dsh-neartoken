@@ -12,6 +12,12 @@
  */
 /** State read by the settings page before it draws, and while it waits. */
 export declare const STATUS_PATH = "/neartoken/status";
+/**
+ * Re-read the wallet right now, then answer with the same state `STATUS_PATH`
+ * reads. The Host already refreshes on its own cadence; this is the page asking
+ * for that read early, and the answer carries the fresh numbers.
+ */
+export declare const REFRESH_PATH = "/neartoken/refresh";
 /** Start a device authorization (the Host then polls the site). */
 export declare const AUTHORIZE_PATH = "/neartoken/authorize";
 /** Abandon the authorization in progress. */

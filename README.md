@@ -24,7 +24,7 @@
 |---|---|
 | `src/index.ts` | 配置 schema、按凭据现状挂载 provider、装配其余模块 |
 | `src/host/account.ts` | RFC 8628 形状的设备授权：发起、按 interval 轮询、把 key 写进 credentials |
-| `src/host/routes.ts` | 设置页调用的同源路由（状态 / 授权 / 取消 / 断开 / 模型白名单） |
+| `src/host/routes.ts` | 设置页调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置） |
 | `src/host/whitelist.ts` | 白名单读写在插件自身 Config 的 `enabledModels`（volatile），存 profile patch |
 | `src/host/pricing.ts` | 拉 `/api/pricing`，展开成 `"<组>::<模型>"` 路由，过滤出能聊的模型 |
 | `src/host/model-caps.ts` | 一个模型能不能聊、上下文窗口多大、可选的推理等级（只读站点声明，不存模型表） |
@@ -196,7 +196,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 - `-c` 后缀是站点自己的约定（带该后缀的模型工具调用不可靠）：站点声明了端点类型时插件按声明提供，声明里没有它就不会出现；没有声明时按名字隐藏它的无后缀孪生之外的变体。
 - 站点上新但还没在后台填能力的模型：只要声明了端点类型就会提供，容量走 `defaultContextWindow`，模态按纯文本、没有推理档位（除非在 `modelOverrides` 里写明）。这不是 bug，是「站点是唯一真源」的直接后果——补能力请去后台填，不必等插件发版。
 - pricing 加载失败时沿用上一次成功的结果，从未成功过则目录为空（失败不写缓存，下次调用会重试）。
-- 账号卡片不自动刷新：数字只来自授权那一刻 grant 里的 `user`（站点的 dashboard 接口认浏览器会话，不认本插件持有的 relay key），落盘到 profile 下的 `neartoken-account.json`，重启后从文件恢复。之后余额变化不会反映，需要重新连接一次。
+- 账号卡片的钱是**两次读**拼接的：授权那一刻 grant 里的 `user` 给出身份事实，余额/已用/代金券则来自站点 `/api/dsh/device/wallet`——Host 每 5 分钟读一次，页面在余额旁另有**立即刷新**按钮（`POST /neartoken/refresh`，读完后把同一份状态回给页面），所以不必重连也能看到新数字。落盘到 profile 下的 `neartoken-account.json` 只作重启回退。站点若没有该端点或读不到，卡片保留上一次的数字、不会清空。代金券为空时卡片给一句去「邀请计划」（站点 `/wallet` 页）领免费代金券的提示。
 - 白名单按裸模型名过滤：勾掉某模型会把它的所有分组一起隐藏；某个正在使用的模型被勾掉后，会话里已选中的 id 仍在，但选择器里不再列出它。
 - 白名单写入走 DSH 的 Settings：profile 里该行只保留 volatile 字段，所以别把 `baseURL` 等非 volatile 字段写进**同一个 profile 行**（会在此后第一次保存白名单时被 Settings 的 strip 规则清掉）。
 - 生图一次一张；`size` 对 images 通道只是建议，上游常忽略（实测不传 size 时 gpt-image-2.5-flare 出 1536x1024）。

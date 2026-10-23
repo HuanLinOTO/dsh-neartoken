@@ -49,6 +49,10 @@ export declare const zh: {
     'account.balance': string;
     'account.used': string;
     'account.vouchers': string;
+    'account.vouchersEmpty': string;
+    'account.vouchersInvite': string;
+    'account.refresh': string;
+    'account.refreshing': string;
     'account.token': string;
     'account.signOut': string;
     'account.signingOut': string;
@@ -142,6 +146,10 @@ export declare const en: {
     'account.balance': string;
     'account.used': string;
     'account.vouchers': string;
+    'account.vouchersEmpty': string;
+    'account.vouchersInvite': string;
+    'account.refresh': string;
+    'account.refreshing': string;
     'account.token': string;
     'account.signOut': string;
     'account.signingOut': string;

@@ -8,7 +8,7 @@
  * — the key and the provider insertion both happen on the Host side of a grant.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelsState, NearTokenStatus,
@@ -53,6 +53,11 @@ export type NearTokenSectionProps = PropsRuntime<'settings.section'> & NearToken
 export function NearTokenSection({ api, t }: NearTokenSectionProps) {
   const [status, setStatus] = useState<NearTokenStatus | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  /**
+   * Whether the card's money facts are being re-read right now. Kept apart from
+   * `busy`: a balance read must not disable the buttons beside it.
+   */
+  const [walletBusy, setWalletBusy] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
   /** Whether the confirmation address was just copied to the clipboard. */
   const [copied, setCopied] = useState(false)
@@ -164,8 +169,29 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
     })
   }
 
+  /**
+   * Ask the Host to re-read the wallet now, and publish the state it answers
+   * with: the same read the Host runs on its own cadence, taken early.
+   */
+  const refreshWallet = (): void => {
+    void (async (): Promise<void> => {
+      setWalletBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await api.refreshAccount())
+      } catch (failure: unknown) {
+        setError(t('account.failed', { message: messageOf(failure) }))
+      } finally {
+        setWalletBusy(false)
+      }
+    })()
+  }
+
   const account = status?.account
   const pending = status?.pending
+  // The empty-voucher sentence owns the link position, so a language that puts
+  // it elsewhere only edits its own dictionary entry.
+  const [vouchersBefore = '', vouchersAfter = ''] = t('account.vouchersEmpty').split('{link}')
   const minutes = pending === undefined ? 0 : Math.max(1, Math.round((pending.expiresAt - Date.now()) / 60_000))
   return (
     <div className={css.section}>
@@ -187,7 +213,19 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                 </div>
                 <div className={css.fact}>
                   <dt className={css.factLabel}>{t('account.balance')}</dt>
-                  <dd className={css.factValue}>{account?.balance ?? '—'}</dd>
+                  <dd className={`${css.factValue} ${css.valueRow}`}>
+                    <span>{account?.balance ?? '—'}</span>
+                    <button
+                      type="button"
+                      className={css.refresh}
+                      disabled={walletBusy}
+                      onClick={refreshWallet}
+                      title={walletBusy ? t('account.refreshing') : t('account.refresh')}
+                      aria-label={walletBusy ? t('account.refreshing') : t('account.refresh')}
+                    >
+                      <IconRefreshOutlineRegular size={13} />
+                    </button>
+                  </dd>
                 </div>
                 <div className={css.fact}>
                   <dt className={css.factLabel}>{t('account.used')}</dt>
@@ -211,7 +249,20 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                       </dd>
                     </div>
                   )
-                  : null}
+                  : account !== undefined
+                    ? (
+                      <div className={`${css.fact} ${css.voucherFact}`}>
+                        <dt className={css.factLabel}>{t('account.vouchers')}</dt>
+                        <dd className={css.voucherEmpty}>
+                          {vouchersBefore}
+                          <a className={css.invite} href={`${status.baseURL}/wallet`} target="_blank" rel="noreferrer">
+                            {t('account.vouchersInvite')}
+                          </a>
+                          {vouchersAfter}
+                        </dd>
+                      </div>
+                    )
+                    : null}
               </dl>
               <div className={css.actions}>
                 <button type="button" className={css.button} disabled={busy} onClick={signOut}>

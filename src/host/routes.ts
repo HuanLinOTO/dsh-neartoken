@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
 } from '../protocol.ts'
 import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
@@ -72,6 +72,23 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, await deps.account.status())
     },
   }), `neartoken: GET ${STATUS_PATH}`)
+
+  // The page asking for the card's money facts to be re-read now. The answer is
+  // the same state the status route serves, so one round trip updates the card.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: REFRESH_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'POST')
+        return
+      }
+      req.resume()
+      await deps.account.refreshWallet()
+      sendJson(res, 200, await deps.account.status())
+    },
+  }), `neartoken: POST ${REFRESH_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

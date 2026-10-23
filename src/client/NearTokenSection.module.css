@@ -95,6 +95,38 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* The balance sits inline with the control that re-reads it, so the fresh
+   number appears where the reader is already looking. */
+.valueRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.refresh:hover:not(:disabled) {
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+}
+
+.refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* The voucher fact spans the whole facts row: group names run long, and a
    per-group balance means nothing squeezed into one narrow grid cell. */
 .voucherFact {
@@ -129,6 +161,21 @@
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* No voucher: one sentence saying where free ones come from, with the site's
+   own wallet page as the only clickable part. */
+.voucherEmpty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.invite {
+  color: var(--dsw-alias-label-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .form {

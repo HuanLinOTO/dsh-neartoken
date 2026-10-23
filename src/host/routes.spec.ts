@@ -10,8 +10,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH } from '../protocol.ts'
-import type { NearTokenImagesState, NearTokenModelsState } from '../protocol.ts'
+import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH } from '../protocol.ts'
+import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { NearTokenRouteDeps } from './routes.ts'
@@ -109,6 +109,38 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     },
   }
 }
+
+/** The state the refresh route answers with. */
+const STATUS: NearTokenStatus = {
+  configured: true,
+  baseURL: 'https://site.example',
+  tokenName: 'DSH',
+  account: { username: 'ada', displayName: 'Ada', group: 'default', balance: '$1.00', used: '$0.20' },
+}
+
+describe('POST /neartoken/refresh', () => {
+  it('re-reads the wallet, then answers the state the status route serves', async () => {
+    const calls: string[] = []
+    const account = {
+      refreshWallet: async () => { calls.push('refresh') },
+      status: async () => { calls.push('status'); return STATUS },
+    } as unknown as NearTokenAccount
+    const { answer } = routesOver({ account })
+    const { status, body, headers } = await answer(REFRESH_PATH, request('POST'))
+    expect(status).toBe(200)
+    expect(headers['cache-control']).toBe('no-store')
+    // Read first, answer second: the numbers in the answer are the fresh ones.
+    expect(calls).toEqual(['refresh', 'status'])
+    expect(JSON.parse(body)).toEqual(STATUS)
+  })
+
+  it('refuses a method it does not serve', async () => {
+    const { answer } = routesOver()
+    const { status, headers } = await answer(REFRESH_PATH, request('GET'))
+    expect(status).toBe(405)
+    expect(headers.allow).toBe('POST')
+  })
+})
 
 describe('GET /neartoken/models', () => {
   it('answers the catalog beside the stored whitelist', async () => {

@@ -5,7 +5,7 @@
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
 } from '../protocol.ts'
 import type {
   BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
@@ -19,6 +19,12 @@ export type Fetch = (input: string, init?: RequestInit) => Promise<Response>
 export interface NearTokenApi {
   /** Read the key state, the account card, and any authorization in progress. */
   status(): Promise<NearTokenStatus>
+  /**
+   * Re-read the wallet now and answer with the fresh state. The Host already
+   * refreshes on its own cadence; this asks for that read early, so the card
+   * shows money facts newer than the last poll.
+   */
+  refreshAccount(): Promise<NearTokenStatus>
   /** Start a device authorization; the Host polls the site from then on. */
   begin(): Promise<BeginAuthorizationOutcome>
   /** Abandon the authorization in progress. */
@@ -66,6 +72,9 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
   return {
     async status() {
       return await jsonOf<NearTokenStatus>(await fetcher(STATUS_PATH, { headers: { accept: 'application/json' } }))
+    },
+    async refreshAccount() {
+      return await post<NearTokenStatus>(REFRESH_PATH)
     },
     async begin() {
       return await post<BeginAuthorizationOutcome>(AUTHORIZE_PATH)

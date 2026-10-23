@@ -5,6 +5,12 @@ export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 export interface NearTokenApi {
     /** Read the key state, the account card, and any authorization in progress. */
     status(): Promise<NearTokenStatus>;
+    /**
+     * Re-read the wallet now and answer with the fresh state. The Host already
+     * refreshes on its own cadence; this asks for that read early, so the card
+     * shows money facts newer than the last poll.
+     */
+    refreshAccount(): Promise<NearTokenStatus>;
     /** Start a device authorization; the Host polls the site from then on. */
     begin(): Promise<BeginAuthorizationOutcome>;
     /** Abandon the authorization in progress. */
