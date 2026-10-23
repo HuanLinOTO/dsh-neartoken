@@ -26,6 +26,7 @@ import {
 } from './model-caps.ts'
 import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
+import { transportFailure } from './wire-error.ts'
 import { inlineImages } from './wire-images.ts'
 import type { ImageSource } from './wire-images.ts'
 import { selectedRoutes } from './whitelist.ts'
@@ -217,15 +218,22 @@ export class NearTokenAdapter extends LlmAdapter {
     // must not quietly send text only, which is exactly what a dropped
     // screenshot looks like to the model on the other end.
     const images = await inlineImages(this.deps.attachments(), options.messages, options.signal)
-    const response = await fetch(wire.url(this.deps.baseURL(), model), {
-      method: 'POST',
-      headers: {
-        ...attributionHeaders(),
-        ...wire.headers(key, groupRef),
-      },
-      body: JSON.stringify(wire.serialize(options, model, images)),
-      signal: options.signal,
-    })
+    let response: Response
+    try {
+      response = await fetch(wire.url(this.deps.baseURL(), model), {
+        method: 'POST',
+        headers: {
+          ...attributionHeaders(),
+          ...wire.headers(key, groupRef),
+        },
+        body: JSON.stringify(wire.serialize(options, model, images)),
+        signal: options.signal,
+      })
+    } catch (error) {
+      // A caller cancellation is not a transport failure; surface it unchanged.
+      if (options.signal?.aborted) throw error
+      throw transportFailure(error)
+    }
     yield* wire.parse(response, options.signal)
   }
 }

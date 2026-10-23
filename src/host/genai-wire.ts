@@ -10,7 +10,7 @@
  * @module
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { LlmError } from '@deepseek-ai/dsh-llm'
+import { gatewayError } from './wire-error.ts'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
@@ -331,7 +331,7 @@ function finishOf(reason: string | null, hadToolCalls: boolean): FinishReason {
 export async function* parseSse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk> {
   if (!response.ok || response.body === null) {
     const detail = await response.text().catch(() => '')
-    throw new LlmError(`NearToken answered ${response.status}: ${detail.slice(0, 500)}`, 'PROVIDER_ERROR')
+    throw gatewayError(detail, response.status, response.headers)
   }
   const state: Assembly = {
     text: null, reasoning: null, toolBlocks: [], nextIndex: 0, usage: null, finish: null,
