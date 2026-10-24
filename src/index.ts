@@ -297,6 +297,9 @@ export function apply(ctx: Context, config: Options): void {
         await whitelist.save(enabled, meta)
         provider.refresh()
       },
+      topupInfo: () => account.topupInfo(),
+      createTopup: (amount, paymentMethod) => account.createTopup(amount, paymentMethod),
+      baseURL: () => config.baseURL,
       images: () => imageSettings.state(),
       // The catalog is the authority on which models and groups a save may
       // name, so the body is checked against the same load the tool calls from.

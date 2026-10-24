@@ -20,6 +20,9 @@ import type {
 } from '../protocol.ts'
 import { DeviceAuthorizationClient, type DeviceAuthorization, type DevicePollOutcome } from './device-flow.ts'
 import { NewApiError, asObject, callNewApiBody, type JsonObject } from './new-api.ts'
+import {
+  NearTokenTopupError, nearTokenCreateTopup, nearTokenTopupInfo, type NearTokenTopupInfo, type NearTokenTopupOrder,
+} from './topup.ts'
 
 /** How the site's confirmation page names this plugin. */
 const CLIENT_NAME = 'DSH 插件'
@@ -232,6 +235,34 @@ export class NearTokenAccount {
    */
   async configured(): Promise<boolean> {
     return await this.read(this.site.apiKeyRef()) !== undefined
+  }
+
+  /**
+   * Read the site's top-up offer with the stored key.
+   *
+   * The site answers this only for a key its own device-authorization flow
+   * minted, so a key pasted in from elsewhere is a reason the page can act on
+   * rather than a bug.
+   * @returns the amount ladder, the floor and the enabled gateway methods.
+   * @throws {NearTokenTopupError} when the key is missing, refused, or the site is unreachable.
+   */
+  async topupInfo(): Promise<NearTokenTopupInfo> {
+    const key = await this.read(this.site.apiKeyRef())
+    if (key === undefined) throw new NearTokenTopupError('not-dsh')
+    return await nearTokenTopupInfo(this.site.baseURL(), key)
+  }
+
+  /**
+   * Start one top-up order.
+   * @param amount - the amount the user picked, in the site's display currency.
+   * @param paymentMethod - one gateway type from {@link topupInfo}.
+   * @returns the order number and the site-relative checkout link.
+   * @throws {NearTokenTopupError} when the key is missing, refused, or the site is unreachable.
+   */
+  async createTopup(amount: number, paymentMethod: string): Promise<NearTokenTopupOrder> {
+    const key = await this.read(this.site.apiKeyRef())
+    if (key === undefined) throw new NearTokenTopupError('not-dsh')
+    return await nearTokenCreateTopup(this.site.baseURL(), key, amount, paymentMethod)
   }
 
   /**

@@ -303,3 +303,58 @@ Authorization: Bearer <relay key>       # 与 /v1/chat/completions 同一把 key
 3. 该分组消费至券耗尽 → 刷新后该行消失（`amount > 0` 过滤）。
 4. 撤到没有本端点的旧版站点 → 卡片保留最后已知数字，无报错弹窗。
 5. 令牌被禁用 → 端点 401，插件静默降级；重新授权后恢复刷新。
+---
+
+# 第五部分：在线充值（仅 DSH 授权密钥）
+
+## 9. 来源标记与充值端点
+
+### 9.1 来源标记（new-api 侧）
+
+- `Token.Source = "dsh_device"` 表示令牌由 DSH 设备授权流程签发；空字符串表示用户在控制台手动创建。
+- `EnsureDshDeviceToken` 新建令牌时写入该标记，复用历史令牌时**回填**（老版本铸造的令牌因此在下一次批准后变得可识别）。
+- 判定只在一处：`requireDshDeviceToken`。非该来源的令牌调充值端点一律 `403 {"code":"DSH_TOKEN_REQUIRED"}`。
+- 用户可改令牌名（`Name`），但改不了本列；所以 `Name == "DSH"` 不能当判据。
+
+### 9.2 端点契约（字段名已冻结，不得改）
+
+```
+GET /api/dsh/device/topup/info          Authorization: Bearer <relay key>
+200 { "success": true, "data": {
+  "enable_online_topup": true,
+  "min_topup": 10,
+  "amount_options": [10, 20, 50, 100, 200, 500],
+  "discount": { "100": 0.9 },
+  "pay_methods": [{ "name": "支付宝", "type": "alipay", "color": "#1677ff", "min_topup": "1" }],
+  "quota_per_unit": 500000,
+  "display_currency": "CNY"
+} }
+403 { "success": false, "message": "...", "code": "DSH_TOKEN_REQUIRED" }
+
+POST /api/dsh/device/topup              body: { "amount": 50, "payment_method": "alipay" }
+200 { "success": true, "data": {
+  "trade_no": "DSH3NOABCDEF1792815545088",
+  "pay_url": "/dsh/pay?trade_no=DSH3NO...&sig=<hmac>"
+} }
+400 金额低于 min_topup / 超出有效范围 / 渠道不存在 / 网关未配置
+403 DSH_TOKEN_REQUIRED ；404 管理员已关闭在线支付（OnlinePaymentDisabled 中间件）
+```
+
+`pay_url` 是**站点相对路径**，插件自行拼上自己的 `baseURL` 后交给系统浏览器。
+
+### 9.3 支付跳转页（新增）
+
+```
+GET /dsh/pay?trade_no=<trade_no>&sig=<sig>      # 匿名，只读
+```
+
+- `sig = HMAC-SHA256(SessionSecret, "dsh-pay:" + trade_no)`，无 sig 或 sig 不符 → 404（不泄露订单是否存在）。
+- 只渲染 `status = pending`、`payment_provider = epay`、`PayPayload` 非空的订单；订单表新增 `PayPayload` 列存 `{"url":..,"params":{..}}`（网关签名表单）。
+- 页面是后端内联 HTML：自动提交表单到网关（表单参数全部转义），不依赖前端构建产物。
+- 网关回调仍是既有 `/api/user/epay/notify`，余额经既有 5 分钟钱包轮询显示到插件卡片。
+
+### 9.4 插件侧行为（已实现）
+
+- 同源路由：`GET /neartoken/topup` 读 offer，`POST /neartoken/topup {amount, paymentMethod}` 下单并用系统浏览器打开 `baseURL + pay_url`。
+- 失败映射：`DSH_TOKEN_REQUIRED` → 页面显示「当前密钥不是 DSH 授权签发的，请重新连接」，点按走既有设备授权；端点不存在/支付关闭 → 充值区隐藏；其它拒绝显示站点原文。
+- 金额：站点 `amount_options` 档位 + 自定义输入；插件只做「正整数 / 不低于 min_topup」的预校验，真实校验收在服务端。

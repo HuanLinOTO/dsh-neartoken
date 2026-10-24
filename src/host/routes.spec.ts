@@ -10,9 +10,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH } from '../protocol.ts'
+import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH } from '../protocol.ts'
 import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
+import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { NearTokenRouteDeps } from './routes.ts'
 
@@ -86,6 +87,9 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
+    topupInfo: async () => OFFER,
+    createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
+    baseURL: () => 'https://site.example',
     openInBrowser: async (address) => { opened.push(address) },
     ...deps,
   })
@@ -109,6 +113,16 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
       return answer
     },
   }
+}
+
+
+
+/** The top-up offer the card draws. */
+const OFFER: NearTokenTopupInfo = {
+  enabled: true,
+  minTopup: 10,
+  amountOptions: [10, 50],
+  methods: [{ type: 'alipay', name: '支付宝' }],
 }
 
 /** The state the refresh route answers with. */
@@ -250,6 +264,9 @@ describe('the same-origin fence', () => {
       saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
       images: async () => IMAGES,
       saveImages: async () => undefined,
+      topupInfo: async () => OFFER,
+      createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
+      baseURL: () => 'https://site.example',
       openInBrowser: async () => {},
     })
     let status = 0
@@ -367,3 +384,47 @@ describe('POST /neartoken/open', () => {
   })
 })
 
+describe('GET /neartoken/topup', () => {
+  it('answers the site offer', async () => {
+    const { answer } = routesOver()
+    const { status, body, headers } = await answer(TOPUP_PATH, request('GET'))
+    expect(status).toBe(200)
+    expect(headers['cache-control']).toBe('no-store')
+    expect(JSON.parse(body)).toEqual(OFFER)
+  })
+
+  it('tells the page to reconnect when the key is not a device key', async () => {
+    const { answer } = routesOver({
+      topupInfo: async () => { throw new NearTokenTopupError('not-dsh', 'not a device key') },
+    })
+    const { status, body } = await answer(TOPUP_PATH, request('GET'))
+    expect(status).toBe(409)
+    expect(JSON.parse(body).code).toBe('not-dsh')
+  })
+})
+
+describe('POST /neartoken/topup', () => {
+  it('opens the checkout page in the system browser and answers the trade number', async () => {
+    const { answer, opened } = routesOver()
+    const { status, body } = await answer(TOPUP_PATH, request('POST', JSON.stringify({ amount: 50, paymentMethod: 'alipay' })))
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual({ ok: true, tradeNo: 'DSH1NOA1' })
+    expect(opened).toEqual(['https://site.example/dsh/pay?trade_no=DSH1NOA1&sig=s'])
+  })
+
+  it('refuses a body without an amount', async () => {
+    const { answer, opened } = routesOver()
+    const { status } = await answer(TOPUP_PATH, request('POST', JSON.stringify({ paymentMethod: 'alipay' })))
+    expect(status).toBe(400)
+    expect(opened).toEqual([])
+  })
+
+  it('answers the refusal reason when the site rejects the order', async () => {
+    const { answer } = routesOver({
+      createTopup: async () => { throw new NearTokenTopupError('refused', 'Payment amount is too low') },
+    })
+    const { status, body } = await answer(TOPUP_PATH, request('POST', JSON.stringify({ amount: 50, paymentMethod: 'alipay' })))
+    expect(status).toBe(409)
+    expect(JSON.parse(body)).toEqual({ code: 'refused', message: 'Payment amount is too low' })
+  })
+})

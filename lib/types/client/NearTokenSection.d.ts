@@ -1,5 +1,5 @@
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-import type { NearTokenApi } from './api.ts';
+import { type NearTokenApi } from './api.ts';
 import type { GroupKey } from './locales.ts';
 /** What this section receives from its registration. */
 export interface NearTokenSectionInjected {

@@ -33,6 +33,7 @@
 | `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
 | `src/host/session-key.ts` | 从 `GenerateOptions.sessionId` 取会话亲和键，四条 wire 用它让站点把会话粘在同一渠道 |
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
+| `src/host/topup.ts` | 站点充值面：读 amount 档位与渠道、下单，把 403 `DSH_TOKEN_REQUIRED` 翻成「是否 DSH 密钥」的原因 |
 | `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
 | `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
 | `src/host/image-settings.ts` | 生图设置读写与校验（模型必须是站点当前的生图模型，分组必须是该模型自己的分组） |
@@ -48,7 +49,8 @@
 4. 插件轮询到批准后自动完成：把站点为该插件铸造的 API key 写进 credentials 的 `NEARTOKEN_API_KEY`，并挂上 `neartoken` provider。
 5. 「断开连接」删掉本地凭据、撤掉 provider，并调用站点的撤销端点。
 6. 卡片下方的「模型白名单」勾选即自动保存 —— 未勾选的不再出现在模型选择器里，且当场生效（Host 用 `AdapterRegistrationHandle.replace()` 重新声明同一条路由，同步发布 `llm/adapters-updated`，浏览器重拉目录）。没设置过白名单时默认全部显示，「全部显示」清空白名单。
-7. 再往下的「图像生成」卡片：先勾「启用 generate_image 工具」，再勾要用的生图模型并为每个模型选分组（选的是**计费分组**，不是模型），最后点保存。工具随开关挂载/撤下，模型立刻能用或不能用。
+7. 账户卡片里的「充值」区：点档位或自己填金额 → 「去支付」→ 站点生成易支付订单，插件把支付页交给系统浏览器打开，付完余额在 5 分钟内自动刷新。**只有 DSH 设备授权签发的密钥能下单**；换成普通令牌时这里会显示「重新连接」。
+8. 再往下的「图像生成」卡片：先勾「启用 generate_image 工具」，再勾要用的生图模型并为每个模型选分组（选的是**计费分组**，不是模型），最后点保存。工具随开关挂载/撤下，模型立刻能用或不能用。
 
 备用路径：直接让 credentials 服务存 `NEARTOKEN_API_KEY`，或启动环境导出同名变量 —— provider 会在启动时按凭据现状挂载。
 

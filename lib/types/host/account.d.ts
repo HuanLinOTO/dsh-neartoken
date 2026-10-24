@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { BeginAuthorizationOutcome, NearTokenStatus } from '../protocol.ts';
+import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
 /**
  * How often the wallet facts are re-read while a key is stored. Five minutes
  * matches how stale the card's money numbers may look on an open settings page.
@@ -43,6 +44,24 @@ export declare class NearTokenAccount {
      * @returns true when the credential resolves to a non-empty value.
      */
     configured(): Promise<boolean>;
+    /**
+     * Read the site's top-up offer with the stored key.
+     *
+     * The site answers this only for a key its own device-authorization flow
+     * minted, so a key pasted in from elsewhere is a reason the page can act on
+     * rather than a bug.
+     * @returns the amount ladder, the floor and the enabled gateway methods.
+     * @throws {NearTokenTopupError} when the key is missing, refused, or the site is unreachable.
+     */
+    topupInfo(): Promise<NearTokenTopupInfo>;
+    /**
+     * Start one top-up order.
+     * @param amount - the amount the user picked, in the site's display currency.
+     * @param paymentMethod - one gateway type from {@link topupInfo}.
+     * @returns the order number and the site-relative checkout link.
+     * @throws {NearTokenTopupError} when the key is missing, refused, or the site is unreachable.
+     */
+    createTopup(amount: number, paymentMethod: string): Promise<NearTokenTopupOrder>;
     /**
      * Read the state the settings page draws: the key state, the account, and any
      * authorization still waiting for its human.

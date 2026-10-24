@@ -12,8 +12,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
 } from '../protocol.ts'
+import { NearTokenTopupError, type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts'
 import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
@@ -44,6 +45,12 @@ export interface NearTokenRouteDeps {
    * @param meta - the complete per-model overrides; absent keeps the stored ones.
    */
   saveModels: (enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined) => Promise<void>
+  /** The site's top-up offer, read with the stored key. */
+  topupInfo: () => Promise<NearTokenTopupInfo>
+  /** Start one top-up order; the caller opens the returned checkout link. */
+  createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>
+  /** Site root, for turning the site-relative checkout link absolute. */
+  baseURL: () => string
   /** The picture models beside the stored image-generation setting. */
   images: () => Promise<NearTokenImagesState>
   /**
@@ -242,6 +249,66 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, { ok: true })
     },
   }), `neartoken: ${IMAGES_PATH}`)
+
+  // Top-up: GET reads what the site sells, POST starts one order and hands the
+  // checkout page to the platform launcher. The page never builds the gateway
+  // form itself — the site does, on a signed link — so nothing here can be
+  // pointed at a gateway the site did not sign for.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TOPUP_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method === 'GET') {
+        try {
+          sendJson(res, 200, await deps.topupInfo())
+        } catch (error: unknown) {
+          sendJson(res, 409, refusalOf(error))
+        }
+        return
+      }
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'GET, POST')
+        return
+      }
+      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+      if (body === undefined) return
+      const amount = typeof body.amount === 'number' ? body.amount : undefined
+      const paymentMethod = typeof body.paymentMethod === 'string' ? body.paymentMethod : undefined
+      if (amount === undefined || paymentMethod === undefined) {
+        sendJson(res, 400, { code: 'bad-request', message: 'amount 与 paymentMethod 为必填' })
+        return
+      }
+      let order: NearTokenTopupOrder
+      try {
+        order = await deps.createTopup(amount, paymentMethod)
+      } catch (error: unknown) {
+        // A refusal the user can act on (reconnect) is not a server fault.
+        sendJson(res, 409, refusalOf(error))
+        return
+      }
+      try {
+        await deps.openInBrowser(deps.baseURL().replace(/\/$/, '') + order.payUrl)
+      } catch (error: unknown) {
+        sendJson(res, 500, { code: 'open-failed', message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      sendJson(res, 200, { ok: true, tradeNo: order.tradeNo })
+    },
+  }), `neartoken: ${TOPUP_PATH}`)
+}
+
+/**
+ * Turn a top-up failure into the body the page acts on.
+ * @param error - whatever the account threw.
+ * @returns the status-free refusal body.
+ */
+function refusalOf(error: unknown): { readonly code: string; readonly message: string } {
+  const reason = error instanceof NearTokenTopupError ? error.reason : 'refused'
+  return {
+    code: reason === 'not-dsh' ? 'not-dsh' : reason,
+    message: error instanceof Error ? error.message : String(error),
+  }
 }
 
 /**

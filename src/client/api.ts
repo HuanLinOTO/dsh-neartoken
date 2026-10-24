@@ -5,12 +5,31 @@
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
 } from '../protocol.ts'
 import type {
   BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
-  NearTokenModelsState, NearTokenStatus,
+  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo,
 } from '../protocol.ts'
+
+/**
+ * A top-up call the Host refused, carrying its stable code so the page can tell
+ * "this key is not a device key, reconnect" from "the site said no".
+ */
+export class NearTokenTopupRefusal extends Error {
+  /** The Host's stable refusal code, such as not-dsh. */
+  readonly code: string
+
+  /**
+   * @param code - the Host's refusal code.
+   * @param message - the wording to show.
+   */
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'NearTokenTopupRefusal'
+    this.code = code
+  }
+}
 
 /** The HTTP carrier, injectable so the section's behavior is testable. */
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>
@@ -44,6 +63,13 @@ export interface NearTokenApi {
    * leaves them alone.
    */
   saveModels(enabled: readonly string[], meta?: Readonly<Record<string, import('../protocol.ts').NearTokenModelMeta>>): Promise<void>
+  /** Read the site's top-up offer, or be refused with a code the page acts on. */
+  topupInfo(): Promise<NearTokenTopupInfo>
+  /**
+   * Start one top-up order. The Host opens the site's checkout page in the
+   * user's own browser, so this call only reports success.
+   */
+  startTopup(amount: number, paymentMethod: string): Promise<void>
   /** Read the picture models beside the stored image-generation setting. */
   images(): Promise<NearTokenImagesState>
   /** Save the image-generation setting: the tool's switch and one group per enabled model. */
@@ -59,6 +85,22 @@ export interface NearTokenApi {
 async function jsonOf<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
   return await response.json() as T
+}
+
+/**
+ * Read one top-up answer, turning a coded refusal into {@link NearTokenTopupRefusal}.
+ * @param response - the pending response.
+ * @returns the parsed body.
+ * @throws {NearTokenTopupRefusal} when the Host refused with a code.
+ */
+async function refusalAware<T>(response: Response): Promise<T> {
+  if (response.ok) return await response.json() as T
+  const refusal = await response.json()
+    .catch(() => ({ code: 'refused', message: `HTTP ${String(response.status)}` })) as { code?: string; message?: string }
+  throw new NearTokenTopupRefusal(
+    refusal.code ?? 'refused',
+    refusal.message ?? `HTTP ${String(response.status)}`,
+  )
 }
 
 /**
@@ -109,6 +151,18 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled, ...meta === undefined ? {} : { meta } } satisfies NearTokenModelsPatch),
       }))
+    },
+    async topupInfo() {
+      const response = await fetcher(TOPUP_PATH, { headers: { accept: 'application/json' } })
+      return await refusalAware<NearTokenTopupInfo>(response)
+    },
+    async startTopup(amount, paymentMethod) {
+      const response = await fetcher(TOPUP_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ amount, paymentMethod }),
+      })
+      await refusalAware<unknown>(response)
     },
     async images() {
       return await jsonOf<NearTokenImagesState>(await fetcher(IMAGES_PATH, { headers: { accept: 'application/json' } }))

@@ -10,10 +10,12 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { IconChevronDownOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { computeAmountError } from '../protocol.ts'
 import type {
-  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState, NearTokenStatus,
+  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState,
+  NearTokenStatus, NearTokenTopupInfo,
 } from '../protocol.ts'
-import type { NearTokenApi } from './api.ts'
+import { NearTokenTopupRefusal, type NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
 import { GroupTag, RatioChip } from './group-tags.tsx'
 import type { GroupKey } from './locales.ts'
@@ -264,6 +266,7 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                     )
                     : null}
               </dl>
+              <TopupPanel api={api} onReauthorize={connect} />
               <div className={css.actions}>
                 <button type="button" className={css.button} disabled={busy} onClick={signOut}>
                   {busy ? t('account.signingOut') : t('account.signOut')}
@@ -934,4 +937,105 @@ function ImageGeneration({ api, t }: NearTokenSectionInjected) {
  */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+/**
+ * The top-up block: pick an amount, start an Epay order, and let the Host hand
+ * the site's checkout page to the user's own browser.
+ *
+ * The site only starts orders for a key its device flow minted. When this key is
+ * not one, the block offers the reconnect path instead of a payment button — the
+ * only fix the user can act on.
+ * @param props - the injected route carrier and the reconnect callback.
+ * @returns the block, or nothing when the site sells no top-ups.
+ */
+function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: () => void }) {
+  const [offer, setOffer] = useState<NearTokenTopupInfo | undefined>(undefined)
+  const [needsReauthorize, setNeedsReauthorize] = useState(false)
+  const [picked, setPicked] = useState<number | undefined>(undefined)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    let live = true
+    void (async (): Promise<void> => {
+      try {
+        const answer = await api.topupInfo()
+        if (live) setOffer(answer)
+      } catch (failure: unknown) {
+        if (!live) return
+        if (failure instanceof NearTokenTopupRefusal && failure.code === 'not-dsh') setNeedsReauthorize(true)
+      }
+    })()
+    return () => { live = false }
+  }, [api])
+
+  const amount = picked ?? (typed === '' ? undefined : Number(typed))
+  const refusal = amount === undefined || offer === undefined
+    ? undefined
+    : computeAmountError(amount, offer.minTopup)
+
+  const pay = (): void => {
+    if (offer === undefined || amount === undefined || refusal !== undefined) return
+    const method = offer.methods[0]
+    if (method === undefined) return
+    void (async (): Promise<void> => {
+      setBusy(true)
+      setNotice(undefined)
+      try {
+        await api.startTopup(amount, method.type)
+        setNotice('已在浏览器中打开支付页，完成后余额会自动刷新')
+      } catch (failure: unknown) {
+        if (failure instanceof NearTokenTopupRefusal && failure.code === 'not-dsh') setNeedsReauthorize(true)
+        else setNotice(failure instanceof Error ? failure.message : '支付页打开失败')
+      } finally {
+        setBusy(false)
+      }
+    })()
+  }
+
+  if (needsReauthorize) {
+    return (
+      <div className={css.actions}>
+        <span className={css.hint}>当前密钥不是 DSH 授权签发的，请重新连接</span>
+        <button type="button" className={css.button} onClick={onReauthorize}>重新连接</button>
+      </div>
+    )
+  }
+  if (offer === undefined || !offer.enabled) return null
+
+  return (
+    <div className={css.form}>
+      <div className={css.actions}>
+        {offer.amountOptions.map(option => (
+          <button
+            key={option}
+            type="button"
+            className={picked === option ? css.button + ' ' + css.buttonPrimary : css.button}
+            onClick={() => { setPicked(option); setTyped('') }}
+          >
+            {String(option)}
+          </button>
+        ))}
+        <input
+          type="text"
+          inputMode="numeric"
+          value={typed}
+          placeholder={'自定义金额（不低于 ' + String(offer.minTopup) + '）'}
+          onChange={(event) => { setTyped(event.target.value); setPicked(undefined) }}
+          style={{ width: '9rem' }}
+        />
+        <button
+          type="button"
+          className={css.button + ' ' + css.buttonPrimary}
+          disabled={busy || refusal !== undefined}
+          onClick={pay}
+        >
+          {busy ? '正在下单…' : '去支付'}
+        </button>
+      </div>
+      {refusal === undefined ? null : <p className={css.hint}>{refusal}</p>}
+      {notice === undefined ? null : <p className={css.hint}>{notice}</p>}
+    </div>
+  )
 }

@@ -33,6 +33,40 @@ export declare const LOGOUT_PATH = "/neartoken/logout";
 export declare const MODELS_PATH = "/neartoken/models";
 /** Read the picture models and the image-generation setting; POST one change to it. */
 export declare const IMAGES_PATH = "/neartoken/images";
+/** Read the site's top-up offer; POST one order and open its checkout page. */
+export declare const TOPUP_PATH = "/neartoken/topup";
+/** One gateway method the site enabled. */
+export interface NearTokenTopupMethod {
+    /** The site's method type, posted back when starting an order. */
+    readonly type: string;
+    /** The label the site shows for it. */
+    readonly name: string;
+}
+/** What the settings card may offer, as the Host reads it from the site. */
+export interface NearTokenTopupInfo {
+    /** Whether the site currently sells top-ups at all. */
+    readonly enabled: boolean;
+    /** The lowest amount the site accepts, in its display currency. */
+    readonly minTopup: number;
+    /** The amount ladder the site publishes. */
+    readonly amountOptions: readonly number[];
+    /** The gateway methods the site enabled, in its own order. */
+    readonly methods: readonly NearTokenTopupMethod[];
+}
+/** One started order. */
+export interface NearTokenTopupOrder {
+    /** The site's order number, for support and for the card's own record. */
+    readonly tradeNo: string;
+    /** The site-relative checkout page that must be opened in the user's browser. */
+    readonly payUrl: string;
+}
+/**
+ * Check one top-up amount before it is sent.
+ * @param amount - the number the user typed or picked.
+ * @param min - the site's floor, in its display currency.
+ * @returns the refusal to show, or undefined when the amount is acceptable.
+ */
+export declare function computeAmountError(amount: number, min: number): string | undefined;
 /**
  * One group voucher the wallet carries: a balance that can only pay for its
  * own group. Amounts arrive as raw quota and are shown in the site's own

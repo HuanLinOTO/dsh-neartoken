@@ -11,6 +11,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
 import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
@@ -33,6 +34,12 @@ export interface NearTokenRouteDeps {
      * @param meta - the complete per-model overrides; absent keeps the stored ones.
      */
     saveModels: (enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined) => Promise<void>;
+    /** The site's top-up offer, read with the stored key. */
+    topupInfo: () => Promise<NearTokenTopupInfo>;
+    /** Start one top-up order; the caller opens the returned checkout link. */
+    createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>;
+    /** Site root, for turning the site-relative checkout link absolute. */
+    baseURL: () => string;
     /** The picture models beside the stored image-generation setting. */
     images: () => Promise<NearTokenImagesState>;
     /**
