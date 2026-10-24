@@ -12,7 +12,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { sessionKeyOf } from './session-key.ts'
-import { dataUrlOf, imageOf } from './wire-images.ts'
+import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
 /** One responses input item, as sent. */
@@ -74,8 +74,24 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
       }
       return items
     }
-    case 'tool':
-      return [{ type: 'function_call_output', call_id: message.toolCallId, output: textOf(content) }]
+    case 'tool': {
+      const items: InputItem[] = [{
+        type: 'function_call_output', call_id: message.toolCallId, output: textOf(content),
+      }]
+      // A function_call_output is a string; a picture a tool returned follows as
+      // its own user item, which is how this API accepts input images.
+      const pictures = imagesIn(content, images)
+      if (pictures.length > 0) {
+        items.push({
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'The tool result above included these images:' },
+            ...pictures.map(image => ({ type: 'input_image', image_url: dataUrlOf(image) })),
+          ],
+        })
+      }
+      return items
+    }
     default:
       return []
   }

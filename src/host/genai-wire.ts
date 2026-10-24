@@ -15,7 +15,7 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
-import { imageOf } from './wire-images.ts'
+import { imageOf, imagesIn } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
 /** One genai content object, as sent. */
@@ -100,10 +100,13 @@ function serializeMessage(
     case 'tool': {
       const text = textOf(content)
       const name = toolNames.get(String(message.toolCallId)) ?? String(message.toolCallId)
-      return {
-        role: 'user',
-        parts: [{ functionResponse: { name, response: { result: text } } }],
+      const parts: Record<string, unknown>[] = [{ functionResponse: { name, response: { result: text } } }]
+      // A functionResponse carries JSON, not bytes: a picture a tool returned
+      // follows as its own inlineData part in the same user turn.
+      for (const image of imagesIn(content, images)) {
+        parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
       }
+      return { role: 'user', parts }
     }
     default:
       return undefined

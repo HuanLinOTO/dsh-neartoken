@@ -42,6 +42,55 @@ export interface ImageSource {
 }
 
 /**
+ * Collect the image references inside one block list.
+ *
+ * A tool result carries its own blocks (`tool-result.content`), and a picture a
+ * tool handed back lives there rather than at the top level of the message: the
+ * `read_image` tool answers with exactly that shape. Descent stops at two levels
+ * because that is the deepest a harness content block nests.
+ * @param blocks - one message's or one tool result's blocks.
+ * @param into - the list the references are appended to.
+ */
+function collectImages(
+  blocks: readonly unknown[],
+  into: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number }[],
+): void {
+  for (const block of blocks) {
+    if (typeof block !== 'object' || block === null) continue
+    const candidate = block as {
+      type?: string
+      attachment?: typeof into[number]
+      content?: readonly unknown[]
+    }
+    if (candidate.type === 'image' && candidate.attachment !== undefined) {
+      into.push(candidate.attachment)
+      continue
+    }
+    if (candidate.type === 'tool-result' && Array.isArray(candidate.content)) {
+      collectImages(candidate.content, into)
+    }
+  }
+}
+
+/** One block list's images, in message order. Callers own the inlined map. */
+export function imagesIn(content: readonly unknown[], images: WireImages): WireImage[] {
+  const found: WireImage[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    const candidate = block as { type?: string; content?: readonly unknown[] }
+    if (candidate.type === 'image') {
+      const image = imageOf(block, images)
+      if (image !== undefined) found.push(image)
+      continue
+    }
+    if (candidate.type === 'tool-result' && Array.isArray(candidate.content)) {
+      found.push(...imagesIn(candidate.content, images))
+    }
+  }
+  return found
+}
+
+/**
  * Collect every image a request's messages carry, inlined for the wires.
  * @param attachments - the attachment service, when the composition has one.
  * @param messages - the request's conversation messages.
@@ -55,14 +104,7 @@ export async function inlineImages(
   signal?: AbortSignal,
 ): Promise<WireImages> {
   const references: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number }[] = []
-  for (const message of messages) {
-    for (const block of message.content as readonly unknown[]) {
-      if (typeof block !== 'object' || block === null) continue
-      const candidate = block as { type?: string; attachment?: typeof references[number] }
-      if (candidate.type !== 'image' || candidate.attachment === undefined) continue
-      references.push(candidate.attachment)
-    }
-  }
+  for (const message of messages) collectImages(message.content as readonly unknown[], references)
   if (references.length === 0) return new Map()
   if (attachments === undefined) {
     throw new LlmError(

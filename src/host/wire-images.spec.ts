@@ -103,3 +103,67 @@ describe('each wire sends the picture', () => {
     expect(gpt.input[0]?.content).toBe('hi')
   })
 })
+
+describe('images a tool returned', () => {
+  /** The attachment service the tool-result tests inline through. */
+  const attachments: ImageSource = {
+    readImage: async () => ({ data: new Uint8Array([1, 2, 3]) }),
+  }
+
+  /** One read_image call and its result carrying a picture. */
+  const TOOL_TURN = [
+    { role: 'assistant', content: [{ type: 'tool-call', id: 'call_1', name: 'read_image', arguments: '{}' }] },
+    {
+      role: 'tool',
+      toolCallId: 'call_1',
+      content: [{ type: 'text', text: 'read 1 image' }, { type: 'image', attachment: REF }],
+    },
+  ]
+
+  /**
+   * One request over the tool turn.
+   * @param model - the model whose wire serializes it.
+   * @returns the harness request.
+   */
+  function toolRequest(model: string): GenerateOptions {
+    return { provider: 'NearToken', model, messages: TOOL_TURN } as unknown as GenerateOptions
+  }
+
+  it('inlines a picture that sits inside a tool result', async () => {
+    const images = await inlineImages(attachments, TOOL_TURN as never)
+    expect(images.get('sha256:abc')).toEqual({ mediaType: 'image/png', data: 'AQID' })
+  })
+
+  it('keeps the picture inside the Anthropic tool_result block', async () => {
+    const images = await inlineImages(attachments, TOOL_TURN as never)
+    const body = wireFor('claude-opus-5-5').serialize(toolRequest('claude-opus-5-5'), 'claude-opus-5-5', images)
+    const messages = body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    const result = messages.at(-1)?.content[0] as { type: string; content: Array<Record<string, unknown>> }
+    expect(result.type).toBe('tool_result')
+    expect(result.content.map(part => part.type)).toEqual(['text', 'image'])
+  })
+
+  it('adds the picture as a user turn on chat completions, whose tool message is text-only', async () => {
+    const images = await inlineImages(attachments, TOOL_TURN as never)
+    const body = wireFor('grok-4.6').serialize(toolRequest('grok-4.6'), 'grok-4.6', images)
+    const messages = body.messages as Array<{ role: string; content: unknown }>
+    expect(messages.map(message => message.role)).toEqual(['assistant', 'tool', 'user'])
+    expect(JSON.stringify(messages.at(-1))).toContain('data:image/png;base64,AQID')
+  })
+
+  it('adds the picture as a user item on the Responses API', async () => {
+    const images = await inlineImages(attachments, TOOL_TURN as never)
+    const body = wireFor('gpt-5.2').serialize(toolRequest('gpt-5.2'), 'gpt-5.2', images)
+    const input = body.input as Array<Record<string, unknown>>
+    expect(input.map(item => item.type ?? item.role)).toEqual(['function_call', 'function_call_output', 'user'])
+    expect(JSON.stringify(input.at(-1))).toContain('data:image/png;base64,AQID')
+  })
+
+  it('adds the picture as an inline part on generateContent', async () => {
+    const images = await inlineImages(attachments, TOOL_TURN as never)
+    const body = wireFor('gemini-3.8-flash').serialize(toolRequest('gemini-3.8-flash'), 'gemini-3.8-flash', images)
+    const contents = body.contents as Array<{ parts: Array<Record<string, unknown>> }>
+    const parts = contents.at(-1)?.parts ?? []
+    expect(parts.some(part => part.inlineData !== undefined)).toBe(true)
+  })
+})
