@@ -195,6 +195,46 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
   // it elsewhere only edits its own dictionary entry.
   const [vouchersBefore = '', vouchersAfter = ''] = t('account.vouchersEmpty').split('{link}')
   const minutes = pending === undefined ? 0 : Math.max(1, Math.round((pending.expiresAt - Date.now()) / 60_000))
+  const pendingBlock = pending === undefined
+    ? null
+    : (
+      <div className={css.form}>
+        <p className={css.hint}>{t('account.waiting')}</p>
+        <div className={css.codeRow}>
+          <span className={css.label}>{t('account.userCode')}</span>
+          <code className={css.code}>{pending.userCode}</code>
+        </div>
+        <div className={css.actions}>
+          <button
+            type="button" className={`${css.button} ${css.buttonPrimary}`}
+            onClick={openAddress}
+          >
+            {t('account.openBrowser')}
+          </button>
+          <button type="button" className={css.button} disabled={busy} onClick={cancel}>
+            {busy ? t('account.cancelling') : t('account.cancel')}
+          </button>
+        </div>
+        {/* Some platforms (macOS among them) let the automatic
+            browser launch do nothing, so the address is also handed
+            over as selectable text that can be copied by hand. */}
+        <div className={css.linkRow}>
+          <span className={css.label}>{t('account.manualLink')}</span>
+          <div className={css.linkLine}>
+            <a
+              className={css.link} href={pending.verificationUriComplete}
+              target="_blank" rel="noopener noreferrer"
+            >
+              {pending.verificationUriComplete}
+            </a>
+            <button type="button" className={css.button} onClick={copyAddress}>
+              {copied ? t('account.copied') : t('account.copyLink')}
+            </button>
+          </div>
+        </div>
+        <p className={css.hint}>{t('account.expiresIn', { minutes: String(minutes) })}</p>
+      </div>
+    )
   return (
     <div className={css.section}>
       <h2 className={css.title}>{t('account.title')}</h2>
@@ -266,7 +306,7 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                     )
                     : null}
               </dl>
-              <TopupPanel api={api} onReauthorize={connect} />
+              {pendingBlock ?? <TopupPanel api={api} t={t} busy={busy} onReauthorize={connect} />}
               <div className={css.actions}>
                 <button type="button" className={css.button} disabled={busy} onClick={signOut}>
                   {busy ? t('account.signingOut') : t('account.signOut')}
@@ -281,54 +321,15 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                 <span className={css.badge}>{t('account.disconnected')}</span>
               </div>
               <p className={css.hint}>{t('account.site')}：{status.baseURL}</p>
-              {pending === undefined
-                ? (
-                  <div className={css.actions}>
-                    <button
-                      type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={busy} onClick={connect}
-                    >
-                      {busy ? t('account.connecting') : t('account.connect')}
-                    </button>
-                  </div>
-                )
-                : (
-                  <div className={css.form}>
-                    <p className={css.hint}>{t('account.waiting')}</p>
-                    <div className={css.codeRow}>
-                      <span className={css.label}>{t('account.userCode')}</span>
-                      <code className={css.code}>{pending.userCode}</code>
-                    </div>
-                    <div className={css.actions}>
-                      <button
-                        type="button" className={`${css.button} ${css.buttonPrimary}`}
-                        onClick={openAddress}
-                      >
-                        {t('account.openBrowser')}
-                      </button>
-                      <button type="button" className={css.button} disabled={busy} onClick={cancel}>
-                        {busy ? t('account.cancelling') : t('account.cancel')}
-                      </button>
-                    </div>
-                    {/* Some platforms (macOS among them) let the automatic
-                        browser launch do nothing, so the address is also handed
-                        over as selectable text that can be copied by hand. */}
-                    <div className={css.linkRow}>
-                      <span className={css.label}>{t('account.manualLink')}</span>
-                      <div className={css.linkLine}>
-                        <a
-                          className={css.link} href={pending.verificationUriComplete}
-                          target="_blank" rel="noopener noreferrer"
-                        >
-                          {pending.verificationUriComplete}
-                        </a>
-                        <button type="button" className={css.button} onClick={copyAddress}>
-                          {copied ? t('account.copied') : t('account.copyLink')}
-                        </button>
-                      </div>
-                    </div>
-                    <p className={css.hint}>{t('account.expiresIn', { minutes: String(minutes) })}</p>
-                  </div>
-                )}
+              {pendingBlock ?? (
+                <div className={css.actions}>
+                  <button
+                    type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={busy} onClick={connect}
+                  >
+                    {busy ? t('account.connecting') : t('account.connect')}
+                  </button>
+                </div>
+              )}
             </section>
           )}
       {error === undefined ? null : <p className={css.notice}>{error}</p>}
@@ -948,7 +949,14 @@ function messageOf(error: unknown): string {
  * @param props - the injected route carrier and the reconnect callback.
  * @returns the block, or nothing when the site sells no top-ups.
  */
-function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: () => void }) {
+function TopupPanel({
+  api, t, busy: authBusy, onReauthorize,
+}: {
+  api: NearTokenApi
+  t: NearTokenSectionInjected['t']
+  busy: boolean
+  onReauthorize: () => void
+}) {
   const [offer, setOffer] = useState<NearTokenTopupInfo | undefined>(undefined)
   const [needsReauthorize, setNeedsReauthorize] = useState(false)
   const [picked, setPicked] = useState<number | undefined>(undefined)
@@ -961,7 +969,9 @@ function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: 
     void (async (): Promise<void> => {
       try {
         const answer = await api.topupInfo()
-        if (live) setOffer(answer)
+        if (!live) return
+        setOffer(answer)
+        setNeedsReauthorize(false)
       } catch (failure: unknown) {
         if (!live) return
         if (failure instanceof NearTokenTopupRefusal && failure.code === 'not-dsh') setNeedsReauthorize(true)
@@ -970,7 +980,8 @@ function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: 
     return () => { live = false }
   }, [api])
 
-  const amount = picked ?? (typed === '' ? undefined : Number(typed))
+  const trimmed = typed.trim()
+  const amount = picked ?? (trimmed === '' ? undefined : Number(trimmed))
   const refusal = amount === undefined || offer === undefined
     ? undefined
     : computeAmountError(amount, offer.minTopup)
@@ -984,10 +995,10 @@ function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: 
       setNotice(undefined)
       try {
         await api.startTopup(amount, method.type)
-        setNotice('已在浏览器中打开支付页，完成后余额会自动刷新')
+        setNotice(t('topup.opened'))
       } catch (failure: unknown) {
         if (failure instanceof NearTokenTopupRefusal && failure.code === 'not-dsh') setNeedsReauthorize(true)
-        else setNotice(failure instanceof Error ? failure.message : '支付页打开失败')
+        else setNotice(failure instanceof Error ? failure.message : t('topup.failed'))
       } finally {
         setBusy(false)
       }
@@ -997,44 +1008,50 @@ function TopupPanel({ api, onReauthorize }: { api: NearTokenApi; onReauthorize: 
   if (needsReauthorize) {
     return (
       <div className={css.actions}>
-        <span className={css.hint}>当前密钥不是 DSH 授权签发的，请重新连接</span>
-        <button type="button" className={css.button} onClick={onReauthorize}>重新连接</button>
+        <span className={css.hint}>{t('topup.reauthHint')}</span>
+        <button type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={authBusy} onClick={onReauthorize}>
+          {authBusy ? t('account.connecting') : t('topup.reauth')}
+        </button>
       </div>
     )
   }
   if (offer === undefined || !offer.enabled) return null
 
   return (
-    <div className={css.form}>
-      <div className={css.actions}>
+    <div className={css.topup}>
+      <span className={css.label}>{t('topup.label')}</span>
+      <div className={css.topupChips}>
         {offer.amountOptions.map(option => (
           <button
             key={option}
             type="button"
-            className={picked === option ? css.button + ' ' + css.buttonPrimary : css.button}
+            aria-pressed={picked === option}
+            className={picked === option ? `${css.topupChip} ${css.topupChipActive}` : css.topupChip}
             onClick={() => { setPicked(option); setTyped('') }}
           >
             {String(option)}
           </button>
         ))}
+      </div>
+      <div className={css.topupBar}>
         <input
           type="text"
           inputMode="numeric"
+          className={css.topupInput}
           value={typed}
-          placeholder={'自定义金额（不低于 ' + String(offer.minTopup) + '）'}
+          placeholder={t('topup.customPlaceholder', { min: String(offer.minTopup) })}
           onChange={(event) => { setTyped(event.target.value); setPicked(undefined) }}
-          style={{ width: '9rem' }}
         />
         <button
           type="button"
-          className={css.button + ' ' + css.buttonPrimary}
-          disabled={busy || refusal !== undefined}
+          className={`${css.button} ${css.buttonPrimary}`}
+          disabled={busy || amount === undefined || refusal !== undefined}
           onClick={pay}
         >
-          {busy ? '正在下单…' : '去支付'}
+          {busy ? t('topup.paying') : t('topup.pay')}
         </button>
       </div>
-      {refusal === undefined ? null : <p className={css.hint}>{refusal}</p>}
+      {refusal === undefined ? null : <p className={css.notice}>{refusal}</p>}
       {notice === undefined ? null : <p className={css.hint}>{notice}</p>}
     </div>
   )

@@ -118,6 +118,14 @@ export const zh = {
   'images.count': '{total} 个生图模型',
   'images.picked': '已启用 {selected}',
   'images.groupAria': '{model} 使用的分组',
+  'topup.label': '在线充值',
+  'topup.customPlaceholder': '自定义金额（≥ {min}）',
+  'topup.pay': '去支付',
+  'topup.paying': '正在下单…',
+  'topup.opened': '已在浏览器中打开支付页，完成后余额会自动刷新',
+  'topup.failed': '支付页打开失败',
+  'topup.reauthHint': '当前密钥不是 DSH 授权签发的，请重新连接',
+  'topup.reauth': '重新连接',
 } satisfies Record<string, string>
 
 /** The dictionary key union. */
@@ -237,4 +245,12 @@ export const en = {
   'images.count': '{total} picture models',
   'images.picked': '{selected} enabled',
   'images.groupAria': 'Group used by {model}',
+  'topup.label': 'Top up',
+  'topup.customPlaceholder': 'Custom (≥ {min})',
+  'topup.pay': 'Pay',
+  'topup.paying': 'Starting…',
+  'topup.opened': 'Checkout opened in your browser; balance refreshes once paid',
+  'topup.failed': 'Could not open checkout page',
+  'topup.reauthHint': 'This key was not issued by DSH authorization; reconnect to top up',
+  'topup.reauth': 'Reconnect',
 } satisfies Record<GroupKey, string>

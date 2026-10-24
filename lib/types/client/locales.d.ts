@@ -117,6 +117,14 @@ export declare const zh: {
     'images.count': string;
     'images.picked': string;
     'images.groupAria': string;
+    'topup.label': string;
+    'topup.customPlaceholder': string;
+    'topup.pay': string;
+    'topup.paying': string;
+    'topup.opened': string;
+    'topup.failed': string;
+    'topup.reauthHint': string;
+    'topup.reauth': string;
 };
 /** The dictionary key union. */
 export type GroupKey = keyof typeof zh;
@@ -234,4 +242,12 @@ export declare const en: {
     'images.count': string;
     'images.picked': string;
     'images.groupAria': string;
+    'topup.label': string;
+    'topup.customPlaceholder': string;
+    'topup.pay': string;
+    'topup.paying': string;
+    'topup.opened': string;
+    'topup.failed': string;
+    'topup.reauthHint': string;
+    'topup.reauth': string;
 };

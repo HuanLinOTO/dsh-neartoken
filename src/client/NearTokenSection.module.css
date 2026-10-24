@@ -236,7 +236,77 @@
 .actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.topup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.topupChips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.topupBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.topupChip {
+  flex: 0 0 auto;
+  min-width: 48px;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.topupChip:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.topupChipActive,
+.topupChipActive:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-fill);
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-inverted);
+}
+
+.topupInput {
+  flex: 0 1 140px;
+  width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  outline: none;
+}
+
+.topupInput:focus {
+  border-color: var(--dsw-alias-button-primary-fill);
+}
+
+.topupInput::placeholder {
+  color: var(--dsw-alias-label-dimmed);
 }
 
 .metaBtn {
@@ -314,9 +384,11 @@
 }
 
 .button {
+  flex: 0 0 auto;
   height: 32px;
   padding: 0 14px;
   font-size: 14px;
+  white-space: nowrap;
   border-radius: var(--dsw-radius-md);
   border: 0.5px solid var(--dsw-alias-settings-card-stroke);
   background: var(--dsw-alias-button-elevated-fill);
