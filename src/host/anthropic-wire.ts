@@ -173,7 +173,12 @@ export function serializeRequest(
   const affinityKey = sessionKeyOf(options)
   if (affinityKey !== undefined) body.metadata = { user_id: affinityKey }
   if (options.reasoningEffort !== undefined) {
-    body.thinking = { type: 'adaptive' }
+    // `display` decides whether the block has any text at all: a Claude 5
+    // generation omits the summary unless it is asked for, and streams a
+    // thinking block whose content is empty with only its signature filled in.
+    // The harness has nowhere to keep a signature, so an omitted display reads
+    // as "this model never thought".
+    body.thinking = { type: 'adaptive', display: 'summarized' }
     body.output_config = { effort: claudeEffort(options.reasoningEffort) }
   }
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens

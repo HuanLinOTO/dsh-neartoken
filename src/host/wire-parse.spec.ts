@@ -187,14 +187,16 @@ describe('anthropic messages wire', () => {
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
   })
 
-  it('asks for adaptive thinking with the chosen effort', () => {
+  it('asks for adaptive thinking with the chosen effort and a visible summary', () => {
     // A token budget is rejected by the Claude 5 generation, while adaptive is
-    // accepted by every generation behind this gateway.
+    // accepted by every generation behind this gateway. `display` is what makes
+    // the thinking block carry text: without it the gateway streams a block with
+    // an empty summary and a signature the harness cannot keep.
     const body = serializeAnthropic(
       { ...request(), reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
       'claude-opus-5-5',
     )
-    expect(body.thinking).toEqual({ type: 'adaptive' })
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
     expect(body.output_config).toEqual({ effort: 'high' })
   })
 
