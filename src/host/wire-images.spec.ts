@@ -129,7 +129,7 @@ describe('images a tool returned', () => {
     return { provider: 'NearToken', model, messages: TOOL_TURN } as unknown as GenerateOptions
   }
 
-  it('inlines a picture that sits inside a tool result', async () => {
+  it('inlines the picture a tool result carries at its top level', async () => {
     const images = await inlineImages(attachments, TOOL_TURN as never)
     expect(images.get('sha256:abc')).toEqual({ mediaType: 'image/png', data: 'AQID' })
   })
@@ -143,7 +143,7 @@ describe('images a tool returned', () => {
     expect(result.content.map(part => part.type)).toEqual(['text', 'image'])
   })
 
-  it('adds the picture as a user turn on chat completions, whose tool message is text-only', async () => {
+  it('adds the picture as a user turn after the tool result on chat completions', async () => {
     const images = await inlineImages(attachments, TOOL_TURN as never)
     const body = wireFor('grok-4.6').serialize(toolRequest('grok-4.6'), 'grok-4.6', images)
     const messages = body.messages as Array<{ role: string; content: unknown }>
@@ -165,5 +165,66 @@ describe('images a tool returned', () => {
     const contents = body.contents as Array<{ parts: Array<Record<string, unknown>> }>
     const parts = contents.at(-1)?.parts ?? []
     expect(parts.some(part => part.inlineData !== undefined)).toBe(true)
+  })
+
+  /** Two tools called in parallel; only the first hands back a picture. */
+  const PARALLEL_TURN = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', id: 'call_1', name: 'read_image', arguments: '{}' },
+        { type: 'tool-call', id: 'call_2', name: 'read', arguments: '{}' },
+      ],
+    },
+    {
+      role: 'tool',
+      toolCallId: 'call_1',
+      content: [{ type: 'text', text: 'read 1 image' }, { type: 'image', attachment: REF }],
+    },
+    { role: 'tool', toolCallId: 'call_2', content: [{ type: 'text', text: 'plain' }] },
+  ]
+
+  /**
+   * One request over the given messages.
+   * @param messages - the conversation.
+   * @param model - the model whose wire serializes it.
+   * @returns the harness request.
+   */
+  function over(messages: readonly unknown[], model: string): GenerateOptions {
+    return { provider: 'NearToken', model, messages } as unknown as GenerateOptions
+  }
+
+  it('keeps a parallel tool run together on chat completions', async () => {
+    const images = await inlineImages(attachments, PARALLEL_TURN as never)
+    const body = wireFor('grok-4.6').serialize(over(PARALLEL_TURN, 'grok-4.6'), 'grok-4.6', images)
+    const messages = body.messages as Array<{ role: string }>
+    expect(messages.map(message => message.role)).toEqual(['assistant', 'tool', 'tool', 'user'])
+  })
+
+  it('keeps a parallel tool run together on the Responses API', async () => {
+    const images = await inlineImages(attachments, PARALLEL_TURN as never)
+    const body = wireFor('gpt-5.2').serialize(over(PARALLEL_TURN, 'gpt-5.2'), 'gpt-5.2', images)
+    const input = body.input as Array<Record<string, unknown>>
+    expect(input.map(item => item.type ?? item.role))
+      .toEqual(['function_call', 'function_call', 'function_call_output', 'function_call_output', 'user'])
+  })
+
+  it('adds no user turn when a tool result carries text only', async () => {
+    const images = await inlineImages(attachments, PARALLEL_TURN.slice(0, 2) as never)
+    const chat = wireFor('grok-4.6').serialize(over([PARALLEL_TURN[0], PARALLEL_TURN[2]], 'grok-4.6'), 'grok-4.6', images)
+    expect((chat.messages as Array<{ role: string }>).map(message => message.role)).toEqual(['assistant', 'tool'])
+    const gpt = wireFor('gpt-5.2').serialize(over([PARALLEL_TURN[0], PARALLEL_TURN[2]], 'gpt-5.2'), 'gpt-5.2', images)
+    expect((gpt.input as Array<Record<string, unknown>>).map(item => item.type ?? item.role))
+      .toEqual(['function_call', 'function_call', 'function_call_output'])
+  })
+
+  it('sends no bytes for an image the session offloaded', async () => {
+    const offloaded = [{ role: 'user', content: [{ type: 'image', attachment: REF, offloaded: true }] }]
+    const reads: string[] = []
+    const images = await inlineImages({ readImage: async (ref) => { reads.push(String(ref.attachmentId)); return { data: new Uint8Array([1]) } } }, offloaded as never)
+    expect(reads).toEqual([])
+    expect(images.size).toBe(0)
+    const body = wireFor('grok-4.6').serialize(over(offloaded, 'grok-4.6'), 'grok-4.6', images)
+    expect(JSON.stringify(body)).not.toContain('base64')
   })
 })

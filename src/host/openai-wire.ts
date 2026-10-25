@@ -12,7 +12,7 @@ import type {
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { sessionKeyOf } from './session-key.ts'
 import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
-import type { WireImages } from './wire-images.ts'
+import type { WireImage, WireImages } from './wire-images.ts'
 
 /** One wire-format chat message. */
 type WireMessage = Record<string, unknown>
@@ -45,10 +45,20 @@ export function serializeRequest(
   if (options.system !== undefined && options.system.length > 0) {
     messages.push({ role: 'system', content: options.system })
   }
+  const pending: WireImage[] = []
   for (const message of options.messages) {
+    // A chat tool message carries text alone. The pictures an uninterrupted run
+    // of tool results returned follow the last one, so a parallel batch keeps its
+    // tool messages together instead of splitting them with a user turn.
+    if (pending.length > 0 && message.role !== 'tool') {
+      messages.push(toolImagesTurn(pending))
+      pending.length = 0
+    }
+    if (message.role === 'tool') pending.push(...imagesIn(message.content as readonly unknown[], images))
     const wire = serializeMessage(message, images)
-    if (wire !== undefined) messages.push(...wire)
+    if (wire !== undefined) messages.push(wire)
   }
+  if (pending.length > 0) messages.push(toolImagesTurn(pending))
   const body: Record<string, unknown> = {
     model,
     messages,
@@ -71,11 +81,6 @@ export function serializeRequest(
 }
 
 /**
- * Map one harness message onto its OpenAI wire form.
- * @param message - one conversation or user-input message.
- * @returns the wire message, or undefined for a message with nothing to send.
- */
-/**
  * Build one user turn's content: plain text when it carries only text, a part
  * list once a picture has to ride along.
  * @param content - the message's content blocks.
@@ -93,16 +98,40 @@ function userContentOf(content: readonly unknown[], images: WireImages): string 
   return parts.some(part => (part as { type?: string }).type === 'image_url') ? parts : text
 }
 
-function serializeMessage(message: RequestMessage, images: WireImages): WireMessage[] | undefined {
+/**
+ * Build the user turn carrying the pictures a run of tool results returned.
+ *
+ * This wire has no place for bytes inside a tool message, so the pictures follow
+ * as input the model reads the same way it reads a pasted screenshot.
+ * @param pictures - the run's pictures, in tool-result order.
+ * @returns one user message naming them and holding their bytes.
+ */
+function toolImagesTurn(pictures: readonly WireImage[]): WireMessage {
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'The tool results above included these images:' },
+      ...pictures.map(image => ({ type: 'image_url', image_url: { url: dataUrlOf(image) } })),
+    ],
+  }
+}
+
+/**
+ * Map one harness message onto its OpenAI wire form.
+ * @param message - one conversation or user-input message.
+ * @param images - the request's inlined images.
+ * @returns the wire message, or undefined for a message with nothing to send.
+ */
+function serializeMessage(message: RequestMessage, images: WireImages): WireMessage | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'system':
     case 'developer': {
       const text = textOf(content)
-      return text === '' ? undefined : [{ role: 'system', content: text }]
+      return text === '' ? undefined : { role: 'system', content: text }
     }
     case 'user':
-      return [{ role: 'user', content: userContentOf(content, images) }]
+      return { role: 'user', content: userContentOf(content, images) }
     case 'assistant': {
       const toolCalls = content
         .filter((block): block is ToolCallBlock => typeof block === 'object' && block !== null
@@ -115,25 +144,10 @@ function serializeMessage(message: RequestMessage, images: WireImages): WireMess
       const text = textOf(content)
       const wire: WireMessage = { role: 'assistant', content: text === '' && toolCalls.length > 0 ? null : text }
       if (toolCalls.length > 0) wire.tool_calls = toolCalls
-      return [wire]
+      return wire
     }
-    case 'tool': {
-      const toolMessage: WireMessage = {
-        role: 'tool', tool_call_id: message.toolCallId, content: textOf(content),
-      }
-      // A chat tool message carries text alone, so a picture a tool handed back
-      // would be lost. It follows as a user turn of its own, which every model
-      // behind this gateway reads the same way it reads a pasted image.
-      const pictures = imagesIn(content, images)
-      if (pictures.length === 0) return [toolMessage]
-      return [toolMessage, {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'The tool result above included these images:' },
-          ...pictures.map(image => ({ type: 'image_url', image_url: { url: dataUrlOf(image) } })),
-        ],
-      }]
-    }
+    case 'tool':
+      return { role: 'tool', tool_call_id: message.toolCallId, content: textOf(content) }
     default:
       return undefined
   }

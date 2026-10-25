@@ -87,22 +87,23 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
     }
     case 'tool': {
       const text = textOf(content)
-      // A tool result is itself a block list, so a picture a tool handed back
-      // (read_image does exactly that) travels inside the result instead of
-      // being flattened away.
+      // A tool result is itself a block list, so the pictures a tool handed back
+      // (read_image does exactly that) travel inside the result rather than being
+      // flattened into its text.
       const pictures = imagesIn(content, images)
-      const content_ = pictures.length === 0
-        ? text
-        : [
-            ...text === '' ? [] : [{ type: 'text', text }],
-            ...pictures.map(image => ({
-              type: 'image',
-              source: { type: 'base64', media_type: image.mediaType, data: image.data },
-            })),
-          ]
+      if (pictures.length === 0) {
+        return {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: text }],
+        }
+      }
+      const blocks: WireBlock[] = text === '' ? [] : [{ type: 'text', text }]
+      for (const image of pictures) {
+        blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
+      }
       return {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: content_ }],
+        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: blocks }],
       }
     }
     default:

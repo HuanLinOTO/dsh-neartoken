@@ -41,51 +41,24 @@ export interface ImageSource {
   ): Promise<{ data: Uint8Array }>
 }
 
-/**
- * Collect the image references inside one block list.
- *
- * A tool result carries its own blocks (`tool-result.content`), and a picture a
- * tool handed back lives there rather than at the top level of the message: the
- * `read_image` tool answers with exactly that shape. Descent stops at two levels
- * because that is the deepest a harness content block nests.
- * @param blocks - one message's or one tool result's blocks.
- * @param into - the list the references are appended to.
- */
-function collectImages(
-  blocks: readonly unknown[],
-  into: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number }[],
-): void {
-  for (const block of blocks) {
-    if (typeof block !== 'object' || block === null) continue
-    const candidate = block as {
-      type?: string
-      attachment?: typeof into[number]
-      content?: readonly unknown[]
-    }
-    if (candidate.type === 'image' && candidate.attachment !== undefined) {
-      into.push(candidate.attachment)
-      continue
-    }
-    if (candidate.type === 'tool-result' && Array.isArray(candidate.content)) {
-      collectImages(candidate.content, into)
-    }
-  }
-}
+/** One durable image reference, as a message block carries it. */
+type ImageReference = Parameters<ImageSource['readImage']>[0]
 
-/** One block list's images, in message order. Callers own the inlined map. */
+/**
+ * The images one block list carries, in message order.
+ *
+ * Message content is flat: a tool result keeps the blocks its tool rendered (a
+ * `read_image` result is a text envelope beside its image), so a picture a tool
+ * handed back sits at the top level exactly like a pasted screenshot.
+ * @param content - one message's content blocks.
+ * @param images - the request's inlined images.
+ * @returns every image in the list that carries inlined bytes, in order.
+ */
 export function imagesIn(content: readonly unknown[], images: WireImages): WireImage[] {
   const found: WireImage[] = []
   for (const block of content) {
-    if (typeof block !== 'object' || block === null) continue
-    const candidate = block as { type?: string; content?: readonly unknown[] }
-    if (candidate.type === 'image') {
-      const image = imageOf(block, images)
-      if (image !== undefined) found.push(image)
-      continue
-    }
-    if (candidate.type === 'tool-result' && Array.isArray(candidate.content)) {
-      found.push(...imagesIn(candidate.content, images))
-    }
+    const image = imageOf(block, images)
+    if (image !== undefined) found.push(image)
   }
   return found
 }
@@ -103,8 +76,18 @@ export async function inlineImages(
   messages: readonly RequestMessage[],
   signal?: AbortSignal,
 ): Promise<WireImages> {
-  const references: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number }[] = []
-  for (const message of messages) collectImages(message.content as readonly unknown[], references)
+  const references: ImageReference[] = []
+  for (const message of messages) {
+    for (const block of message.content as readonly unknown[]) {
+      if (typeof block !== 'object' || block === null) continue
+      const candidate = block as { type?: string; attachment?: ImageReference; offloaded?: true }
+      // An offloaded occurrence is the durable decision to send placeholder text
+      // for it, so its bytes are never read back for a request.
+      if (candidate.type !== 'image' || candidate.attachment === undefined) continue
+      if (candidate.offloaded === true) continue
+      references.push(candidate.attachment)
+    }
+  }
   if (references.length === 0) return new Map()
   if (attachments === undefined) {
     throw new LlmError(
@@ -138,8 +121,9 @@ export async function inlineImages(
  */
 export function imageOf(block: unknown, images: WireImages): WireImage | undefined {
   if (typeof block !== 'object' || block === null) return undefined
-  const candidate = block as { type?: string; attachment?: { attachmentId?: unknown } }
+  const candidate = block as { type?: string; attachment?: { attachmentId?: unknown }; offloaded?: true }
   if (candidate.type !== 'image' || candidate.attachment?.attachmentId === undefined) return undefined
+  if (candidate.offloaded === true) return undefined
   return images.get(String(candidate.attachment.attachmentId))
 }
 
