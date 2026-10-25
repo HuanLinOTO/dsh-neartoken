@@ -25,7 +25,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { sessionKeyOf } from './session-key.ts'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
-import { imageOf } from './wire-images.ts'
+import { imageOf, imagesIn } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
 /** One Anthropic content block, as sent. */
@@ -87,9 +87,23 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
     }
     case 'tool': {
       const text = textOf(content)
+      // A tool result is itself a block list, so the pictures a tool handed back
+      // (read_image does exactly that) travel inside the result rather than being
+      // flattened into its text.
+      const pictures = imagesIn(content, images)
+      if (pictures.length === 0) {
+        return {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: text }],
+        }
+      }
+      const blocks: WireBlock[] = text === '' ? [] : [{ type: 'text', text }]
+      for (const image of pictures) {
+        blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
+      }
       return {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: text }],
+        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: blocks }],
       }
     }
     default:

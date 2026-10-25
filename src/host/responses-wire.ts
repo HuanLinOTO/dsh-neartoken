@@ -12,8 +12,8 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { sessionKeyOf } from './session-key.ts'
-import { dataUrlOf, imageOf } from './wire-images.ts'
-import type { WireImages } from './wire-images.ts'
+import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
+import type { WireImage, WireImages } from './wire-images.ts'
 
 /** One responses input item, as sent. */
 type InputItem = Record<string, unknown>
@@ -82,6 +82,24 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
 }
 
 /**
+ * Build the user item carrying the pictures a run of tool results returned.
+ *
+ * A function_call_output holds a string only, so the pictures follow as input
+ * the model reads the same way it reads a pasted screenshot.
+ * @param pictures - the run's pictures, in tool-result order.
+ * @returns one user item naming them and holding their bytes.
+ */
+function toolImagesItem(pictures: readonly WireImage[]): InputItem {
+  return {
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'The tool results above included these images:' },
+      ...pictures.map(image => ({ type: 'input_image', image_url: dataUrlOf(image) })),
+    ],
+  }
+}
+
+/**
  * Serialize one harness request into a responses body.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to.
@@ -91,7 +109,19 @@ export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
   const input: InputItem[] = []
-  for (const message of options.messages) input.push(...serializeMessage(message, images))
+  const pending: WireImage[] = []
+  for (const message of options.messages) {
+    // A function_call_output is a string. The pictures an uninterrupted run of
+    // tool results returned follow the last one, so a parallel batch keeps its
+    // tool items together instead of splitting them with a user item.
+    if (pending.length > 0 && message.role !== 'tool') {
+      input.push(toolImagesItem(pending))
+      pending.length = 0
+    }
+    if (message.role === 'tool') pending.push(...imagesIn(message.content as readonly unknown[], images))
+    input.push(...serializeMessage(message, images))
+  }
+  if (pending.length > 0) input.push(toolImagesItem(pending))
   const body: Record<string, unknown> = { model, input, stream: true }
   const affinityKey = sessionKeyOf(options)
   if (affinityKey !== undefined) body.prompt_cache_key = affinityKey

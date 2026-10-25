@@ -27,6 +27,17 @@ export interface ImageSource {
     }>;
 }
 /**
+ * The images one block list carries, in message order.
+ *
+ * Message content is flat: a tool result keeps the blocks its tool rendered (a
+ * `read_image` result is a text envelope beside its image), so a picture a tool
+ * handed back sits at the top level exactly like a pasted screenshot.
+ * @param content - one message's content blocks.
+ * @param images - the request's inlined images.
+ * @returns every image in the list that carries inlined bytes, in order.
+ */
+export declare function imagesIn(content: readonly unknown[], images: WireImages): WireImage[];
+/**
  * Collect every image a request's messages carry, inlined for the wires.
  * @param attachments - the attachment service, when the composition has one.
  * @param messages - the request's conversation messages.

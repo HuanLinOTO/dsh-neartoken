@@ -41,6 +41,28 @@ export interface ImageSource {
   ): Promise<{ data: Uint8Array }>
 }
 
+/** One durable image reference, as a message block carries it. */
+type ImageReference = Parameters<ImageSource['readImage']>[0]
+
+/**
+ * The images one block list carries, in message order.
+ *
+ * Message content is flat: a tool result keeps the blocks its tool rendered (a
+ * `read_image` result is a text envelope beside its image), so a picture a tool
+ * handed back sits at the top level exactly like a pasted screenshot.
+ * @param content - one message's content blocks.
+ * @param images - the request's inlined images.
+ * @returns every image in the list that carries inlined bytes, in order.
+ */
+export function imagesIn(content: readonly unknown[], images: WireImages): WireImage[] {
+  const found: WireImage[] = []
+  for (const block of content) {
+    const image = imageOf(block, images)
+    if (image !== undefined) found.push(image)
+  }
+  return found
+}
+
 /**
  * Collect every image a request's messages carry, inlined for the wires.
  * @param attachments - the attachment service, when the composition has one.
@@ -54,12 +76,15 @@ export async function inlineImages(
   messages: readonly RequestMessage[],
   signal?: AbortSignal,
 ): Promise<WireImages> {
-  const references: { attachmentId: string; mediaType: string; bytes: number; width: number; height: number }[] = []
+  const references: ImageReference[] = []
   for (const message of messages) {
     for (const block of message.content as readonly unknown[]) {
       if (typeof block !== 'object' || block === null) continue
-      const candidate = block as { type?: string; attachment?: typeof references[number] }
+      const candidate = block as { type?: string; attachment?: ImageReference; offloaded?: true }
+      // An offloaded occurrence is the durable decision to send placeholder text
+      // for it, so its bytes are never read back for a request.
       if (candidate.type !== 'image' || candidate.attachment === undefined) continue
+      if (candidate.offloaded === true) continue
       references.push(candidate.attachment)
     }
   }
@@ -96,8 +121,9 @@ export async function inlineImages(
  */
 export function imageOf(block: unknown, images: WireImages): WireImage | undefined {
   if (typeof block !== 'object' || block === null) return undefined
-  const candidate = block as { type?: string; attachment?: { attachmentId?: unknown } }
+  const candidate = block as { type?: string; attachment?: { attachmentId?: unknown }; offloaded?: true }
   if (candidate.type !== 'image' || candidate.attachment?.attachmentId === undefined) return undefined
+  if (candidate.offloaded === true) return undefined
   return images.get(String(candidate.attachment.attachmentId))
 }
 
