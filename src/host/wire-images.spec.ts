@@ -54,6 +54,70 @@ describe('inlineImages', () => {
     const attachments: ImageSource = { readImage: async () => { throw new Error('gone') } }
     await expect(inlineImages(attachments, request(WITH_IMAGE).messages)).rejects.toThrow(/cannot read attachment "sha256:abc"/)
   })
+
+  /**
+   * One request carrying an image of the given intrinsic size.
+   * @param width - intrinsic encoded width.
+   * @param height - intrinsic encoded height.
+   * @returns the request messages.
+   */
+  function sized(width: number, height: number) {
+    return request([{ type: 'image', attachment: { ...REF, width, height } }]).messages
+  }
+
+  it('asks the store for a request version inside the configured bounds', async () => {
+    const targets: Array<{ width: number; height: number; maxBytes: number }> = []
+    const attachments: ImageSource = {
+      readImage: async () => ({ data: new Uint8Array([9]) }),
+      readImageRequest: async (_ref, target) => {
+        targets.push(target)
+        return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/jpeg' }
+      },
+    }
+    const images = await inlineImages(attachments, sized(4096, 2048), undefined, { maxEdge: 2048, maxBytes: 1_000 })
+    // The long edge is what a visual encoder resamples by, so the short edge follows it.
+    expect(targets).toEqual([{ width: 2048, height: 1024, maxBytes: 1_000 }])
+    expect(images.get('sha256:abc')).toEqual({ mediaType: 'image/jpeg', data: 'AQID' })
+  })
+
+  it('keeps an image already inside the bounds at its own size', async () => {
+    const targets: Array<{ width: number; height: number }> = []
+    const attachments: ImageSource = {
+      readImage: async () => ({ data: new Uint8Array([9]) }),
+      readImageRequest: async (_ref, target) => {
+        targets.push(target)
+        return { data: new Uint8Array([1]), mediaType: 'image/png' }
+      },
+    }
+    await inlineImages(attachments, sized(800, 600), undefined, { maxEdge: 2048, maxBytes: 1_000 })
+    expect(targets).toEqual([{ width: 800, height: 600, maxBytes: 1_000 }])
+  })
+
+  it('sends the normalized original when the store has no request projection', async () => {
+    const attachments: ImageSource = { readImage: async () => ({ data: new Uint8Array([4, 5]) }) }
+    const images = await inlineImages(attachments, request(WITH_IMAGE).messages)
+    expect(images.get('sha256:abc')).toEqual({ mediaType: 'image/png', data: Buffer.from([4, 5]).toString('base64') })
+  })
+
+  it('sends the normalized original when the store refuses request projection', async () => {
+    const attachments: ImageSource = {
+      readImage: async () => ({ data: new Uint8Array([4, 5]) }),
+      readImageRequest: async () => {
+        throw Object.assign(new Error('cannot derive model-request images'), { code: 'ATTACHMENT_PROJECTION_UNSUPPORTED' })
+      },
+    }
+    const images = await inlineImages(attachments, request(WITH_IMAGE).messages)
+    expect(images.get('sha256:abc')).toEqual({ mediaType: 'image/png', data: Buffer.from([4, 5]).toString('base64') })
+  })
+
+  it('fails the request when request projection breaks instead of degrading', async () => {
+    const attachments: ImageSource = {
+      readImage: async () => ({ data: new Uint8Array([4, 5]) }),
+      readImageRequest: async () => { throw new Error('encoder exploded') },
+    }
+    await expect(inlineImages(attachments, request(WITH_IMAGE).messages))
+      .rejects.toThrow(/cannot read attachment "sha256:abc".*encoder exploded/)
+  })
 })
 
 describe('each wire sends the picture', () => {

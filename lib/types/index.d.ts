@@ -25,6 +25,10 @@ export interface Options {
     enabledModels: Volatile<string[]>;
     /** Per-model meta overrides the settings page edits beside the whitelist. */
     modelMeta: Volatile<Record<string, NearTokenModelMeta>>;
+    /** Longest edge, in pixels, one request image keeps. */
+    imageMaxEdge: number;
+    /** Encoded-byte ceiling for one request image. */
+    imageMaxBytes: number;
     /** How long one image generation may take, in milliseconds. */
     imageTimeoutMs: number;
     /** The image-generation setting: the tool's switch and one group per enabled model. */
@@ -89,6 +93,20 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         maxTokens: z<number, number, "plain">;
         input: z<("text" | "image")[], ("text" | "image")[], "plain">;
     }>>, string>>, "volatile-defined">;
+    /**
+     * Longest edge, in pixels, of one image on the wire. A model reads a picture
+     * through a fixed visual grid, so detail past roughly 2048 pixels on the long
+     * edge is billed and uploaded without being seen; a larger image is scaled down
+     * to this bound before it is sent.
+     */
+    imageMaxEdge: z<number, number, "defined">;
+    /**
+     * Encoded-byte ceiling for one request image. An image already inside both
+     * bounds travels unchanged; one that is not is re-encoded down through the
+     * encoder's quality ladder until it fits, converting a screenshot PNG to JPEG
+     * or WebP on the way.
+     */
+    imageMaxBytes: z<number, number, "defined">;
     /**
      * How long one picture may take. The site's image models routinely need
      * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
@@ -168,6 +186,20 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         maxTokens: z<number, number, "plain">;
         input: z<("text" | "image")[], ("text" | "image")[], "plain">;
     }>>, string>>, "volatile-defined">;
+    /**
+     * Longest edge, in pixels, of one image on the wire. A model reads a picture
+     * through a fixed visual grid, so detail past roughly 2048 pixels on the long
+     * edge is billed and uploaded without being seen; a larger image is scaled down
+     * to this bound before it is sent.
+     */
+    imageMaxEdge: z<number, number, "defined">;
+    /**
+     * Encoded-byte ceiling for one request image. An image already inside both
+     * bounds travels unchanged; one that is not is re-encoded down through the
+     * encoder's quality ladder until it fits, converting a screenshot PNG to JPEG
+     * or WebP on the way.
+     */
+    imageMaxBytes: z<number, number, "defined">;
     /**
      * How long one picture may take. The site's image models routinely need
      * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so

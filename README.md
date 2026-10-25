@@ -68,6 +68,8 @@
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |
 | `modelOverrides` | `{}` | 按裸模型名逐条修正容量与推理等级，见下 |
 | `enabledModels` | `[]` | 模型白名单（裸模型名）；空数组 = 全部显示。volatile，设置页直接写它 |
+| `imageMaxEdge` | `2048` | 发送到上游前图片的长边上限（像素）；更大的图按长边缩到它，见下「图片压缩」 |
+| `imageMaxBytes` | `2097152` | 单张请求图的编码字节上限；超出走编码质量阶梯，必要时把 PNG 转成 JPEG / WebP |
 | `imageTimeoutMs` | `300000` | 单次生图的预算（毫秒）；工具调用截止时间 = 它 + 30 秒，见下文「超时」 |
 | `imageGeneration` | `{ enabled: false, models: {} }` | 生图开关与「模型 → 分组」映射；volatile，设置页写 |
 
@@ -82,6 +84,17 @@
         contextWindow: 1048576
         reasoning: [low, medium, high, max]
 ```
+
+### 图片压缩
+
+**图片在离开本机前先被重编码**，不是原图直传：请求前把每张图交给 harness 的附件服务（`attachments.readImageRequest`）按 `imageMaxEdge` / `imageMaxBytes` 生成一份请求版，sharp 缩放 + 质量阶梯重编码（有 alpha 走 WebP、无 alpha 走 JPEG），结果按「附件 + 目标尺寸 + 字节预算」缓存，同一张图重复发不重复编码。已经被上游视觉网格丢掉的分辨率不再上传，也就不再计费。
+
+实测（`ds-harness-remote/docs/images/remote.png`，2559×1639 PNG 951 KB）：默认策略下变成 2048 长边 JPEG 219 KB，base64 后 292 KB，约为原图的 23%；把 `imageMaxEdge` 调到 768 且 `imageMaxBytes` 调到 300 KB 时降到 52 KB。
+
+两条边界：
+
+- **原图已经在两个上限内时不重编码**（附件服务直接返回原字节），所以小图不会被无谓地转成 JPEG。
+- **附件服务不支持请求版**（`ATTACHMENT_PROJECTION_UNSUPPORTED`，非本地存储后端的默认行为）时**退回原图发送**，请求不会因此失败；其它错误照旧让请求失败，不会静默降级。
 
 ## 模型可见性
 
@@ -190,7 +203,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 
 ## 已知限制
 
-- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；**图片按各协议原样发送** —— chat 用 `image_url` part、anthropic 用 `source.base64`、genai 用 `inlineData`、responses 用 `input_image`。**工具结果里的图片也发**（`read_image` 的结果就是一段文本信封 + 一张图）：anthropic 把图塞回同一个 `tool_result` 的 content 块数组；genai 在同一 user turn 的 parts 里补 `inlineData`；chat 的 tool 消息只能放字符串、responses 的 `function_call_output` 同理，所以图跟在**整段连续工具结果之后**的一条 user 消息 / 条目里（并行调用时不会把 tool 消息切断）。字节由 `attachments.readImage` 在请求前内联；没有 attachments 服务或读不出来会**让请求失败**，不再静默降级成纯文本（曾经就是这样：贴的截图模型根本收不到）。会话里被 image-offload 标记的图片（`offloaded: true`）不发字节；插件也不替它生成占位文本，所以那一次图片对模型完全不可见。文件块（非图片附件）仍不发；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
+- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；**图片按各协议发送** —— chat 用 `image_url` part、anthropic 用 `source.base64`、genai 用 `inlineData`、responses 用 `input_image`。发送前先按 `imageMaxEdge` / `imageMaxBytes` 重编码（见「图片压缩」），所以线上字节与媒体类型未必等于附件里的原图。**工具结果里的图片也发**（`read_image` 的结果就是一段文本信封 + 一张图）：anthropic 把图塞回同一个 `tool_result` 的 content 块数组；genai 在同一 user turn 的 parts 里补 `inlineData`；chat 的 tool 消息只能放字符串、responses 的 `function_call_output` 同理，所以图跟在**整段连续工具结果之后**的一条 user 消息 / 条目里（并行调用时不会把 tool 消息切断）。字节由 `attachments.readImage` 在请求前内联；没有 attachments 服务或读不出来会**让请求失败**，不再静默降级成纯文本（曾经就是这样：贴的截图模型根本收不到）。会话里被 image-offload 标记的图片（`offloaded: true`）不发字节；插件也不替它生成占位文本，所以那一次图片对模型完全不可见。文件块（非图片附件）仍不发；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
 - 四套 wire 的 SSE 解析都有「帧样本 → 期望 chunk 序列」回归测试（`src/host/wire-parse.spec.ts`），帧样本取自生产网关的真实响应。网关在内容帧上发 `"usage": null`，只有末帧带真值：任何一处把 `usage` 当对象直接读都会让整条流中途崩掉（曾导致 claude 模型全不可用）。
 - **每个请求都带会话亲和键**：chat 与 responses 发 `prompt_cache_key`，anthropic 发 `metadata.user_id`，取值都是 DSH 的 `GenerateOptions.sessionId`。站点就是靠这个值挑上游渠道的（New API 的「codex cli trace」规则：`^gpt-.*$` + `/v1/responses`，键取自 body 的 `prompt_cache_key`，取不到就把整条规则跳过），而提示词缓存按**上游账号**存 —— 不带键时每个请求随机换账号，缓存永远不中。实测同一 6k 前缀：不带键连发 4 次 `cached_tokens` 全 0；带键后第 2 次起 5888/6011 ≈ 98%。`/v1/chat/completions` 上目前没有对应规则，chat 线即使带键也只是偶发命中，要彻底解决需要站点加一条匹配该路径的亲和规则；anthropic 线的 `metadata.user_id` 同理（规则只作用于 `/v1/messages`，这一条已经匹配）。
 - **anthropic 线显式打缓存断点**：Anthropic 只在 `cache_control` 断点处写缓存，没有断点就整段 prompt 按新输入计价（亲和键只保证落在同一上游账号，不产生缓存）。每个请求打 4 个断点：`tools` 末项、`system` 末块、最后两条消息各自末块 —— harness 每轮全量重放历史，尾部双断点保证下一轮几乎全命中，每轮只写新增片段。实测（Claude Max 超惠分组，~6.3k token 前缀）：无断点连发两次 `cache_read` 全 0；打点后第 2 次起 `in=4, cr=6316`，三轮增长历史 `cr` 累积到 10811、`in` 恒为个位数。断点也覆盖 `tool_result` 结尾的轮次（DSH 会话的常态形态）。

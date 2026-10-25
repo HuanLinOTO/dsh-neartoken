@@ -28,6 +28,7 @@ import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
 import { transportFailure } from './wire-error.ts'
 import { inlineImages } from './wire-images.ts'
+import type { ImageRequestPolicy } from './wire-images.ts'
 import type { ImageSource } from './wire-images.ts'
 import { selectedRoutes } from './whitelist.ts'
 
@@ -100,6 +101,8 @@ export interface NearTokenDeps {
   modelOverride: (model: string) => NearTokenModelOverride | undefined
   /** The attachment service, which owns the bytes behind a message's images. */
   attachments: () => ImageSource | undefined
+  /** The bounds every request image is re-encoded to before it is sent. */
+  imagePolicy: () => ImageRequestPolicy
 }
 
 /**
@@ -216,8 +219,12 @@ export class NearTokenAdapter extends LlmAdapter {
     const wire = wireFor(model)
     // Images are inlined before the body is built: a wire that cannot see them
     // must not quietly send text only, which is exactly what a dropped
-    // screenshot looks like to the model on the other end.
-    const images = await inlineImages(this.deps.attachments(), options.messages, options.signal)
+    // screenshot looks like to the model on the other end. The store re-encodes
+    // each one within the configured bounds first, so a large screenshot does not
+    // travel at its file size.
+    const images = await inlineImages(
+      this.deps.attachments(), options.messages, options.signal, this.deps.imagePolicy(),
+    )
     let response: Response
     try {
       response = await fetch(wire.url(this.deps.baseURL(), model), {

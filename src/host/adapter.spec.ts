@@ -9,6 +9,7 @@ import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { NearTokenAdapter, decodeRoute } from './adapter.ts'
 import type { NearTokenRoute } from './pricing.ts'
 import { expandRoutes, parsePricing } from './pricing.ts'
+import { DEFAULT_IMAGE_REQUEST_POLICY } from './wire-images.ts'
 
 /** Every request the adapter sent during one test, newest last. */
 const sent: Array<Record<string, string>> = []
@@ -44,6 +45,7 @@ function adapterOver(routes: readonly NearTokenRoute[], enabled: readonly string
     defaultContextWindow: () => 200_000,
     modelOverride: () => undefined,
     attachments: () => undefined,
+    imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
   })
 }
 
@@ -132,6 +134,7 @@ describe('resolveModel capacity', () => {
     defaultContextWindow: () => 64_000,
     modelOverride: (model) => model === 'grok-4.6' ? { contextWindow: 1_048_576, maxTokens: 65_536, reasoning: ['low', 'high'] } : undefined,
     attachments: () => undefined,
+    imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
   })
 
   it('reports the capacity the site declared', async () => {
@@ -200,6 +203,7 @@ describe('stream', () => {
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
       attachments: () => undefined,
+    imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
     })
     await dispatch(adapter, '[低价] Grok::grok-4.6')
     expect((body as { model?: string }).model).toBe('grok-4.6')
@@ -228,6 +232,7 @@ describe('stream wire selection', () => {
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
       attachments: () => undefined,
+    imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
     })
     await dispatch(adapter, id)
     return one

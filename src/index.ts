@@ -82,6 +82,10 @@ export interface Options {
   enabledModels: Volatile<string[]>
   /** Per-model meta overrides the settings page edits beside the whitelist. */
   modelMeta: Volatile<Record<string, NearTokenModelMeta>>
+  /** Longest edge, in pixels, one request image keeps. */
+  imageMaxEdge: number
+  /** Encoded-byte ceiling for one request image. */
+  imageMaxBytes: number
   /** How long one image generation may take, in milliseconds. */
   imageTimeoutMs: number
   /** The image-generation setting: the tool's switch and one group per enabled model. */
@@ -126,6 +130,20 @@ export const Config = z.object({
     maxTokens: z.number().step(1).min(1),
     input: z.array(z.union([z.const('text'), z.const('image')])),
   })).default({}).volatile(),
+  /**
+   * Longest edge, in pixels, of one image on the wire. A model reads a picture
+   * through a fixed visual grid, so detail past roughly 2048 pixels on the long
+   * edge is billed and uploaded without being seen; a larger image is scaled down
+   * to this bound before it is sent.
+   */
+  imageMaxEdge: z.number().step(1).min(1).default(2_048),
+  /**
+   * Encoded-byte ceiling for one request image. An image already inside both
+   * bounds travels unchanged; one that is not is re-encoded down through the
+   * encoder's quality ladder until it fits, converting a screenshot PNG to JPEG
+   * or WebP on the way.
+   */
+  imageMaxBytes: z.number().step(1).min(1_024).default(2 * 1024 * 1024),
   /**
    * How long one picture may take. The site's image models routinely need
    * 25-60 seconds, and a discounted group measured 114 seconds on a good day, so
@@ -200,6 +218,7 @@ export function apply(ctx: Context, config: Options): void {
     // The adapter reads a message's images from here; without it a request
     // carrying one fails loudly instead of arriving as text only.
     attachments: () => ctx.get('attachments') as ImageSource | undefined,
+    imagePolicy: () => ({ maxEdge: config.imageMaxEdge, maxBytes: config.imageMaxBytes }),
   })
   // The whitelist lives in this plugin's own profile entry, so a save is an
   // ordinary Settings write: it persists in the profile patch and the Loader

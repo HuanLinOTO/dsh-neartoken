@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { NearTokenProvider } from './provider-mount.ts'
+import { DEFAULT_IMAGE_REQUEST_POLICY } from './wire-images.ts'
 
 /** One provider over a registry that records what the plugin asked of it. */
 function providerOver() {
@@ -35,6 +36,7 @@ function providerOver() {
     defaultContextWindow: () => 200_000,
     modelOverride: () => undefined,
     attachments: () => undefined,
+    imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
   })
   return { provider, replacements, counts: () => ({ registered, released }) }
 }
