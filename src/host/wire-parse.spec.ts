@@ -241,6 +241,47 @@ describe('anthropic messages wire', () => {
     ])
   })
 
+  it('lifts a leading system-role message into the system slot', () => {
+    // A loop-built request delivers its prompt as the leading system-role
+    // message, not as options.system. Folded into the turn list it became a user
+    // turn: the prompt lost the slot the model reads as system, and its
+    // breakpoint was the moving message tail instead of the end of the prompt
+    // prefix the next call replays.
+    const body = serializeAnthropic({
+      provider: 'NearToken',
+      model: 'x',
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'be terse' }] },
+        { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      ],
+    } as unknown as GenerateOptions, 'claude-opus-5-5')
+    expect(body.system).toEqual([{ type: 'text', text: 'be terse', cache_control: { type: 'ephemeral' } }])
+    const messages = body.messages as Array<{ role: string }>
+    expect(messages.map(message => message.role)).toEqual(['user'])
+  })
+
+  it('keeps a later system prompt update inside the turn list', () => {
+    // The slot holds the first prompt. An update has to follow the cached
+    // history instead of rewriting the head that the whole session is cached
+    // behind.
+    const body = serializeAnthropic({
+      provider: 'NearToken',
+      model: 'x',
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'be terse' }] },
+        { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+        { role: 'system', content: [{ type: 'text', text: 'be terse, and cite files' }] },
+      ],
+    } as unknown as GenerateOptions, 'claude-opus-5-5')
+    expect(body.system).toEqual([{ type: 'text', text: 'be terse', cache_control: { type: 'ephemeral' } }])
+    const messages = body.messages as Array<{ role: string, content: Array<Record<string, unknown>> }>
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'user'])
+    expect(messages.at(-1)?.content).toEqual([
+      { type: 'text', text: 'be terse, and cite files', cache_control: { type: 'ephemeral' } },
+    ])
+  })
+
   it('marks a turn that ends with a tool result, which is the usual shape of a replayed call', () => {
     const body = serializeAnthropic({
       provider: 'NearToken',

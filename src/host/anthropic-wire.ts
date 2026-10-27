@@ -16,6 +16,12 @@
  * on every call, so the breakpoints are placed once per request over the bytes
  * the next call will reuse (see `serializeRequest`).
  *
+ * The system prompt owns the `system` slot even when the query carries it as a
+ * leading system-role message, which is how a loop-built request delivers it
+ * (see `GenerateOptions`). Folded into the turn list instead, it would lose the
+ * slot the model weights as system, and its breakpoint would be the moving tail
+ * of the message list rather than a fixed end of the prompt prefix.
+ *
  * @module
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -174,9 +180,23 @@ export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
   const messages: WireBlock[] = []
+  let system = options.system
   for (const message of options.messages) {
-    // The messages API has no system role inside the turn list; such a message
-    // is folded into the user turn shape rather than dropped.
+    // The first system-role message supplies the system slot, which is where a
+    // loop-built request puts the prompt. It is lifted out of the turn list
+    // rather than folded into a user turn so the prompt stays in the slot the
+    // model reads as system, and so its breakpoint ends the prompt prefix
+    // instead of moving with the message tail.
+    if (message.role === 'system' && system === undefined) {
+      const text = textOf(message.content as readonly unknown[])
+      if (text !== '') {
+        system = text
+        continue
+      }
+    }
+    // The messages API has no system role inside the turn list; any later system
+    // message (a prompt update) is folded into the user turn shape rather than
+    // dropped, so it is read after the cached history.
     const wire = serializeMessage(message, images)
     if (wire !== undefined) messages.push(wire)
   }
@@ -199,8 +219,8 @@ export function serializeRequest(
   if (options.temperature !== undefined) body.temperature = options.temperature
   // A plain string cannot carry a breakpoint, and the system prompt is the most
   // reused bytes of the request: it travels as one marked text block.
-  if (options.system !== undefined && options.system.length > 0) {
-    body.system = [{ type: 'text', text: options.system, cache_control: cacheBreakpoint() }]
+  if (system !== undefined && system.length > 0) {
+    body.system = [{ type: 'text', text: system, cache_control: cacheBreakpoint() }]
   }
   if (options.tools !== undefined && options.tools.length > 0) {
     const tools: WireBlock[] = options.tools.map(tool => ({
