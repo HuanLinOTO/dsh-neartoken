@@ -42,6 +42,19 @@ describe('gateway refusals', () => {
     expect(error.code).toBe('CONTEXT_WINDOW_EXCEEDED')
   })
 
+  it('tells the user that a function-response mismatch cannot be retried', () => {
+    const error = gatewayError(
+      '{"error":{"message":"Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn.","code":"INVALID_REQUEST"}}',
+      400,
+    )
+    expect(error.code).toBe('INVALID_REQUEST')
+    expect(error.message).toContain('重试不会成功')
+  })
+
+  it('leaves an ordinary rejected request without that hint', () => {
+    expect(gatewayError('unknown group reference #58', 400).message).not.toContain('重试不会成功')
+  })
+
   it('keeps an unrecognized status distinct rather than guessing', () => {
     expect(gatewayError('nope', 404).code).toBe('HTTP_404')
   })

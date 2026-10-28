@@ -17,6 +17,20 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { parseJsonObject } from './sse.ts'
 
+/**
+ * Wording the gateway uses when a functionCall turn was not answered by the same
+ * number of functionResponse parts.
+ *
+ * A Gemini batch lands here whenever its results were sent one user turn each;
+ * no retry clears it, because the conversation that produced the refusal is
+ * replayed unchanged.
+ */
+const FUNCTION_RESPONSE_MISMATCH = /number of function response parts/iu
+
+/** What the user can do about a refusal the plugin itself cannot repair. */
+const FUNCTION_RESPONSE_MISMATCH_HINT =
+  ' 提示：Gemini 原生协议下这批工具结果与调用对不上，重试不会成功；请升级 neartoken 插件，或换用别的模型后新开会话'
+
 /** The `error` object of a gateway error body, when the body carries one. */
 function errorObjectOf(body: string): Record<string, unknown> | undefined {
   const parsed = parseJsonObject(body)
@@ -79,8 +93,11 @@ export function gatewayError(body: string, status: number, headers?: Headers): L
   const retry = headers?.get('retry-after')
   const delay = retry == null ? NaN : /^\d+(?:\.\d+)?$/u.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()
   const id = headers?.get('request-id') ?? headers?.get('x-request-id')
+  const hint = code === 'INVALID_REQUEST' && FUNCTION_RESPONSE_MISMATCH.test(detail)
+    ? FUNCTION_RESPONSE_MISMATCH_HINT
+    : ''
   return new LlmError(
-    `NearToken answered ${status}: ${(embeddedMessage(body) ?? body).slice(0, 500)}`,
+    `NearToken answered ${status}: ${(embeddedMessage(body) ?? body).slice(0, 500)}${hint}`,
     code,
     {
       status,

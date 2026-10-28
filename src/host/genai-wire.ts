@@ -13,6 +13,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { gatewayError } from './wire-error.ts'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
+  ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { imageOf, imagesIn } from './wire-images.ts'
@@ -63,10 +64,13 @@ function toolNamesOf(messages: readonly RequestMessage[]): Map<string, string> {
  * Map one harness message onto its genai form.
  * @param message - one conversation message.
  * @param toolNames - call id to function name, for tool results.
+ * @param images - the request's inlined images.
+ * @param callIds - whether the model matches a response to its call by id.
  * @returns the wire content, or undefined when it carries nothing.
  */
 function serializeMessage(
   message: RequestMessage, toolNames: Map<string, string>, images: WireImages = new Map(),
+  callIds = false,
 ): WireContent | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
@@ -93,24 +97,45 @@ function serializeMessage(
         if (call.type !== 'tool-call') continue
         let args: unknown = {}
         try { args = call.arguments === undefined || call.arguments === '' ? {} : JSON.parse(call.arguments) } catch { args = {} }
-        parts.push({ functionCall: { name: call.name, args } })
+        const functionCall: Record<string, unknown> = { name: call.name, args }
+        if (callIds && call.id !== undefined) functionCall.id = String(call.id)
+        parts.push({ functionCall })
       }
       return parts.length === 0 ? undefined : { role: 'model', parts }
     }
-    case 'tool': {
-      const text = textOf(content)
-      const name = toolNames.get(String(message.toolCallId)) ?? String(message.toolCallId)
-      const parts: Record<string, unknown>[] = [{ functionResponse: { name, response: { result: text } } }]
-      // A functionResponse carries JSON, not bytes: a picture a tool returned
-      // follows as its own inlineData part in the same user turn.
-      for (const image of imagesIn(content, images)) {
-        parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
-      }
-      return { role: 'user', parts }
-    }
+    case 'tool':
+      return { role: 'user', parts: toolPartsOf(message, toolNames, images, callIds) }
     default:
       return undefined
   }
+}
+
+/**
+ * The parts one tool result contributes to the user turn that answers a call.
+ *
+ * A functionResponse carries JSON, not bytes: a picture a tool returned follows
+ * as its own inlineData part in the same user turn.
+ * @param message - the harness tool message.
+ * @param toolNames - call id to function name.
+ * @param images - the request's inlined images.
+ * @param callIds - whether the model matches a response to its call by id.
+ * @returns the parts, starting with the functionResponse.
+ */
+function toolPartsOf(
+  message: ToolResultMessage, toolNames: Map<string, string>, images: WireImages, callIds: boolean,
+): Record<string, unknown>[] {
+  const content = message.content as readonly unknown[]
+  const callId = String(message.toolCallId)
+  const name = toolNames.get(callId) ?? callId
+  const functionResponse: Record<string, unknown> = { name, response: { result: textOf(content) } }
+  // Without an id a batch that called the same function twice is answered by
+  // name alone, which the model cannot tell apart.
+  if (callIds) functionResponse.id = callId
+  const parts: Record<string, unknown>[] = [{ functionResponse }]
+  for (const image of imagesIn(content, images)) {
+    parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
+  }
+  return parts
 }
 
 /**
@@ -148,6 +173,21 @@ function usesThinkingLevel(model: string): boolean {
 }
 
 /**
+ * Whether a model takes an id on its function calls and responses.
+ *
+ * Gemini 3 added `id` to both, which is what tells two calls of the same
+ * function apart inside one batch; earlier generations match on the function
+ * name alone and refuse a member they do not declare. Gemma carries no version
+ * in its name and stays on the older form.
+ * @param model - the bare model id.
+ * @returns true for the generations that declare the field.
+ */
+function usesCallIds(model: string): boolean {
+  const major = /gemini-(\d+)/i.exec(model)?.[1]
+  return major !== undefined && Number(major) >= 3
+}
+
+/**
  * The `thinkingConfig` for one request, in the vocabulary the model speaks.
  * @param model - the bare model id.
  * @param effort - the harness reasoning effort, when one was chosen.
@@ -174,9 +214,24 @@ export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
   const toolNames = toolNamesOf(options.messages)
+  const callIds = usesCallIds(model)
   const contents: WireContent[] = []
+  // A functionCall turn is answered by functionResponse parts in the single user
+  // turn that follows it. One user turn per tool result instead leaves the counts
+  // mismatched, and the gateway refuses the request with a 400 asking for as many
+  // function responses as function calls.
+  let batch: Record<string, unknown>[] | null = null
   for (const message of options.messages) {
-    const wire = serializeMessage(message, toolNames, images)
+    if (message.role === 'tool') {
+      if (batch === null) {
+        batch = []
+        contents.push({ role: 'user', parts: batch })
+      }
+      batch.push(...toolPartsOf(message, toolNames, images, callIds))
+      continue
+    }
+    batch = null
+    const wire = serializeMessage(message, toolNames, images, callIds)
     if (wire !== undefined) contents.push(wire)
   }
   const generationConfig: Record<string, unknown> = {}

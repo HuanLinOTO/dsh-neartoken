@@ -10,7 +10,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
-import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { parseSse as parseChat, serializeRequest as serializeChat } from './openai-wire.ts'
 import { parseSse as parseAnthropic, serializeRequest as serializeAnthropic } from './anthropic-wire.ts'
 import { parseSse as parseGenai, serializeRequest as serializeGenai } from './genai-wire.ts'
@@ -68,6 +69,28 @@ function request(): GenerateOptions {
     provider: 'NearToken',
     model: 'x',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  }
+}
+
+/**
+ * One conversation whose single assistant turn called every named tool at once.
+ * @param names - one function name per call in the batch, in call order.
+ * @returns the request, with one tool result per call.
+ */
+function parallelBatch(names: readonly string[]): GenerateOptions {
+  const calls = names.map((name, index) => ({ id: brandString<ToolCallId>(`call_${index}`), name }))
+  return {
+    ...request(),
+    messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'read them all' }], source: { kind: 'user' } }),
+      createAssistantMessage({
+        content: calls.map(call => ({ type: 'tool-call', id: call.id, name: call.name, arguments: '{}' })),
+        source: { provider: 'NearToken', model: 'gemini-4-argon' },
+      }),
+      ...calls.map(call => createToolResultMessage({
+        callId: call.id, content: [{ type: 'text', text: `done ${call.id}` }], isError: false,
+      })),
+    ],
   }
 }
 
@@ -352,8 +375,45 @@ describe('genai wire', () => {
     const contents = body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>
     expect(contents.at(-1)).toEqual({
       role: 'user',
-      parts: [{ functionResponse: { name: 'read', response: { result: 'done' } } }],
+      parts: [{ functionResponse: { name: 'read', response: { result: 'done' }, id: 'call_1' } }],
     })
+  })
+
+  it('answers a whole parallel batch in one user turn', () => {
+    // Spreading the batch over one turn per result is what the gateway refuses:
+    // 400 "Please ensure that the number of function response parts is equal to
+    // the number of function call parts of the function call turn".
+    const body = serializeGenai(parallelBatch(['read', 'read', 'read', 'read', 'read', 'read']), 'gemini-4-argon')
+    const contents = body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>
+    expect(contents.map(content => content.role)).toEqual(['user', 'model', 'user'])
+    const answers = contents.at(-1)?.parts ?? []
+    expect(answers).toHaveLength(6)
+    expect(answers.map(part => (part.functionResponse as { id?: string }).id)).toEqual([
+      'call_0', 'call_1', 'call_2', 'call_3', 'call_4', 'call_5',
+    ])
+  })
+
+  it('leaves call ids off the generations that do not declare them', () => {
+    const body = serializeGenai(parallelBatch(['read', 'read']), 'gemini-2.5-flash')
+    const contents = body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>
+    expect(contents.at(-1)?.parts).toEqual([
+      { functionResponse: { name: 'read', response: { result: 'done call_0' } } },
+      { functionResponse: { name: 'read', response: { result: 'done call_1' } } },
+    ])
+  })
+
+  it('opens a fresh turn once a message is not a tool result', () => {
+    const options = parallelBatch(['read'])
+    const body = serializeGenai({
+      ...options,
+      messages: [
+        ...options.messages,
+        createUserMessage({ content: [{ type: 'text', text: 'and one more' }], source: { kind: 'user' } }),
+        createToolResultMessage({ callId: brandString<ToolCallId>('call_9'), content: [{ type: 'text', text: 'late' }], isError: false }),
+      ],
+    }, 'gemini-4-argon')
+    const contents = body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>
+    expect(contents.map(content => content.role)).toEqual(['user', 'model', 'user', 'user', 'user'])
   })
 
   it('requests thought parts when a reasoning effort was chosen', () => {
