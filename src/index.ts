@@ -95,7 +95,7 @@ export interface Options {
 /** Configuration surface; prototype keeps every knob optional. */
 export const Config = z.object({
   /** Site root without a trailing slash. */
-  baseURL: z.string().default('https://llm.pko.svcfusion.com'),
+  baseURL: z.string().default('https://neartoken.cc'),
   /** Credential reference the sign-in writes and the adapter resolves. */
   apiKeyEnv: z.string().default('NEARTOKEN_API_KEY'),
   /** How long one pricing load stays fresh, in milliseconds. */

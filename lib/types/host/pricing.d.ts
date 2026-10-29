@@ -84,7 +84,7 @@ export declare class PricingDirectory {
     private inflight;
     /**
      * @param ctx - the owning plugin context (logging only).
-     * @param baseURL - the site root, e.g. `https://llm.pko.svcfusion.com`.
+     * @param baseURL - the site root, e.g. `https://neartoken.cc`.
      * @param ttlMs - how long one load stays fresh.
      */
     constructor(ctx: {

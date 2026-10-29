@@ -2,7 +2,7 @@
  * The four wires, read from the SSE frames the gateway actually sends.
  *
  * Frame samples are copied from live responses of the production gateway
- * (llm.pko.svcfusion.com) so the parsers are pinned to what the conversion
+ * (neartoken.cc) so the parsers are pinned to what the conversion
  * layer really emits: `"usage": null` on every chat frame, an estimated
  * `message_start` followed by real counts in `message_delta`, a thinking block
  * that opens before the text block, and `usageMetadata` repeated on every

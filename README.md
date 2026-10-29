@@ -5,7 +5,7 @@
   <a href="https://dshfind.com/zh/plugins/huanlinoto/dsh-neartoken"><img src="https://dshfind.com/api/card/huanlinoto/dsh-neartoken?lang=zh" alt="dsh-neartoken card"></a>
 </p>
 
-把 New API 站点（NearToken，`https://llm.pko.svcfusion.com`）变成 DSH 的模型供应商：**在设置页发起设备授权 → 用户在自己浏览器里登录站点并确认 → 插件自动接入 `neartoken` provider**。插件全程不接触密码。模型选择器再把这批模型按 New API 的渠道分组折成 **模型 → 分组 → 推理等级** 三级。
+把 New API 站点（NearToken，`https://neartoken.cc`）变成 DSH 的模型供应商：**在设置页发起设备授权 → 用户在自己浏览器里登录站点并确认 → 插件自动接入 `neartoken` provider**。插件全程不接触密码。模型选择器再把这批模型按 New API 的渠道分组折成 **模型 → 分组 → 推理等级** 三级。
 
 ## 架构
 
@@ -62,7 +62,7 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `baseURL` | `https://llm.pko.svcfusion.com` | 站点根地址，不带尾斜杠 |
+| `baseURL` | `https://neartoken.cc` | 站点根地址，不带尾斜杠 |
 | `apiKeyEnv` | `NEARTOKEN_API_KEY` | 授权写入、adapter 读取的凭据引用名 |
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |
@@ -84,6 +84,29 @@
         contextWindow: 1048576
         reasoning: [low, medium, high, max]
 ```
+
+### 站点地址迁移（0.17.0）
+
+站点从 `https://llm.pko.svcfusion.com` 迁到 `https://neartoken.cc`，`baseURL` 的默认值随之改变。凭据里存的 key 不变：同一套 New API 数据下，升级后不需要重新登录。
+
+**旧域名要给还在跑旧版插件的客户端继续用，只能做反向代理，不能做 302/307 重定向**：
+
+- **302 把 POST 降级成 GET 并丢掉请求体**：登录（`/api/dsh/device/*`）、出字（`/v1/*`）、生图（`/v1/images/generations`）、充值全部失败。只剩匿名的 `GET /api/pricing` 和 `GET /api/status` 还能过，现场表现是「模型列表能显示，一发消息就报错」。
+- **跨 origin 的重定向会剥掉 `Authorization` 头**（302 / 307 / 308 一样，是 fetch 规范行为）：凡是带 key 的请求落到新域名都成了未认证请求，一律 401。307 只救得回匿名端点，结果更迷惑 —— 登录能成功，之后每个模型都 401。
+
+反向代理保留方法、请求体和请求头，SSE 也不会断：
+
+```nginx
+location / {
+  proxy_pass https://neartoken.cc;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_buffering off;        # 不关会把流式出字整段缓冲
+  proxy_read_timeout 600s;    # 生图有 114 秒的先例
+}
+```
+
+旧域名退役前，新版插件照常直连 `https://neartoken.cc`，两者互不影响。
 
 ### 图片压缩
 
