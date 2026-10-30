@@ -143,6 +143,23 @@ describe('NearTokenImageClient', () => {
     expect((calls[0]?.init?.headers as Record<string, string>)['x-neartoken-group']).toBe('#39')
   })
 
+  it('compresses the body of a request that carries a reference picture', async () => {
+    const calls: { headers: Record<string, string>; body: unknown }[] = []
+    const send = ((_url: string, init?: RequestInit) => {
+      calls.push({ headers: { ...init?.headers as Record<string, string> }, body: init?.body })
+      return Promise.resolve(answer({ data: [{ b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') }] }))
+    }) as unknown as typeof fetch
+    // A reference picture is the case that makes this body big: base64 bytes in
+    // a JSON string, past the compression threshold on their own.
+    await clientOver(send).generate({
+      model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'edit this',
+      images: [{ mediaType: 'image/png', data: 'A'.repeat(24_000) }],
+    })
+    expect(calls[0]?.headers['content-encoding']).toBe('br')
+    expect(typeof calls[0]?.body).not.toBe('string')
+  })
+
+
   it('explains a budget that ran out instead of surfacing the abort', async () => {
     const send = ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => {

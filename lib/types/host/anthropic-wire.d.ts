@@ -3,6 +3,13 @@ import type { WireImages } from './wire-images.ts';
 /**
  * Serialize one harness request into an Anthropic messages body.
  *
+ * The turn list is settled into the pairing the messages API checks: every
+ * `tool_use` of an assistant turn is answered by a `tool_result` in the single
+ * user turn that follows it, calls the harness never recorded a result for are
+ * answered with a placeholder, results are collected into one turn rather than
+ * one turn each (a parallel batch of calls and a split batch of results are
+ * refused as unpaired), and adjacent same-role turns are folded into one.
+ *
  * Reasoning is requested as `thinking.type = "adaptive"` with the effort in
  * `output_config`, which every Claude generation behind this gateway accepts.
  * The older `thinking.type = "enabled"` budget form is not portable: models of

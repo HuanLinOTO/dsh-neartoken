@@ -14,6 +14,7 @@
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import type { NearTokenRoute } from './pricing.ts'
+import { postJson } from './request-body.ts'
 
 /** Model names that generate pictures on this kind of site, in or out of the catalog's endpoint list. */
 const IMAGE_NAME = /image|imagine|nano-banana|imagen|flux|seedream|dall-?e|midjourney|recraft|ideogram/i
@@ -330,8 +331,9 @@ export class NearTokenImageClient {
       : request.channel === 'genai'
         ? `/v1beta/models/${request.model}:generateContent`
         : '/v1/chat/completions'
-    const response = await request.send(`${this.deps.baseURL()}${path}`, {
-      method: 'POST',
+    // A reference picture makes this body megabytes of base64, so it goes
+    // through the same encoding layer as the chat wires (see request-body.ts).
+    const response = await postJson(request.send, `${this.deps.baseURL()}${path}`, {
       headers: {
         ...attributionHeaders(),
         'content-type': 'application/json',
@@ -342,7 +344,7 @@ export class NearTokenImageClient {
           : { authorization: `Bearer ${request.key}` },
         ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
       },
-      body: JSON.stringify(request.channel === 'images'
+      json: JSON.stringify(request.channel === 'images'
         ? {
           model: request.model,
           prompt: request.prompt,

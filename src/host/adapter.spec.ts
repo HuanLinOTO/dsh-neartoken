@@ -4,6 +4,7 @@
  * ASCII reference rather than as a group name, which is not a legal HTTP
  * header value.
  */
+import { brotliDecompressSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { NearTokenAdapter, decodeRoute } from './adapter.ts'
@@ -272,3 +273,76 @@ describe('stream wire selection', () => {
     expect(one.body.messages).toBeDefined()
   })
 })
+
+describe('stream body encoding', () => {
+  /** One request the adapter posted: what it sent, and how it was encoded. */
+  interface Posted { readonly headers: Record<string, string>, readonly body: unknown }
+
+  /**
+   * Build an adapter whose fetch records every request and answers the given
+   * statuses in order, the last one repeating.
+   * @param routes - the catalog routes this adapter serves.
+   * @param statuses - the status each successive request is answered with.
+   * @returns the adapter and the requests it posts.
+   */
+  function adapterRecording(
+    routes: readonly NearTokenRoute[], statuses: readonly number[],
+  ): { adapter: NearTokenAdapter, posted: Posted[] } {
+    const posted: Posted[] = []
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      posted.push({ headers: { ...init?.headers as Record<string, string> }, body: init?.body })
+      const status = statuses[posted.length - 1] ?? statuses[statuses.length - 1] ?? 200
+      return status === 200
+        ? new Response('data: [DONE]\n\n', { status })
+        : new Response('{"error":"invalid JSON request body"}', { status })
+    }) as typeof fetch
+    const adapter = new NearTokenAdapter({
+      routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+      defaultContextWindow: () => 200_000, modelOverride: () => undefined,
+      attachments: () => undefined, imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    })
+    return { adapter, posted }
+  }
+
+  /**
+   * A request large enough that its body is worth compressing.
+   * @param id - the catalog id to dispatch.
+   * @returns the harness request.
+   */
+  function bigRequest(id: string): GenerateOptions {
+    return {
+      model: id,
+      signal: undefined,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'the quick brown fox. '.repeat(2_000) }] }],
+    } as unknown as GenerateOptions
+  }
+
+  const routes = expandRoutes(parsePricing(payload))
+
+  it('sends a body past the threshold as brotli that decodes back to the request', async () => {
+    const { adapter, posted } = adapterRecording(routes, [200])
+    for await (const chunk of adapter.stream(bigRequest('[低价] Grok::grok-4.6'))) void chunk
+    const one = posted[0]
+    expect(one?.headers['content-encoding']).toBe('br')
+    const json = brotliDecompressSync(one?.body as Uint8Array).toString('utf8')
+    expect(JSON.parse(json).model).toBe('grok-4.6')
+  })
+
+  it('leaves a small body in the clear', async () => {
+    const { adapter, posted } = adapterRecording(routes, [200])
+    await dispatch(adapter, 'default::grok-4.6')
+    expect(posted[0]?.headers['content-encoding']).toBeUndefined()
+    expect(typeof posted[0]?.body).toBe('string')
+  })
+
+  it('re-sends the same body in the clear when the gateway rejects the encoding', async () => {
+    const { adapter, posted } = adapterRecording(routes, [400, 200])
+    for await (const chunk of adapter.stream(bigRequest('[低价] Grok::grok-4.6'))) void chunk
+    expect(posted).toHaveLength(2)
+    expect(posted[0]?.headers['content-encoding']).toBe('br')
+    expect(posted[1]?.headers['content-encoding']).toBeUndefined()
+    expect(typeof posted[1]?.body).toBe('string')
+    expect(JSON.parse(posted[1]?.body as string).model).toBe('grok-4.6')
+  })
+})
+

@@ -26,6 +26,7 @@ import {
 } from './model-caps.ts'
 import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
+import { postJson } from './request-body.ts'
 import { transportFailure } from './wire-error.ts'
 import { inlineImages } from './wire-images.ts'
 import type { ImageRequestPolicy } from './wire-images.ts'
@@ -227,13 +228,15 @@ export class NearTokenAdapter extends LlmAdapter {
     )
     let response: Response
     try {
-      response = await fetch(wire.url(this.deps.baseURL(), model), {
-        method: 'POST',
+      // The whole tool set rides on every call, so postJson packs the body when
+      // it is big enough to pay for itself, and re-sends it in the clear if the
+      // gateway rejects the encoding (see request-body.ts).
+      response = await postJson(fetch, wire.url(this.deps.baseURL(), model), {
         headers: {
           ...attributionHeaders(),
           ...wire.headers(key, groupRef),
         },
-        body: JSON.stringify(wire.serialize(options, model, images)),
+        json: JSON.stringify(wire.serialize(options, model, images)),
         signal: options.signal,
       })
     } catch (error) {

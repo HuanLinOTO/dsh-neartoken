@@ -28,6 +28,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import { gatewayError } from './wire-error.ts'
 import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
+  ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 import { sessionKeyOf } from './session-key.ts'
 import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
@@ -36,6 +37,12 @@ import type { WireImages } from './wire-images.ts'
 
 /** One Anthropic content block, as sent. */
 type WireBlock = Record<string, unknown>
+
+/** One serialized turn: the role the messages API reads, and its content blocks. */
+interface WireTurn {
+  role: 'user' | 'assistant'
+  content: WireBlock[]
+}
 
 /**
  * Flatten one message's text blocks.
@@ -60,7 +67,7 @@ function textOf(content: readonly unknown[]): string {
  * @param message - one conversation message.
  * @returns the wire message, or undefined when it carries nothing.
  */
-function serializeMessage(message: RequestMessage, images: WireImages = new Map()): WireBlock | undefined {
+function serializeMessage(message: RequestMessage, images: WireImages = new Map()): WireTurn | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
@@ -91,30 +98,80 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
       }
       return blocks.length === 0 ? undefined : { role: 'assistant', content: blocks }
     }
-    case 'tool': {
-      const text = textOf(content)
-      // A tool result is itself a block list, so the pictures a tool handed back
-      // (read_image does exactly that) travel inside the result rather than being
-      // flattened into its text.
-      const pictures = imagesIn(content, images)
-      if (pictures.length === 0) {
-        return {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: text }],
-        }
-      }
-      const blocks: WireBlock[] = text === '' ? [] : [{ type: 'text', text }]
-      for (const image of pictures) {
-        blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
-      }
-      return {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content: blocks }],
-      }
-    }
     default:
       return undefined
   }
+}
+
+/**
+ * What a tool call whose result is missing reads as.
+ *
+ * Every call the harness sent is answered, but a replayed log, a fork seed, or a
+ * compacted history can lack the result. The messages API refuses a request whose
+ * `tool_use` has no answer, so the call is answered here instead of dropped.
+ */
+const MISSING_TOOL_RESULT = 'No result was recorded for this tool call.'
+
+/**
+ * The block one tool message contributes to the turn that answers its call.
+ *
+ * A tool result is itself a block list, so the pictures a tool handed back
+ * (read_image does exactly that) travel inside the result rather than being
+ * flattened into its text.
+ * @param message - the harness tool message.
+ * @param images - the request's inlined images.
+ * @returns the `tool_result` block.
+ */
+function toolResultBlock(message: ToolResultMessage, images: WireImages = new Map()): WireBlock {
+  const content = message.content as readonly unknown[]
+  const text = textOf(content)
+  const pictures = imagesIn(content, images)
+  if (pictures.length === 0) {
+    return { type: 'tool_result', tool_use_id: message.toolCallId, content: text }
+  }
+  const blocks: WireBlock[] = text === '' ? [] : [{ type: 'text', text }]
+  for (const image of pictures) {
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
+  }
+  return { type: 'tool_result', tool_use_id: message.toolCallId, content: blocks }
+}
+
+/**
+ * The call ids one assistant turn asks the next turn to answer.
+ * @param turn - the serialized assistant turn.
+ * @returns the ids, in block order.
+ */
+function toolUseIds(turn: WireTurn): string[] {
+  const ids: string[] = []
+  for (const block of turn.content) if (block.type === 'tool_use') ids.push(String(block.id))
+  return ids
+}
+
+/**
+ * Fold adjacent same-role turns into one.
+ *
+ * The messages API reads the conversation as one turn per role, and a gateway in
+ * front of it may not merge a repeated role itself. Inside a user turn the
+ * `tool_result` blocks come first: a result that follows text is refused.
+ * @param turns - the settled turns, in send order.
+ * @returns the merged messages, ready to send.
+ */
+function mergeAdjacent(turns: readonly WireTurn[]): WireBlock[] {
+  const merged: WireTurn[] = []
+  for (const turn of turns) {
+    const last = merged.at(-1)
+    if (last === undefined || last.role !== turn.role) {
+      merged.push({ role: turn.role, content: [...turn.content] })
+      continue
+    }
+    if (last.role === 'assistant') {
+      last.content.push(...turn.content)
+      continue
+    }
+    last.content.unshift(...turn.content.filter(block => block.type === 'tool_result'))
+    last.content.push(...turn.content.filter(block => block.type !== 'tool_result'))
+  }
+  return merged.map(turn => ({ role: turn.role, content: turn.content }))
 }
 
 /** How many trailing messages carry a breakpoint; with the tool and system
@@ -164,6 +221,13 @@ function claudeEffort(effort: string): string {
 /**
  * Serialize one harness request into an Anthropic messages body.
  *
+ * The turn list is settled into the pairing the messages API checks: every
+ * `tool_use` of an assistant turn is answered by a `tool_result` in the single
+ * user turn that follows it, calls the harness never recorded a result for are
+ * answered with a placeholder, results are collected into one turn rather than
+ * one turn each (a parallel batch of calls and a split batch of results are
+ * refused as unpaired), and adjacent same-role turns are folded into one.
+ *
  * Reasoning is requested as `thinking.type = "adaptive"` with the effort in
  * `output_config`, which every Claude generation behind this gateway accepts.
  * The older `thinking.type = "enabled"` budget form is not portable: models of
@@ -179,9 +243,37 @@ function claudeEffort(effort: string): string {
 export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
-  const messages: WireBlock[] = []
+  const turns: WireTurn[] = []
+  // One turn answers exactly the calls of the assistant turn above it: the
+  // results of a parallel batch belong in a single user turn, because a gateway
+  // checks the call and result counts of the pair and refuses a mismatch.
+  const results: WireBlock[] = []
+  // Call ids the open assistant turn still owes a result for.
+  let open: string[] = []
+  // User turns that arrived before those results did; see the loop below.
+  let deferred: WireTurn[] = []
+  const settle = (): void => {
+    if (results.length === 0 && open.length === 0) return
+    for (const id of open) results.push({ type: 'tool_result', tool_use_id: id, content: MISSING_TOOL_RESULT })
+    // A user turn that arrived while results were still pending belongs after
+    // them: the API refuses a tool_result that follows text.
+    for (const turn of deferred) results.push(...turn.content)
+    turns.push({ role: 'user', content: results.splice(0, results.length) })
+    open = []
+    deferred = []
+  }
   let system = options.system
   for (const message of options.messages) {
+    if (message.role === 'tool') {
+      const callId = String(message.toolCallId)
+      // A result whose call no assistant turn announced has nowhere to go on
+      // this wire, and answering a call twice is refused.
+      if (!open.includes(callId)) continue
+      results.push(toolResultBlock(message, images))
+      open = open.filter(pending => pending !== callId)
+      if (open.length === 0) settle()
+      continue
+    }
     // The first system-role message supplies the system slot, which is where a
     // loop-built request puts the prompt. It is lifted out of the turn list
     // rather than folded into a user turn so the prompt stays in the slot the
@@ -197,9 +289,24 @@ export function serializeRequest(
     // The messages API has no system role inside the turn list; any later system
     // message (a prompt update) is folded into the user turn shape rather than
     // dropped, so it is read after the cached history.
-    const wire = serializeMessage(message, images)
-    if (wire !== undefined) messages.push(wire)
+    const turn = serializeMessage(message, images)
+    if (turn === undefined) continue
+    if (turn.role === 'assistant') {
+      // A call the conversation never answered is closed here: it cannot stay
+      // open past the assistant turn that follows it.
+      settle()
+      turns.push(turn)
+      open = toolUseIds(turn)
+      continue
+    }
+    if (open.length > 0) {
+      deferred.push(turn)
+      continue
+    }
+    turns.push(turn)
   }
+  settle()
+  const messages = mergeAdjacent(turns)
   const body: Record<string, unknown> = { model, messages, stream: true }
   // The messages API has no cache key of its own; this gateway routes a Claude
   // request by `metadata.user_id` instead, and a per-session value is what
