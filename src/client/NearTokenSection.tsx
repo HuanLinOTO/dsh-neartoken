@@ -10,6 +10,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { IconChevronDownOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { readAffiliateCode } from '../affiliate.ts'
 import { computeAmountError } from '../protocol.ts'
 import type {
   NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState,
@@ -120,7 +121,9 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
 
   const connect = (): void => {
     void run(async () => {
-      const outcome = await api.begin()
+      // A referring page may have left an invite code on this window; it goes
+      // along to the site's own sign-up pages, which bind the inviter from it.
+      const outcome = await api.begin(readAffiliateCode(globalThis))
       if (outcome.status === 'failed') setError(t('account.failed', { message: outcome.message }))
       await refresh()
     })
@@ -661,8 +664,10 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
                         </label>
                         {editing !== entry.model ? null : (
                           <div className={css.metaEditor}>
-                            <span className={css.metaTitle}>{t('meta.editorTitle')}</span>
-                            <p className={css.metaIntro}>{t('meta.editorIntro')}</p>
+                            <div className={css.metaHead}>
+                              <span className={css.metaTitle}>{t('meta.editorTitle')}</span>
+                              <span className={css.metaIntro}>{t('meta.editorIntro')}</span>
+                            </div>
                             <label className={css.metaField}>
                               <span className={css.metaLabel}>{t('meta.contextWindow')}</span>
                               <input
@@ -695,22 +700,24 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
                             </label>
                             <div className={css.metaField}>
                               <span className={css.metaLabel}>{t('meta.input')}</span>
-                              <label className={css.metaCheck}>
-                                <input
-                                  type="checkbox"
-                                  checked={draft.text}
-                                  onChange={(event) => { setDraft((current) => ({ ...current, text: event.target.checked })) }}
-                                />
-                                {t('meta.inputText')}
-                              </label>
-                              <label className={css.metaCheck}>
-                                <input
-                                  type="checkbox"
-                                  checked={draft.image}
-                                  onChange={(event) => { setDraft((current) => ({ ...current, image: event.target.checked })) }}
-                                />
-                                {t('meta.inputImage')}
-                              </label>
+                              <span className={css.metaChecks}>
+                                <label className={css.metaCheck}>
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.text}
+                                    onChange={(event) => { setDraft((current) => ({ ...current, text: event.target.checked })) }}
+                                  />
+                                  {t('meta.inputText')}
+                                </label>
+                                <label className={css.metaCheck}>
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.image}
+                                    onChange={(event) => { setDraft((current) => ({ ...current, image: event.target.checked })) }}
+                                  />
+                                  {t('meta.inputImage')}
+                                </label>
+                              </span>
                               <span className={css.metaHint}>
                                 {entry.input === undefined || entry.input.length === 0
                                   ? t('meta.undeclared')
@@ -718,7 +725,7 @@ function ModelWhitelist({ api, t }: NearTokenSectionInjected) {
                               </span>
                             </div>
                             <div className={css.metaActions}>
-                              <button type="button" className={css.buttonPrimary} disabled={saving} onClick={() => { saveEditor(entry) }}>
+                              <button type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={saving} onClick={() => { saveEditor(entry) }}>
                                 {saving ? t('meta.saving') : t('meta.save')}
                               </button>
                               <button

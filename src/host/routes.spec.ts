@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH } from '../protocol.ts'
+import { AUTHORIZE_PATH, IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH } from '../protocol.ts'
 import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
@@ -152,6 +152,61 @@ describe('POST /neartoken/refresh', () => {
   it('refuses a method it does not serve', async () => {
     const { answer } = routesOver()
     const { status, headers } = await answer(REFRESH_PATH, request('GET'))
+    expect(status).toBe(405)
+    expect(headers.allow).toBe('POST')
+  })
+})
+
+describe('POST /neartoken/authorize', () => {
+  /**
+   * @param starts - collects the invite code each start carried.
+   * @returns an account stand-in that issues one fixed authorization.
+   */
+  function accountRecording(starts: (string | undefined)[]): NearTokenAccount {
+    return {
+      async begin(affiliateCode?: string) {
+        starts.push(affiliateCode)
+        return {
+          status: 'pending' as const,
+          pending: {
+            userCode: 'K7QM-3XPD',
+            verificationUri: 'https://site.example/dsh/device',
+            verificationUriComplete: 'https://site.example/dsh/device?user_code=K7QM-3XPD',
+            expiresAt: 1,
+          },
+        }
+      },
+    } as unknown as NearTokenAccount
+  }
+
+  it('forwards the invite code the page carried', async () => {
+    const starts: (string | undefined)[] = []
+    const { answer } = routesOver({ account: accountRecording(starts) })
+    const { status, body } = await answer(AUTHORIZE_PATH, request('POST', JSON.stringify({ affCode: ' aB3d ' })))
+    expect(status).toBe(200)
+    expect(JSON.parse(body).status).toBe('pending')
+    expect(starts).toEqual(['aB3d'])
+  })
+
+  it('starts without a body, and therefore without a code', async () => {
+    const starts: (string | undefined)[] = []
+    const { answer } = routesOver({ account: accountRecording(starts) })
+    const { status } = await answer(AUTHORIZE_PATH, request('POST'))
+    expect(status).toBe(200)
+    expect(starts).toEqual([undefined])
+  })
+
+  it('drops a code that is not one instead of refusing the start', async () => {
+    const starts: (string | undefined)[] = []
+    const { answer } = routesOver({ account: accountRecording(starts) })
+    const { status } = await answer(AUTHORIZE_PATH, request('POST', JSON.stringify({ affCode: 'ab&aff=evil' })))
+    expect(status).toBe(200)
+    expect(starts).toEqual([undefined])
+  })
+
+  it('refuses a method it does not serve', async () => {
+    const { answer } = routesOver({ account: accountRecording([]) })
+    const { status, headers } = await answer(AUTHORIZE_PATH, request('GET'))
     expect(status).toBe(405)
     expect(headers.allow).toBe('POST')
   })

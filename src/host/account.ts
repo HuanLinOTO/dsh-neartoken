@@ -366,9 +366,12 @@ export class NearTokenAccount {
 
   /**
    * Start an authorization, or report the one already running.
+   * @param affiliateCode - invite code a referring page left on the browser
+   * window; forwarded so the site's own sign-up pages can bind the inviter.
+   * An authorization already running keeps the code it was started with.
    * @returns the codes the human needs, or why the site refused to issue them.
    */
-  async begin(): Promise<BeginAuthorizationOutcome> {
+  async begin(affiliateCode?: string): Promise<BeginAuthorizationOutcome> {
     const running = this.attempt
     if (running !== undefined && running.grant.expiresAt > Date.now()) {
       return { status: 'pending', pending: pendingOf(running.grant) }
@@ -376,7 +379,7 @@ export class NearTokenAccount {
     this.stop()
     this.error = undefined
     try {
-      const grant = await this.client.authorize(CLIENT_NAME)
+      const grant = await this.client.authorize(CLIENT_NAME, affiliateCode)
       const attempt: Attempt = { grant, controller: new AbortController() }
       this.attempt = attempt
       void this.pollUntilSettled(attempt)

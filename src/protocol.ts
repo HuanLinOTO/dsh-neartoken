@@ -204,6 +204,21 @@ export interface NearTokenModelsPatch {
   readonly meta?: Readonly<Record<string, NearTokenModelMeta>>
 }
 
+/**
+ * The `POST /neartoken/authorize` request body.
+ *
+ * The whole body is optional: a page whose window carries no invite code posts
+ * an empty object, and the Host starts the authorization exactly as before.
+ */
+export interface NearTokenAuthorizeRequest {
+  /**
+   * Invite code a referring page left on this window (`window.NEARTOKEN_AFF`).
+   * It is forwarded onto the site's confirmation address; the site's own sign-up
+   * pages bind the inviter from it.
+   */
+  readonly affCode?: string
+}
+
 /** The `POST /neartoken/authorize` answer. */
 export type BeginAuthorizationOutcome =
   | { readonly status: 'pending'; readonly pending: NearTokenPendingAuthorization }

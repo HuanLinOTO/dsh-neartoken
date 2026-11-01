@@ -58,6 +58,29 @@
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
 
+## 邀请码（`window.NEARTOKEN_AFF`）
+
+引导用户来到 DSH 的页面可以在窗口上留一个邀请码：`window.NEARTOKEN_AFF = '<code>'`。插件在发起设备授权时读取它，并作为 `aff` 参数拼到站点确认页地址上 —— 卡片里「打开浏览器确认」和「复制链接」用的都是这个带参数的地址：
+
+```
+https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
+```
+
+站点侧不需要为插件做任何改动：New API 前端本来就会把任意页面上的 `?aff=` 存进浏览器 localStorage，注册表单与第三方账号首次登录都从那里取，落库为邀请人。三种情形：
+
+| 用户在站点上的状态 | 结果 |
+|---|---|
+| 已登录 | 设备授权照常完成，`aff` 不参与，无副作用 |
+| 未登录、自己注册 | 注册请求带 `aff_code`，绑定邀请人（奖励按站点后台配置发放） |
+| 未登录、用第三方账号 | 首次登录自动建号时按 `aff` 绑定邀请人 |
+
+边界：
+
+- 只接受 `[A-Za-z0-9_-]{1,64}` 的取值，其它值整条丢弃，**连接照常发起** —— 一个坏邀请码不该让授权失败。
+- 窗口上没有这个全局变量时，地址与以前完全一样（不带 `aff`）。
+- 已有进行中的授权时再点「连接」不会重启，沿用第一次的地址与其中的 `aff`。
+- 站点的 `/sign-in` 页本身没有注册入口：未登录用户从确认页被跳到这里后，只能登录或走第三方账号（首次登录会在站点上自动建号，`aff` 照样生效）；要密码注册就自己打开 `/sign-up?aff=<code>`（确认页已经把取值写进 localStorage，参数可省）。
+
 ## 配置
 
 | 字段 | 默认 | 说明 |
@@ -254,7 +277,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / config / wire-parse / images / image-settings / image-tool
+pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / config / affiliate / wire-parse / images / image-settings / image-tool
 pnpm run typecheck  # 两个 face 分别检查（host 与 client 的 ctx.sessions 声明互相冲突，不能同 program）
 pnpm run build      # lib/index.js (host) + lib/client.js (client) + lib/types
 ```

@@ -24,8 +24,12 @@ export interface NearTokenApi {
      * shows money facts newer than the last poll.
      */
     refreshAccount(): Promise<NearTokenStatus>;
-    /** Start a device authorization; the Host polls the site from then on. */
-    begin(): Promise<BeginAuthorizationOutcome>;
+    /**
+     * Start a device authorization; the Host polls the site from then on.
+     * @param affCode - invite code a referring page left on this window, forwarded
+     * onto the site's confirmation address; absent when the window carries none.
+     */
+    begin(affCode?: string): Promise<BeginAuthorizationOutcome>;
     /** Abandon the authorization in progress. */
     cancel(): Promise<void>;
     /**

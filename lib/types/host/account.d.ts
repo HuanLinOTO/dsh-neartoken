@@ -89,9 +89,12 @@ export declare class NearTokenAccount {
     refreshWallet(): Promise<void>;
     /**
      * Start an authorization, or report the one already running.
+     * @param affiliateCode - invite code a referring page left on the browser
+     * window; forwarded so the site's own sign-up pages can bind the inviter.
+     * An authorization already running keeps the code it was started with.
      * @returns the codes the human needs, or why the site refused to issue them.
      */
-    begin(): Promise<BeginAuthorizationOutcome>;
+    begin(affiliateCode?: string): Promise<BeginAuthorizationOutcome>;
     /**
      * Abandon the authorization in progress.
      * @returns after the poll loop stops; the site's own record expires on its own.

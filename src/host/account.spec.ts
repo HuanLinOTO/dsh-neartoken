@@ -196,6 +196,22 @@ describe('begin', () => {
     await account.cancel()
   })
 
+  it('carries the invite code on both confirmation addresses', async () => {
+    vi.useFakeTimers()
+    const { account } = accountOver()
+    const outcome = await account.begin('aB3d')
+    expect(outcome).toEqual({
+      status: 'pending',
+      pending: {
+        userCode: 'K7QM-3XPD',
+        verificationUri: 'https://example.test/dsh/device?aff=aB3d',
+        verificationUriComplete: 'https://example.test/dsh/device?user_code=K7QM-3XPD&aff=aB3d',
+        expiresAt: expect.any(Number) as number,
+      },
+    })
+    await account.cancel()
+  })
+
   it('reuses the authorization already running instead of starting a second one', async () => {
     vi.useFakeTimers()
     const { account } = accountOver()

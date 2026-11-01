@@ -15,6 +15,7 @@ import {
   AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
 } from '../protocol.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts'
+import { normalizeAffiliateCode } from '../affiliate.ts'
 import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
@@ -101,6 +102,10 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
     },
   }), `neartoken: POST ${REFRESH_PATH}`)
 
+  // The start of an authorization. The optional body carries the invite code a
+  // referring page left on the browser window: a hint the site's own sign-up
+  // pages read off the confirmation address, not a credential, and never a
+  // reason to refuse the start — a caller posting no body is authorized too.
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: AUTHORIZE_PATH,
@@ -110,7 +115,14 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
         sendMethodNotAllowed(res, 'POST')
         return
       }
-      sendJson(res, 200, await deps.account.begin())
+      if (!jsonBody(req)) {
+        req.resume()
+        sendJson(res, 200, await deps.account.begin())
+        return
+      }
+      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+      if (body === undefined) return
+      sendJson(res, 200, await deps.account.begin(normalizeAffiliateCode(body.affCode)))
     },
   }), `neartoken: POST ${AUTHORIZE_PATH}`)
 
@@ -309,6 +321,15 @@ function refusalOf(error: unknown): { readonly code: string; readonly message: s
     code: reason === 'not-dsh' ? 'not-dsh' : reason,
     message: error instanceof Error ? error.message : String(error),
   }
+}
+
+/**
+ * Whether a request declares a JSON body, i.e. whether there is anything to read.
+ * @param req - the request under test.
+ * @returns true when the body is declared as JSON.
+ */
+function jsonBody(req: IncomingMessage): boolean {
+  return text(String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()) === 'application/json'
 }
 
 /**

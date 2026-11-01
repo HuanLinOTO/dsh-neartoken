@@ -8,7 +8,7 @@ import {
   AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
 } from '../protocol.ts'
 import type {
-  BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
+  BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
   NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo,
 } from '../protocol.ts'
 
@@ -44,8 +44,12 @@ export interface NearTokenApi {
    * shows money facts newer than the last poll.
    */
   refreshAccount(): Promise<NearTokenStatus>
-  /** Start a device authorization; the Host polls the site from then on. */
-  begin(): Promise<BeginAuthorizationOutcome>
+  /**
+   * Start a device authorization; the Host polls the site from then on.
+   * @param affCode - invite code a referring page left on this window, forwarded
+   * onto the site's confirmation address; absent when the window carries none.
+   */
+  begin(affCode?: string): Promise<BeginAuthorizationOutcome>
   /** Abandon the authorization in progress. */
   cancel(): Promise<void>
   /**
@@ -122,8 +126,14 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
     async refreshAccount() {
       return await post<NearTokenStatus>(REFRESH_PATH)
     },
-    async begin() {
-      return await post<BeginAuthorizationOutcome>(AUTHORIZE_PATH)
+    async begin(affCode) {
+      // The code is a hint, not a credential: it only ever reaches the site's
+      // confirmation address, so a body of `{}` stays a valid start.
+      return await jsonOf<BeginAuthorizationOutcome>(await fetcher(AUTHORIZE_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ affCode } satisfies NearTokenAuthorizeRequest),
+      }))
     },
     async cancel() {
       await post<unknown>(CANCEL_PATH)

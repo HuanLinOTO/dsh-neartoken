@@ -9,6 +9,7 @@
  *
  * @module
  */
+import { withAffiliateCode } from '../affiliate.ts'
 import { NewApiError, asObject, callNewApiBody, type JsonObject } from './new-api.ts'
 
 /** Start one authorization. */
@@ -76,10 +77,13 @@ export class DeviceAuthorizationClient {
   /**
    * Ask the site for a new authorization.
    * @param clientName - how the confirmation page names this device.
+   * @param affiliateCode - invite code a referring page left on the browser
+   * window; it rides along on the confirmation address so the site's own sign-up
+   * pages can bind the inviter.
    * @returns the codes and the polling schedule.
    * @throws {NewApiError} when the site refuses or answers without a code.
    */
-  async authorize(clientName: string): Promise<DeviceAuthorization> {
+  async authorize(clientName: string, affiliateCode?: string): Promise<DeviceAuthorization> {
     const body = await callNewApiBody({
       baseURL: this.baseURL(),
       path: DEVICE_AUTHORIZE_PATH,
@@ -99,11 +103,15 @@ export class DeviceAuthorizationClient {
     }
     const expiresIn = num(data?.expires_in) ?? 600
     const interval = num(data?.interval) ?? 5
+    // Both addresses carry the invite code: the card opens the complete one and
+    // offers it for copying, and a site that ever shows the bare one must not
+    // lose the inviter either.
     return {
       deviceCode,
       userCode,
-      verificationUri,
-      verificationUriComplete: text(data?.verification_uri_complete) ?? verificationUri,
+      verificationUri: withAffiliateCode(verificationUri, affiliateCode),
+      verificationUriComplete: withAffiliateCode(
+        text(data?.verification_uri_complete) ?? verificationUri, affiliateCode),
       expiresAt: Date.now() + expiresIn * 1000,
       intervalMs: Math.max(1, interval) * 1000,
     }

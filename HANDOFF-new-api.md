@@ -358,3 +358,38 @@ GET /dsh/pay?trade_no=<trade_no>&sig=<sig>      # 匿名，只读
 - 同源路由：`GET /neartoken/topup` 读 offer，`POST /neartoken/topup {amount, paymentMethod}` 下单并用系统浏览器打开 `baseURL + pay_url`。
 - 失败映射：`DSH_TOKEN_REQUIRED` → 页面显示「当前密钥不是 DSH 授权签发的，请重新连接」，点按走既有设备授权；端点不存在/支付关闭 → 充值区隐藏；其它拒绝显示站点原文。
 - 金额：站点 `amount_options` 档位 + 自定义输入；插件只做「正整数 / 不低于 min_topup」的预校验，真实校验收在服务端。
+
+---
+
+# 第六部分：邀请码（aff）
+
+## 10. 为什么不新增站点端点
+
+邀请归因发生在**站点自己的注册流程**里，与设备授权无关：一次设备授权既不创建账号，也不该替用户决定邀请人。所以 DSH 侧不给 `POST /api/dsh/device/authorize` 增加任何字段，只改写它下发的确认页地址。
+
+## 10.1 插件侧行为（已实现）
+
+1. 设置页发起授权时读取 `window.NEARTOKEN_AFF`（引导页写入的邀请码，插件自己不设置它）。
+2. `POST /neartoken/authorize` 的可选请求体 `{ "affCode": "<code>" }` 把它带到 Host；Host 用 `normalizeAffiliateCode` 校验（`[A-Za-z0-9_-]{1,64}`，其它值丢弃），不做别的判断。
+3. Host 把该值作为 `aff` 查询参数拼到 `verification_uri` 与 `verification_uri_complete` 上，卡片显示 / 复制 / 打开的都是带该参数的地址。
+4. 没有邀请码、或请求根本不带 body 时，行为与改造前完全一致。
+
+## 10.2 站点侧现状（已核实，无需改动）
+
+| 环节 | 位置 | 行为 |
+|---|---|---|
+| 任意页面读 `?aff=` | `web/src/routes/__root.tsx` | 存 localStorage 的 `aff` |
+| 注册表单 | `web/src/features/auth/sign-up/components/sign-up-form.tsx` | 提交时带 `aff_code: getAffiliateCode()` |
+| 密码注册后端 | `controller/user.go` 的 `Register` | `aff_code` → `GetUserIdByAffCode` → `Insert(inviterId)` |
+| 第三方首次登录 | `web/src/features/auth/api.ts` + `controller/oauth.go` | `/api/oauth/state` 带 `aff`，回调建号时绑定邀请人 |
+| 奖励发放 | `model/user.go` 的 `Insert` | `QuotaForInviter` / `QuotaForInvitee`，记 `aff_quota` / `aff_history` |
+
+结论：**站点不需要新端点，也不需要新字段**。唯一前提是确认页 URL 上的 `aff` 能被前端读到 —— 它是 SPA 路由 `/dsh/device`，`__root` 在首次加载时就把参数写进 localStorage，之后 SPA 内的跳转（包括未登录时跳 `/sign-in`）都不再需要它。
+
+## 10.3 验收
+
+1. 在 DSH 窗口执行 `window.NEARTOKEN_AFF='aB3d'` → 点「连接 NearToken」→ 卡片地址含 `aff=aB3d`。
+2. 用该地址在未登录状态下打开站点 → 注册（或第三方首次登录）→ 后台该用户 `inviter_id` 指向持有 `aB3d` 的用户，邀请人 `aff_count` +1、`aff_quota` 按 `QuotaForInviter` 增加。
+3. 不设该全局变量 → 地址不含 `aff`，其余行为不变。
+4. 设一个非法值（如 `ab cd`）→ 地址不含 `aff`，授权照常进行。
+

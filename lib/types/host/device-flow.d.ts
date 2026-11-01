@@ -1,14 +1,3 @@
-/**
- * The site's device-authorization flow (RFC 8628 shape): the plugin asks the
- * site for a code, the human finishes the sign-in in their own browser, and the
- * plugin polls until the site hands over the API key.
- *
- * No password ever reaches this plugin: the site's own login page authenticates
- * the human, and the only thing that travels back is the key the site minted for
- * this plugin.
- *
- * @module
- */
 import { type JsonObject } from './new-api.ts';
 /** Start one authorization. */
 export declare const DEVICE_AUTHORIZE_PATH = "/api/dsh/device/authorize";
@@ -69,10 +58,13 @@ export declare class DeviceAuthorizationClient {
     /**
      * Ask the site for a new authorization.
      * @param clientName - how the confirmation page names this device.
+     * @param affiliateCode - invite code a referring page left on the browser
+     * window; it rides along on the confirmation address so the site's own sign-up
+     * pages can bind the inviter.
      * @returns the codes and the polling schedule.
      * @throws {NewApiError} when the site refuses or answers without a code.
      */
-    authorize(clientName: string): Promise<DeviceAuthorization>;
+    authorize(clientName: string, affiliateCode?: string): Promise<DeviceAuthorization>;
     /**
      * Ask the site whether the human decided yet.
      * @param deviceCode - the code from {@link authorize}.
