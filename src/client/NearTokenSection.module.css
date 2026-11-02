@@ -464,6 +464,14 @@
   color: var(--dsw-alias-label-primary-inverted);
 }
 
+/* An action that rides in a card's head row: one size below the page's buttons,
+   so the row still reads as a heading. */
+.buttonSmall {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .button:disabled {
   opacity: 0.55;
   cursor: default;
@@ -690,3 +698,218 @@
 .chevronOpen {
   transform: rotate(180deg);
 }
+
+/* The usage window switch: three labels, the one on screen filled. */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.segment {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.segment:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.segmentOn,
+.segmentOn:hover {
+  background: var(--dsw-alias-button-elevated-fill);
+  border-color: var(--dsw-alias-settings-card-stroke);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The spend figure carries the balance it was drawn from, one size quieter. */
+.tally {
+  margin-left: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* The plot's inset panel: one surface shade below the card's own, so the
+   drawing reads as a well rather than as another card. */
+.plotPanel {
+  --usage-plot-height: 132px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 12px 8px;
+  border-radius: 10px;
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The money scale and the plot share one row of the same height, so a mark and
+   its grid line meet without either measuring the other. */
+.plotRow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.yScale {
+  position: relative;
+  height: var(--usage-plot-height);
+  font-size: 11px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Marks sit at percentages of the plot's height; the caller says which. */
+.yTick {
+  position: absolute;
+  right: 4px;
+  white-space: nowrap;
+}
+
+.plot {
+  position: relative;
+  height: var(--usage-plot-height);
+}
+
+/* Horizontal rules behind the bands: the areas carry the data, the grid only
+   helps read it. The zero rule is a shade firmer than the rest. */
+.gridLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--dsw-alias-settings-card-stroke);
+}
+
+.gridBase {
+  top: auto;
+  bottom: 0;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+/* A fixed viewBox stretched to the plot: the bands keep their proportions while
+   the width follows the settings pane. */
+.chart {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* One invisible column per bucket, so each bucket answers with its own hint. */
+.hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+/* The time axis is HTML: text inside a stretched viewBox would smear. It repeats
+   the scale's 44px column, so labels line up with the plot and never with the
+   money marks. */
+.axisRow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.axis {
+  position: relative;
+  height: 14px;
+  font-size: 11px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Placed by the caller: centred on its bucket, or hugging an edge. */
+.axisLabel {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+
+/* Model names run long, so the legend wraps and every name shortens inside its
+   own item instead of pushing its money out of view. */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.swatch {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.legendName {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Each model's money, repeated from the stack: dim, so the name leads. */
+.legendCost {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One fill per band, muted on purpose: these are areas, not callouts, and they
+   have to stay separable on both the light and the dark surface. The legend's
+   swatch reads the same tone through its background, so a series is defined in
+   exactly one place; the last tone is the folded "other" band. */
+.series0 {
+  fill: #3d5a80;
+  background-color: #3d5a80;
+}
+
+.series1 {
+  fill: #7fb2d9;
+  background-color: #7fb2d9;
+}
+
+.series2 {
+  fill: #9fc4a8;
+  background-color: #9fc4a8;
+}
+
+.series3 {
+  fill: #a89bd1;
+  background-color: #a89bd1;
+}
+
+.series4 {
+  fill: #d9a441;
+  background-color: #d9a441;
+}
+
+.series5 {
+  fill: #98a2b3;
+  background-color: #98a2b3;
+}
+

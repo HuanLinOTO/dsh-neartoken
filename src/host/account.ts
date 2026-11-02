@@ -16,13 +16,14 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type {
   BeginAuthorizationOutcome, NearTokenAccountSummary, NearTokenPendingAuthorization, NearTokenStatus,
-  NearTokenVoucher,
+  NearTokenUsageRange, NearTokenUsageState, NearTokenVoucher,
 } from '../protocol.ts'
 import { DeviceAuthorizationClient, type DeviceAuthorization, type DevicePollOutcome } from './device-flow.ts'
 import { NewApiError, asObject, callNewApiBody, type JsonObject } from './new-api.ts'
 import {
   NearTokenTopupError, nearTokenCreateTopup, nearTokenTopupInfo, type NearTokenTopupInfo, type NearTokenTopupOrder,
 } from './topup.ts'
+import { readUsage, type MoneyFormat } from './usage.ts'
 
 /** How the site's confirmation page names this plugin. */
 const CLIENT_NAME = 'DSH 插件'
@@ -90,15 +91,33 @@ function num(value: unknown): number | undefined {
 }
 
 /**
+ * The money one quota amount is worth, in the site's display currency.
+ * @param quota - the raw quota units.
+ * @param currency - the site's formatting facts.
+ * @returns the unrounded value.
+ */
+function moneyValue(quota: number, currency: CurrencyInfo): number {
+  const base = currency.quotaPerUnit > 0 ? quota / currency.quotaPerUnit : quota
+  return currency.display && currency.rate > 0 ? base * currency.rate : base
+}
+
+/**
+ * The symbol the site prints amounts with.
+ * @param currency - the site's formatting facts.
+ * @returns the symbol.
+ */
+function moneySymbol(currency: CurrencyInfo): string {
+  return currency.display ? '￥' : '$'
+}
+
+/**
  * Format one quota amount the way the site's dashboard shows it.
  * @param quota - the raw quota units.
  * @param currency - the site's formatting facts.
  * @returns the amount with its symbol.
  */
 function money(quota: number, currency: CurrencyInfo): string {
-  const base = currency.quotaPerUnit > 0 ? quota / currency.quotaPerUnit : quota
-  const value = currency.display && currency.rate > 0 ? base * currency.rate : base
-  return `${currency.display ? '￥' : '$'}${value.toFixed(2)}`
+  return `${moneySymbol(currency)}${moneyValue(quota, currency).toFixed(2)}`
 }
 
 /**
@@ -362,6 +381,49 @@ export class NearTokenAccount {
     }
     // The snapshot is the restart fallback; a fresh wallet keeps it fresh too.
     await this.persistSummary()
+  }
+
+  /**
+   * The site's money format: the symbol its amounts carry, and the value one raw
+   * quota unit is worth.
+   *
+   * The usage endpoint answers quota units, so the overview's amounts are scaled
+   * here — the same facts the wallet card prints with, so the two blocks can
+   * never disagree about what a number costs.
+   * @returns the symbol and the conversion.
+   */
+  async moneyFormat(): Promise<MoneyFormat> {
+    let currency: CurrencyInfo
+    try {
+      currency = await this.currencyInfo()
+    } catch (_error) {
+      // A site that cannot answer its own status formats raw quota, which is
+      // what its dashboard falls back to as well.
+      currency = { quotaPerUnit: 1, rate: 1, display: false }
+    }
+    return { symbol: moneySymbol(currency), value: (quota) => moneyValue(quota, currency) }
+  }
+
+  /**
+   * Read one window of the account's usage: what it spent, how many tokens it
+   * billed, and the per-model series the overview stacks by model.
+   * @param range - the window to read.
+   * @returns the window, or why there is none to draw.
+   */
+  async usage(range: NearTokenUsageRange): Promise<NearTokenUsageState> {
+    const key = await this.read(this.site.apiKeyRef())
+    // The page draws this block only while connected; a key that disappeared in
+    // between reads as a site out of reach rather than as a site without data.
+    if (key === undefined) return { available: false, reason: 'unreachable' }
+    // The balance belongs to the wallet, not to the window: it is one read the
+    // card already keeps live, so the overview carries it in rather than asking.
+    await this.loadSummary()
+    return await readUsage({
+      baseURL: this.site.baseURL(),
+      apiKey: key,
+      balance: this.summary?.balance ?? '',
+      format: await this.moneyFormat(),
+    }, range)
   }
 
   /**

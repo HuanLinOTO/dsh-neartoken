@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
-import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts';
+import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
 /** What the routes need from the plugin. */
@@ -34,6 +34,11 @@ export interface NearTokenRouteDeps {
      * @param meta - the complete per-model overrides; absent keeps the stored ones.
      */
     saveModels: (enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined) => Promise<void>;
+    /**
+     * One window of the account's usage, read with the stored key.
+     * @param range - the window to read.
+     */
+    usage: (range: NearTokenUsageRange) => Promise<NearTokenUsageState>;
     /** The site's top-up offer, read with the stored key. */
     topupInfo: () => Promise<NearTokenTopupInfo>;
     /** Start one top-up order; the caller opens the returned checkout link. */

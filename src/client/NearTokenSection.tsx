@@ -11,10 +11,10 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { IconChevronDownOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { readAffiliateCode } from '../affiliate.ts'
-import { computeAmountError } from '../protocol.ts'
+import { computeAmountError, USAGE_RANGES } from '../protocol.ts'
 import type {
   NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState,
-  NearTokenStatus, NearTokenTopupInfo,
+  NearTokenStatus, NearTokenTopupInfo, NearTokenUsageModel, NearTokenUsageRange, NearTokenUsageState, NearTokenUsageWindow,
 } from '../protocol.ts'
 import { NearTokenTopupRefusal, type NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
@@ -36,6 +36,28 @@ const AUTOSAVE_DELAY_MS = 400
 
 /** How long the copy button acknowledges a copied address before resetting. */
 const COPIED_RESET_MS = 2_000
+
+/** How many model bands the usage stack draws before folding the rest into one. */
+const SERIES_LIMIT = 5
+
+/**
+ * How many labels each window's time axis shows: a day fits whole hours, a week
+ * needs the date beside them, a month only the date.
+ */
+const AXIS_LABELS: Readonly<Record<NearTokenUsageRange, number>> = { day: 7, week: 5, month: 7 }
+
+/** The stack's drawing surface; the svg stretches it to the card's width. */
+const CHART_WIDTH = 320
+
+/** Height of that surface, in the same units as {@link CHART_WIDTH}. */
+const CHART_HEIGHT = 100
+
+/**
+ * One fill per band, in stack order. The swatch in the legend reads the same
+ * tone through `background-color`, so a series is defined once here; the last
+ * tone is the folded "other" band.
+ */
+const SERIES_TONES = [css.series0, css.series1, css.series2, css.series3, css.series4, css.series5]
 
 /** What this section receives from its registration. */
 export interface NearTokenSectionInjected {
@@ -250,6 +272,14 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                 <span className={css.name}>{account?.displayName ?? 'NearToken'}</span>
                 {account === undefined ? null : <span className={css.handle}>@{account.username}</span>}
                 <span className={`${css.badge} ${css.badgeOn}`}>{t('account.connected')}</span>
+                <button
+                  type="button"
+                  className={`${css.button} ${css.buttonSmall}`}
+                  disabled={busy}
+                  onClick={signOut}
+                >
+                  {busy ? t('account.signingOut') : t('account.signOut')}
+                </button>
               </div>
               <dl className={css.facts}>
                 <div className={css.fact}>
@@ -310,11 +340,6 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
                     : null}
               </dl>
               {pendingBlock ?? <TopupPanel api={api} t={t} busy={busy} onReauthorize={connect} />}
-              <div className={css.actions}>
-                <button type="button" className={css.button} disabled={busy} onClick={signOut}>
-                  {busy ? t('account.signingOut') : t('account.signOut')}
-                </button>
-              </div>
             </section>
           )
           : (
@@ -337,10 +362,404 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
           )}
       {error === undefined ? null : <p className={css.notice}>{error}</p>}
       {status?.error === undefined ? null : <p className={css.notice}>{t('account.failed', { message: status.error })}</p>}
+      {status?.configured === true ? <NearTokenUsage api={api} t={t} /> : null}
       {status?.configured === true ? <ModelWhitelist api={api} t={t} /> : null}
       {status?.configured === true ? <ImageGeneration api={api} t={t} /> : null}
     </div>
   )
+}
+
+/**
+ * The usage overview: what the account spent and billed over one window, with
+ * the per-model stack behind those numbers.
+ *
+ * The window is re-read whenever the range switch moves. A site that predates
+ * the endpoint, or one out of reach, answers a reason instead of a window, so
+ * the card states it in one quiet line rather than drawing an empty chart that
+ * would read as "nothing billed".
+ * @param props - the injected route carrier and translate.
+ * @returns the usage card.
+ */
+function NearTokenUsage({ api, t }: NearTokenSectionInjected) {
+  const [range, setRange] = useState<NearTokenUsageRange>('day')
+  const [state, setState] = useState<NearTokenUsageState | undefined>(undefined)
+  /** Whether the window on screen is still on the wire. */
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    // An answer for a window the switch has already left must not replace the
+    // one on screen, so a stale reply is dropped by its own flag.
+    let live = true
+    setLoading(true)
+    setError(undefined)
+    void (async (): Promise<void> => {
+      try {
+        const answer = await api.usage(range)
+        if (live) setState(answer)
+      } catch (failure: unknown) {
+        if (live) setError(t('usage.failed', { message: messageOf(failure) }))
+      } finally {
+        if (live) setLoading(false)
+      }
+    })()
+    return () => { live = false }
+  }, [api, range, t])
+
+  const shown = state?.available === true ? state : undefined
+  return (
+    <section className={css.card}>
+      <div className={css.cardHead}>
+        <span className={css.name}>{t('usage.title')}</span>
+        <div className={css.segmented}>
+          {USAGE_RANGES.map(option => (
+            <button
+              key={option}
+              type="button"
+              className={range === option ? `${css.segment} ${css.segmentOn}` : css.segment}
+              aria-pressed={range === option}
+              onClick={() => { setRange(option) }}
+            >
+              {t(`usage.range.${option}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {loading
+        ? <p className={css.hint}>{t('usage.loading')}</p>
+        : error !== undefined
+          ? <p className={css.notice}>{error}</p>
+          : state?.available === false
+            ? <p className={css.hint}>{t(state.reason === 'unsupported' ? 'usage.unsupported' : 'usage.unreachable')}</p>
+            : shown === undefined ? null : <UsageStack usage={shown} t={t} />}
+    </section>
+  )
+}
+
+/**
+ * One window drawn: the two totals, then the money stack those totals came from.
+ *
+ * The stack sits in its own inset panel between a money scale down the left edge
+ * and a time axis under the plot, so the drawing answers "when" and "how much"
+ * without a caption. Bands stack bottom up by what each model cost; the legend
+ * names them and repeats each one's money.
+ * @param props - the window to draw and the translate.
+ * @returns the totals with the panel under them.
+ */
+function UsageStack({ usage, t }: { usage: NearTokenUsageWindow; t: NearTokenSectionInjected['t'] }) {
+  // The leading models keep their own band; everything past them shares the
+  // folded one, so a site with dozens of models still reads as one picture.
+  const folded = usage.models.length > SERIES_LIMIT
+  const named = usage.models.slice(0, SERIES_LIMIT).map(entry => entry.model)
+  const series: { model: string; cost: number }[] = usage.models
+    .slice(0, SERIES_LIMIT)
+    .map(entry => ({ model: entry.model, cost: entry.cost }))
+  if (folded) {
+    series.push({
+      model: t('usage.other'),
+      cost: usage.models.slice(SERIES_LIMIT).reduce((sum, entry) => sum + entry.cost, 0),
+    })
+  }
+  const columns = usage.buckets.map((bucket) => {
+    const column = series.map(() => 0)
+    for (const entry of bucket.models) {
+      const at = named.indexOf(entry.model)
+      if (at >= 0) column[at] += entry.cost
+      // A name none of the leading bands carries belongs to the folded band;
+      // with no folded band there is nowhere to draw it.
+      else if (folded) column[column.length - 1] += entry.cost
+    }
+    return column
+  })
+  const { paths, peak } = stackPaths(columns)
+  // A window the site billed nothing in is the one case the drawing cannot
+  // speak for, so the card says it in words instead. Tokens alone do not prove
+  // it empty: a picture model bills money and may report no text tokens.
+  if (paths.length === 0 || (usage.tokens === 0 && peak === 0)) return <p className={css.hint}>{t('usage.empty')}</p>
+
+  // The site's snapshot can arrive without its money figures; an empty amount
+  // then drops out rather than leaving an empty pair of brackets behind.
+  const spent = usage.spent === '' ? '—' : usage.spent
+  const width = CHART_WIDTH / usage.buckets.length
+  // Four marks on the money scale, read from the top: the peak the stack is
+  // scaled to, then two thirds, one third, and zero. The plot draws the same
+  // four as grid lines.
+  const ticks = [1, 2 / 3, 1 / 3, 0].map(part => peak * part)
+  // One precision for the whole axis: decimals that change part-way down the
+  // scale read as a mistake rather than as detail.
+  const tickLabel = moneyScale(peak, usage.currency)
+  const labels = axisIndexes(usage.buckets.length, AXIS_LABELS[usage.range])
+  return (
+    <>
+      <dl className={css.facts}>
+        <div className={css.fact}>
+          <dt className={css.factLabel}>{t('usage.spent')}</dt>
+          <dd className={css.factValue}>
+            {spent}
+            {usage.balance === '' ? null : (
+              <span className={css.tally}>{t('usage.balance', { balance: usage.balance })}</span>
+            )}
+          </dd>
+        </div>
+        <div className={css.fact}>
+          <dt className={css.factLabel}>{t('usage.tokens')}</dt>
+          <dd className={css.factValue}>{formatTokens(usage.tokens)}</dd>
+        </div>
+      </dl>
+      <div className={css.plotPanel}>
+        <div className={css.plotRow}>
+          <div className={css.yScale}>
+            {ticks.map((tick, step) => {
+              // The end marks tuck inward, so neither runs past the panel edge.
+              const shift = step === 0 ? 'none' : step === ticks.length - 1 ? 'translateY(-100%)' : 'translateY(-50%)'
+              return (
+                <span
+                  key={String(step)}
+                  className={css.yTick}
+                  style={{ top: `${String((step / (ticks.length - 1)) * 100)}%`, transform: shift }}
+                >
+                  {tickLabel(tick)}
+                </span>
+              )
+            })}
+          </div>
+          <div className={css.plot}>
+            {[0, 1, 2].map(step => (
+              <span
+                key={String(step)}
+                className={css.gridLine}
+                style={{ top: `${String((step / 3) * 100)}%` }}
+              />
+            ))}
+            {/* The zero line rides the plot's own edge, one shade firmer. */}
+            <span className={`${css.gridLine} ${css.gridBase}`} />
+            <svg
+              className={css.chart}
+              viewBox={`0 0 ${String(CHART_WIDTH)} ${String(CHART_HEIGHT)}`}
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={t('usage.title')}
+            >
+              {paths.map((path, index) => (
+                <path key={String(index)} className={SERIES_TONES[index]} d={path} />
+              ))}
+              {/* One invisible column per bucket: its native hint names the
+                  moment, its money, and the tokens behind it. */}
+              {usage.buckets.map((bucket, index) => {
+                const totals = bucketTotals(bucket.models)
+                return (
+                  <rect
+                    key={String(bucket.timestamp)}
+                    className={css.hit}
+                    x={String(index * width)}
+                    y="0"
+                    width={String(width)}
+                    height={String(CHART_HEIGHT)}
+                  >
+                    <title>
+                      {t('usage.bucketTitle', {
+                        time: bucketLabel(bucket.timestamp, usage.range),
+                        money: money(totals.cost, usage.currency),
+                        tokens: formatTokens(totals.tokens),
+                      })}
+                    </title>
+                  </rect>
+                )
+              })}
+            </svg>
+          </div>
+        </div>
+        <div className={css.axisRow}>
+          <span aria-hidden="true" />
+          <div className={css.axis}>
+            {labels.map((index, at) => {
+              const bucket = usage.buckets[index]
+              if (bucket === undefined) return null
+              // Inner labels sit on their bucket's centre; the first and last
+              // hug the plot's edges so the panel never clips them.
+              const place = at === 0
+                ? { left: '0' }
+                : at === labels.length - 1
+                  ? { right: '0' }
+                  : {
+                    left: `${String(((index + 0.5) / usage.buckets.length) * 100)}%`,
+                    transform: 'translateX(-50%)',
+                  }
+              return (
+                <span key={String(bucket.timestamp)} className={css.axisLabel} style={place}>
+                  {bucketLabel(bucket.timestamp, usage.range)}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+        <div className={css.legend}>
+          {series.map((entry, index) => (
+            <span key={String(index)} className={css.legendItem}>
+              <span className={`${css.swatch} ${SERIES_TONES[index]}`} aria-hidden="true" />
+              <span className={css.legendName}>{entry.model}</span>
+              <span className={css.legendCost}>{`${usage.currency}${entry.cost.toFixed(2)}`}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Draw the stack as an area: one band per series, one vertex per bucket.
+ *
+ * A bucket's total is drawn at that bucket's own centre and the neighbours are
+ * joined straight, so a band reads as a curve instead of a flight of steps. The
+ * first and last buckets are carried out to the canvas edges, which leaves no
+ * notch at either end; a window of one bucket collapses to a full-width
+ * rectangle.
+ * @param columns - per bucket, the money each series cost, in stack order.
+ * @returns the closed area path per series, bottom band first, and the peak the
+ *   whole drawing was scaled to.
+ */
+function stackPaths(columns: readonly (readonly number[])[]): { paths: string[]; peak: number } {
+  const bands = columns[0]?.length ?? 0
+  // Per bucket, the running total of the stack up to and including each band:
+  // a band's floor is the band below it, its ceiling this same value.
+  const cumulative = columns.map((column) => {
+    const sums: number[] = []
+    let sum = 0
+    for (const value of column) {
+      sum += value
+      sums.push(sum)
+    }
+    return sums
+  })
+  const peak = cumulative.reduce((max, sums) => Math.max(max, sums[sums.length - 1] ?? 0), 0)
+  if (bands === 0 || columns.length === 0) return { paths: [], peak }
+  const columnWidth = CHART_WIDTH / columns.length
+  /** Where each bucket's vertex sits: its own centre, edges are added below. */
+  const centres = columns.map((_, index) => ((index + 0.5) * columnWidth).toFixed(2))
+  /**
+   * One cumulative amount on the drawing grid. A window that billed nothing
+   * still draws — flat on the base line — rather than claiming the axis is
+   * broken.
+   */
+  const scale = peak === 0 ? 1 : peak
+  const y = (value: number): string => (CHART_HEIGHT - (value / scale) * CHART_HEIGHT).toFixed(2)
+  /** The band's own level at one bucket; the bottom band sits on zero. */
+  const level = (bucket: number, band: number): string =>
+    y(band === 0 ? 0 : cumulative[bucket]?.[band - 1] ?? 0)
+  const paths: string[] = []
+  for (let band = 0; band < bands; band += 1) {
+    // The band's top: every bucket's cumulative total, carried out to both edges.
+    const top = [
+      `0.00,${y(cumulative[0]?.[band] ?? 0)}`,
+      ...centres.map((x, bucket) => `${x},${y(cumulative[bucket]?.[band] ?? 0)}`),
+      `${CHART_WIDTH.toFixed(2)},${y(cumulative[cumulative.length - 1]?.[band] ?? 0)}`,
+    ]
+    // Its bottom: the band below at those same places, walked back right to left.
+    const bottom = [
+      `${CHART_WIDTH.toFixed(2)},${level(cumulative.length - 1, band)}`,
+      ...centres.map((x, bucket) => `${x},${level(bucket, band)}`).reverse(),
+      `0.00,${level(0, band)}`,
+    ]
+    paths.push(`M${top.join(' L')} L${bottom.join(' L')} Z`)
+  }
+  return { paths, peak }
+}
+
+/**
+ * Pick the buckets to label: an even stride from the first bucket, the last
+ * bucket closing the run.
+ *
+ * The stride rounds up, so a day of hourly buckets lands on whole hours
+ * (00:00 / 06:00 / 12:00 / 18:00 / 23:00) instead of drifting off the rhythm.
+ * @param count - how many buckets the window has.
+ * @param wanted - how many labels the window's axis asks for.
+ * @returns the bucket indexes to label, ascending.
+ */
+function axisIndexes(count: number, wanted: number): readonly number[] {
+  if (count <= wanted) return Array.from({ length: count }, (_, index) => index)
+  const last = count - 1
+  const step = Math.max(1, Math.ceil(last / (wanted - 1)))
+  const picked: number[] = []
+  for (let index = 0; index < last; index += step) picked.push(index)
+  // The last bucket closes the axis; when the stride already reached it, the
+  // repeat drops out rather than printing two labels on one spot.
+  picked.push(last)
+  return picked.filter((index, at) => at === 0 || index !== picked[at - 1])
+}
+
+/**
+ * Format one bucket's start for the axis and for its hover hint.
+ *
+ * The window decides how much of the moment the label has to carry: a day needs
+ * only the hour, a week needs the date as well, a month only the date.
+ * @param timestamp - bucket start, epoch seconds.
+ * @param range - the window this bucket belongs to.
+ * @returns `HH:00`, `MM-DD HH:00`, or `MM-DD`.
+ */
+function bucketLabel(timestamp: number, range: NearTokenUsageRange): string {
+  const at = new Date(timestamp * 1000)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  const clock = `${pad(at.getHours())}:00`
+  const day = `${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+  if (range === 'day') return clock
+  return range === 'week' ? `${day} ${clock}` : day
+}
+
+/**
+ * Format a token count for the overview: millions and thousands as one decimal
+ * suffix, anything smaller verbatim.
+ * @param tokens - the count to render.
+ * @returns the short form.
+ */
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`
+  return String(tokens)
+}
+
+/**
+ * Sum one bucket's per-model rows.
+ * @param models - the bucket's rows, one per model billed in it.
+ * @returns the bucket's money and tokens.
+ */
+function bucketTotals(models: readonly NearTokenUsageModel[]): { cost: number; tokens: number } {
+  let cost = 0
+  let tokens = 0
+  for (const entry of models) {
+    cost += entry.cost
+    tokens += entry.tokens
+  }
+  return { cost, tokens }
+}
+
+/**
+ * Format one money figure for the plot's scale: thousands as `k`, a whole
+ * figure from ten up, two decimals below that.
+ * @param value - the amount, in the site's display currency.
+ * @param currency - that currency's symbol, as the window carries it.
+ * @returns the compact label.
+ */
+function money(value: number, currency: string): string {
+  if (value >= 1_000) return `${currency}${(value / 1_000).toFixed(1)}k`
+  if (value >= 10) return `${currency}${value.toFixed(0)}`
+  return `${currency}${value.toFixed(2)}`
+}
+
+/**
+ * Build the plot's money scale: one precision for every mark of one axis,
+ * decided by the peak.
+ *
+ * Thousands fold into `k`; a zero stays a plain zero, so the base line never
+ * reads `0.0k`.
+ * @param peak - the largest amount the window drew.
+ * @param currency - the symbol the window carries.
+ * @returns the formatter for that axis's marks.
+ */
+function moneyScale(peak: number, currency: string): (value: number) => string {
+  if (peak >= 1_000) return (value) => value === 0 ? `${currency}0` : `${currency}${(value / 1_000).toFixed(1)}k`
+  if (peak >= 10) return (value) => `${currency}${value.toFixed(0)}`
+  return (value) => `${currency}${value.toFixed(2)}`
 }
 
 /**

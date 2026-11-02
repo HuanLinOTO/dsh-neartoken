@@ -57,14 +57,14 @@ describe('wire targets', () => {
   })
 
   it('signs with the header each API reads', () => {
-    expect(wireFor('claude-sonnet-4.5').headers('k', undefined)['x-api-key']).toBe('k')
-    expect(wireFor('gemini-3.8-flash').headers('k', undefined)['x-goog-api-key']).toBe('k')
-    expect(wireFor('gpt-5.2').headers('k', undefined).authorization).toBe('Bearer k')
+    expect(wireFor('claude-sonnet-4.5').headers('k', undefined, undefined)['x-api-key']).toBe('k')
+    expect(wireFor('gemini-3.8-flash').headers('k', undefined, undefined)['x-goog-api-key']).toBe('k')
+    expect(wireFor('gpt-5.2').headers('k', undefined, undefined).authorization).toBe('Bearer k')
   })
 
   it('carries the group reference on every wire', () => {
     for (const model of ['claude-sonnet-4.5', 'gemini-3.8-flash', 'gpt-5.2', 'grok-4.6']) {
-      expect(wireFor(model).headers('k', '#7')['x-neartoken-group']).toBe('#7')
+      expect(wireFor(model).headers('k', '#7', undefined)['x-neartoken-group']).toBe('#7')
     }
   })
 
@@ -83,5 +83,32 @@ describe('wire targets', () => {
 
     const chat = wireFor('grok-4.6').serialize(request('grok-4.6'), 'grok-4.6', new Map())
     expect(chat).toMatchObject({ model: 'grok-4.6', messages: [{ role: 'user', content: 'hi' }] })
+  })
+})
+
+describe('wire identity headers', () => {
+  /** One model per wire, so a loop covers all four. */
+  const models = ['claude-sonnet-4.5', 'gemini-3.8-flash', 'gpt-5.2', 'grok-4.6']
+
+  it('announces the client on every wire', () => {
+    for (const model of models) {
+      const headers = wireFor(model).headers('k', undefined, undefined)
+      expect(headers['x-dsh-client']).toContain('dsh-neartoken/')
+      expect(headers).not.toHaveProperty('x-dsh-session-id')
+    }
+  })
+
+  it('carries the session on every wire when the call has one', () => {
+    for (const model of models) {
+      expect(wireFor(model).headers('k', undefined, 'sess-1')['x-dsh-session-id']).toBe('sess-1')
+    }
+  })
+
+  it('drops a session id a header value cannot carry and keeps the rest', () => {
+    const headers = wireFor('grok-4.6').headers('k', '#7', '会话\n换行')
+    expect(headers).not.toHaveProperty('x-dsh-session-id')
+    expect(headers['x-dsh-client']).toContain('dsh-neartoken/')
+    expect(headers['x-neartoken-group']).toBe('#7')
+    expect(headers.authorization).toBe('Bearer k')
   })
 })

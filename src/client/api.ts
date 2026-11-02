@@ -6,10 +6,11 @@
  */
 import {
   AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
+  USAGE_PATH,
 } from '../protocol.ts'
 import type {
   BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
-  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo,
+  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState,
 } from '../protocol.ts'
 
 /**
@@ -44,6 +45,12 @@ export interface NearTokenApi {
    * shows money facts newer than the last poll.
    */
   refreshAccount(): Promise<NearTokenStatus>
+  /**
+   * Read one window of the account's usage: what it spent, how many tokens it
+   * billed, and the per-model series the overview draws.
+   * @param range - the window to read.
+   */
+  usage(range: NearTokenUsageRange): Promise<NearTokenUsageState>
   /**
    * Start a device authorization; the Host polls the site from then on.
    * @param affCode - invite code a referring page left on this window, forwarded
@@ -125,6 +132,11 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
     },
     async refreshAccount() {
       return await post<NearTokenStatus>(REFRESH_PATH)
+    },
+    async usage(range) {
+      return await jsonOf<NearTokenUsageState>(await fetcher(`${USAGE_PATH}?range=${range}`, {
+        headers: { accept: 'application/json' },
+      }))
     },
     async begin(affCode) {
       // The code is a hint, not a credential: it only ever reaches the site's

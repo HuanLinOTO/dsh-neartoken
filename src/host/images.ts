@@ -13,6 +13,7 @@
  */
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
+import { clientHeaders } from '../client-identity.ts'
 import type { NearTokenRoute } from './pricing.ts'
 import { postJson } from './request-body.ts'
 
@@ -336,6 +337,8 @@ export class NearTokenImageClient {
     const response = await postJson(request.send, `${this.deps.baseURL()}${path}`, {
       headers: {
         ...attributionHeaders(),
+        // An image tool call has no session, so it announces the client only.
+        ...clientHeaders(),
         'content-type': 'application/json',
         // Gemini reads its own credential header; the compatible surfaces take
         // a bearer token.

@@ -143,6 +143,17 @@ describe('NearTokenImageClient', () => {
     expect((calls[0]?.init?.headers as Record<string, string>)['x-neartoken-group']).toBe('#39')
   })
 
+  it('announces the client but no session, which an image call has none of', async () => {
+    const calls: { headers: Record<string, string> }[] = []
+    const send = ((_url: string, init?: RequestInit) => {
+      calls.push({ headers: { ...init?.headers as Record<string, string> } })
+      return Promise.resolve(answer({ data: [{ b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') }] }))
+    }) as unknown as typeof fetch
+    await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+    expect(calls[0]?.headers['x-dsh-client']).toContain('dsh-neartoken/')
+    expect(calls[0]?.headers).not.toHaveProperty('x-dsh-session-id')
+  })
+
   it('compresses the body of a request that carries a reference picture', async () => {
     const calls: { headers: Record<string, string>; body: unknown }[] = []
     const send = ((_url: string, init?: RequestInit) => {

@@ -21,8 +21,8 @@ export interface Wire {
     readonly protocol: WireProtocol;
     /** Endpoint for one model under a site root without a trailing slash. */
     url(baseURL: string, model: string): string;
-    /** Credential and routing headers for one call. */
-    headers(key: string, groupRef: string | undefined): Record<string, string>;
+    /** Credential, routing, and identity headers for one call. */
+    headers(key: string, groupRef: string | undefined, sessionId: string | undefined): Record<string, string>;
     /** The request body for one harness call, with the request's images inlined. */
     serialize(options: GenerateOptions, model: string, images: WireImages): Record<string, unknown>;
     /** Parse the streamed answer into harness chunks. */

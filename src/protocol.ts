@@ -260,3 +260,81 @@ export interface NearTokenImagesPatch {
   readonly models: Readonly<Record<string, string>>
 }
 
+/** How far back the usage overview looks. */
+export const USAGE_RANGES = ['day', 'week', 'month'] as const
+
+/** One selectable window of the usage overview. */
+export type NearTokenUsageRange = typeof USAGE_RANGES[number]
+
+/**
+ * Whether a value names one of the three windows.
+ * @param value - any value, typically an untrusted request field.
+ * @returns true when the value is a window name.
+ */
+export function isUsageRange(value: unknown): value is NearTokenUsageRange {
+  return typeof value === 'string' && (USAGE_RANGES as readonly string[]).includes(value)
+}
+
+/** One model's usage inside one bucket, or over a whole window. */
+export interface NearTokenUsageModel {
+  /** Bare model name, as the site billed it. */
+  readonly model: string
+  /** Tokens billed, prompt and completion together. */
+  readonly tokens: number
+  /**
+   * Money this model cost, in the site's display currency and unrounded, so a
+   * stacked chart can sum and scale the bands without parsing amounts back out
+   * of formatted strings. The symbol is {@link NearTokenUsageWindow.currency}.
+   */
+  readonly cost: number
+}
+
+/** One column of the stacked series. */
+export interface NearTokenUsageBucket {
+  /** Bucket start as epoch seconds; buckets are aligned to the window's start. */
+  readonly timestamp: number
+  /** The models billed in this bucket, largest first; a quiet bucket carries none. */
+  readonly models: readonly NearTokenUsageModel[]
+}
+
+/** The numbers one window of the overview states. */
+export interface NearTokenUsageWindow {
+  /** Which window this is. */
+  readonly range: NearTokenUsageRange
+  /** Window start, epoch seconds. */
+  readonly start: number
+  /** Window end, epoch seconds. */
+  readonly end: number
+  /** Width of one bucket, in seconds. */
+  readonly bucketSeconds: number
+  /** Symbol every money figure of this answer carries (￥ or $). */
+  readonly currency: string
+  /** Money spent over the window, formatted in the site's display currency. */
+  readonly spent: string
+  /** The balance that spending was drawn from, formatted the same way. */
+  readonly balance: string
+  /** Tokens billed over the window. */
+  readonly tokens: number
+  /** Per-model totals over the window, largest first: the legend's order. */
+  readonly models: readonly NearTokenUsageModel[]
+  /** Every bucket of the window, oldest first, quiet ones included. */
+  readonly buckets: readonly NearTokenUsageBucket[]
+}
+
+/**
+ * The usage-overview path: `GET ?range=day|week|month` answers a window.
+ *
+ * A site that predates the endpoint, or one that cannot be reached, answers
+ * `available: false` with the reason — the page then says so in one line
+ * instead of drawing an empty chart that would read as "no usage".
+ */
+export const USAGE_PATH = '/neartoken/usage'
+
+/** The `GET /neartoken/usage` answer. */
+export type NearTokenUsageState =
+  | ({ readonly available: true } & NearTokenUsageWindow)
+  | {
+    readonly available: false
+    /** Which side is missing: a site without the endpoint, or a site out of reach. */
+    readonly reason: 'unsupported' | 'unreachable'
+  }

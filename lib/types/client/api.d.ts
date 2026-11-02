@@ -1,4 +1,4 @@
-import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 /**
  * A top-up call the Host refused, carrying its stable code so the page can tell
  * "this key is not a device key, reconnect" from "the site said no".
@@ -24,6 +24,12 @@ export interface NearTokenApi {
      * shows money facts newer than the last poll.
      */
     refreshAccount(): Promise<NearTokenStatus>;
+    /**
+     * Read one window of the account's usage: what it spent, how many tokens it
+     * billed, and the per-model series the overview draws.
+     * @param range - the window to read.
+     */
+    usage(range: NearTokenUsageRange): Promise<NearTokenUsageState>;
     /**
      * Start a device authorization; the Host polls the site from then on.
      * @param affCode - invite code a referring page left on this window, forwarded

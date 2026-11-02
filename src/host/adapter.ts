@@ -31,6 +31,7 @@ import { transportFailure } from './wire-error.ts'
 import { inlineImages } from './wire-images.ts'
 import type { ImageRequestPolicy } from './wire-images.ts'
 import type { ImageSource } from './wire-images.ts'
+import { sessionKeyOf } from './session-key.ts'
 import { selectedRoutes } from './whitelist.ts'
 
 /** Display name of the single provider route this adapter owns. */
@@ -217,6 +218,9 @@ export class NearTokenAdapter extends LlmAdapter {
     // legal HTTP header value.
     const route = (await this.deps.routes()).find(entry => entry.id === options.model)
     const groupRef = route?.groupRef
+    // The session travels as a header too, so a sticky-session rule can pin the
+    // conversation to one upstream channel.
+    const sessionId = sessionKeyOf(options)
     const wire = wireFor(model)
     // Images are inlined before the body is built: a wire that cannot see them
     // must not quietly send text only, which is exactly what a dropped
@@ -234,7 +238,7 @@ export class NearTokenAdapter extends LlmAdapter {
       response = await postJson(fetch, wire.url(this.deps.baseURL(), model), {
         headers: {
           ...attributionHeaders(),
-          ...wire.headers(key, groupRef),
+          ...wire.headers(key, groupRef, sessionId),
         },
         json: JSON.stringify(wire.serialize(options, model, images)),
         signal: options.signal,

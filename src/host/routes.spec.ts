@@ -10,8 +10,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { AUTHORIZE_PATH, IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH } from '../protocol.ts'
-import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus } from '../protocol.ts'
+import { AUTHORIZE_PATH, IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH, USAGE_PATH } from '../protocol.ts'
+import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus, NearTokenUsageState } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
 import type { NearTokenAccount } from './account.ts'
@@ -29,6 +29,21 @@ const IMAGES: NearTokenImagesState = {
   enabled: true,
   models: [{ model: 'gpt-image-2.5-flare', channel: 'images', groups: [{ group: 'promo', ratio: '0.8x' }] }],
   selection: { 'gpt-image-2.5-flare': 'promo' },
+}
+
+/** The usage window the usage route answers. */
+const USAGE: NearTokenUsageState = {
+  available: true,
+  range: 'day',
+  start: 1_700_000_000,
+  end: 1_700_086_400,
+  bucketSeconds: 3600,
+  currency: '￥',
+  spent: '￥2.50',
+  balance: '￥88.48',
+  tokens: 123_456,
+  models: [{ model: 'glm-5.3', tokens: 123_456, cost: 2.5 }],
+  buckets: [{ timestamp: 1_700_000_000, models: [{ model: 'glm-5.3', tokens: 123_456, cost: 2.5 }] }],
 }
 
 /** One recorded answer. */
@@ -87,6 +102,7 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
+    usage: async (range) => ({ ...USAGE, range }),
     topupInfo: async () => OFFER,
     createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
     baseURL: () => 'https://site.example',
@@ -319,6 +335,7 @@ describe('the same-origin fence', () => {
       saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
       images: async () => IMAGES,
       saveImages: async () => undefined,
+      usage: async () => USAGE,
       topupInfo: async () => OFFER,
       createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
       baseURL: () => 'https://site.example',
@@ -481,5 +498,44 @@ describe('POST /neartoken/topup', () => {
     const { status, body } = await answer(TOPUP_PATH, request('POST', JSON.stringify({ amount: 50, paymentMethod: 'alipay' })))
     expect(status).toBe(409)
     expect(JSON.parse(body)).toEqual({ code: 'refused', message: 'Payment amount is too low' })
+  })
+})
+describe('GET /neartoken/usage', () => {
+  /**
+   * Build a GET whose URL carries the query string the route reads.
+   * @param search - the query string, '?' included, or '' for none.
+   * @returns the request.
+   */
+  function usageRequest(search: string): IncomingMessage {
+    return Object.assign(request('GET'), { url: `${USAGE_PATH}${search}` })
+  }
+
+  it('answers the window it was asked for', async () => {
+    const { answer } = routesOver()
+    const { status, body, headers } = await answer(USAGE_PATH, usageRequest('?range=month'))
+    expect(status).toBe(200)
+    expect(headers['cache-control']).toBe('no-store')
+    expect(JSON.parse(body).range).toBe('month')
+  })
+
+  it('reads no range as the day window', async () => {
+    const { answer } = routesOver()
+    const { status, body } = await answer(USAGE_PATH, usageRequest(''))
+    expect(status).toBe(200)
+    expect(JSON.parse(body).range).toBe('day')
+  })
+
+  it('refuses a window it does not serve, without calling the account', async () => {
+    const { answer } = routesOver({ usage: async () => { throw new Error('must not be asked') } })
+    const { status, body } = await answer(USAGE_PATH, usageRequest('?range=year'))
+    expect(status).toBe(400)
+    expect(JSON.parse(body).code).toBe('bad-request')
+  })
+
+  it('refuses a method it does not serve', async () => {
+    const { answer } = routesOver()
+    const { status, headers } = await answer(USAGE_PATH, request('POST'))
+    expect(status).toBe(405)
+    expect(headers.allow).toBe('GET')
   })
 })

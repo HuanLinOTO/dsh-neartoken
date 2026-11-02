@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
-import type { BeginAuthorizationOutcome, NearTokenStatus } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenStatus, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
+import { type MoneyFormat } from './usage.ts';
 /**
  * How often the wallet facts are re-read while a key is stored. Five minutes
  * matches how stale the card's money numbers may look on an open settings page.
@@ -87,6 +88,23 @@ export declare class NearTokenAccount {
      * @returns after the read settles, either way.
      */
     refreshWallet(): Promise<void>;
+    /**
+     * The site's money format: the symbol its amounts carry, and the value one raw
+     * quota unit is worth.
+     *
+     * The usage endpoint answers quota units, so the overview's amounts are scaled
+     * here — the same facts the wallet card prints with, so the two blocks can
+     * never disagree about what a number costs.
+     * @returns the symbol and the conversion.
+     */
+    moneyFormat(): Promise<MoneyFormat>;
+    /**
+     * Read one window of the account's usage: what it spent, how many tokens it
+     * billed, and the per-model series the overview stacks by model.
+     * @param range - the window to read.
+     * @returns the window, or why there is none to draw.
+     */
+    usage(range: NearTokenUsageRange): Promise<NearTokenUsageState>;
     /**
      * Start an authorization, or report the one already running.
      * @param affiliateCode - invite code a referring page left on the browser

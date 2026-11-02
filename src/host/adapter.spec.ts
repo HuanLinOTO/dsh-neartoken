@@ -21,9 +21,9 @@ const payload = {
   group_refs: { '[低价] Grok': '#7' },
 }
 
-/** A minimal request: the wire writer only needs the message list. */
-function request(model: string): GenerateOptions {
-  return { model, messages: [], signal: undefined } as unknown as GenerateOptions
+/** A minimal request: the wire writer only needs the message list and the session. */
+function request(model: string, sessionId?: string): GenerateOptions {
+  return { model, messages: [], signal: undefined, sessionId } as unknown as GenerateOptions
 }
 
 /**
@@ -54,9 +54,10 @@ function adapterOver(routes: readonly NearTokenRoute[], enabled: readonly string
  * Drive one dispatch to completion.
  * @param adapter - the adapter to stream through.
  * @param model - the catalog id to send.
+ * @param sessionId - the harness session the request claims, when it has one.
  */
-async function dispatch(adapter: NearTokenAdapter, model: string): Promise<void> {
-  for await (const chunk of adapter.stream(request(model))) void chunk
+async function dispatch(adapter: NearTokenAdapter, model: string, sessionId?: string): Promise<void> {
+  for await (const chunk of adapter.stream(request(model, sessionId))) void chunk
 }
 
 afterEach(() => { sent.length = 0 })
@@ -191,6 +192,24 @@ describe('stream', () => {
     const routes = expandRoutes(parsePricing(payload))
     await dispatch(adapterOver(routes), 'default::grok-4.6')
     expect(sent[0]?.['x-neartoken-group']).toBeUndefined()
+  })
+
+  it('announces the client and the session on the request the site receives', async () => {
+    const routes = expandRoutes(parsePricing(payload))
+    await dispatch(adapterOver(routes), 'default::grok-4.6', 'sess-01J8ZQ')
+    const headers = sent[0] ?? {}
+    expect(headers['x-dsh-client']).toContain('dsh-neartoken/')
+    // The site's sticky-session rule reads this, and it is the same value the
+    // body already carries as the prompt cache key.
+    expect(headers['x-dsh-session-id']).toBe('sess-01J8ZQ')
+  })
+
+  it('sends the client alone when the call has no session', async () => {
+    const routes = expandRoutes(parsePricing(payload))
+    await dispatch(adapterOver(routes), 'default::grok-4.6')
+    const headers = sent[0] ?? {}
+    expect(headers['x-dsh-client']).toContain('dsh-neartoken/')
+    expect(headers).not.toHaveProperty('x-dsh-session-id')
   })
 
   it('sends the bare model name in the body, never the catalog id', async () => {

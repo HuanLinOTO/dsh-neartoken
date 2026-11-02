@@ -12,6 +12,7 @@
  * @module
  */
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { clientHeaders } from '../client-identity.ts'
 import { parseSse as parseAnthropic, serializeRequest as serializeAnthropic } from './anthropic-wire.ts'
 import type { WireImages } from './wire-images.ts'
 import { parseSse as parseGenai, serializeRequest as serializeGenai } from './genai-wire.ts'
@@ -27,8 +28,8 @@ export interface Wire {
   readonly protocol: WireProtocol
   /** Endpoint for one model under a site root without a trailing slash. */
   url(baseURL: string, model: string): string
-  /** Credential and routing headers for one call. */
-  headers(key: string, groupRef: string | undefined): Record<string, string>
+  /** Credential, routing, and identity headers for one call. */
+  headers(key: string, groupRef: string | undefined, sessionId: string | undefined): Record<string, string>
   /** The request body for one harness call, with the request's images inlined. */
   serialize(options: GenerateOptions, model: string, images: WireImages): Record<string, unknown>
   /** Parse the streamed answer into harness chunks. */
@@ -47,10 +48,11 @@ function groupHeader(groupRef: string | undefined): Record<string, string> {
 const CHAT: Wire = {
   protocol: 'chat',
   url: (baseURL) => `${baseURL}/v1/chat/completions`,
-  headers: (key, groupRef) => ({
+  headers: (key, groupRef, sessionId) => ({
     authorization: `Bearer ${key}`,
     'content-type': 'application/json',
     ...groupHeader(groupRef),
+    ...clientHeaders(sessionId),
   }),
   serialize: serializeChat,
   parse: parseChat,
@@ -61,12 +63,13 @@ const ANTHROPIC: Wire = {
   url: (baseURL) => `${baseURL}/v1/messages`,
   // The messages API signs with x-api-key; the bearer is repeated because a
   // gateway may authenticate the request before it forwards it.
-  headers: (key, groupRef) => ({
+  headers: (key, groupRef, sessionId) => ({
     'x-api-key': key,
     authorization: `Bearer ${key}`,
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
     ...groupHeader(groupRef),
+    ...clientHeaders(sessionId),
   }),
   serialize: serializeAnthropic,
   parse: parseAnthropic,
@@ -88,11 +91,12 @@ function modelPath(model: string): string {
 const GENAI: Wire = {
   protocol: 'genai',
   url: (baseURL, model) => `${baseURL}/v1beta/models/${modelPath(model)}:streamGenerateContent?alt=sse`,
-  headers: (key, groupRef) => ({
+  headers: (key, groupRef, sessionId) => ({
     'x-goog-api-key': key,
     authorization: `Bearer ${key}`,
     'content-type': 'application/json',
     ...groupHeader(groupRef),
+    ...clientHeaders(sessionId),
   }),
   serialize: serializeGenai,
   parse: parseGenai,
@@ -101,10 +105,11 @@ const GENAI: Wire = {
 const RESPONSES: Wire = {
   protocol: 'responses',
   url: (baseURL) => `${baseURL}/v1/responses`,
-  headers: (key, groupRef) => ({
+  headers: (key, groupRef, sessionId) => ({
     authorization: `Bearer ${key}`,
     'content-type': 'application/json',
     ...groupHeader(groupRef),
+    ...clientHeaders(sessionId),
   }),
   serialize: serializeResponses,
   parse: parseResponses,

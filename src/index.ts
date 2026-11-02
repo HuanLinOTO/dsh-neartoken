@@ -316,6 +316,9 @@ export function apply(ctx: Context, config: Options): void {
         await whitelist.save(enabled, meta)
         provider.refresh()
       },
+      // The usage overview reads with the same stored key the wallet uses, so a
+      // window never costs the page a second credential path.
+      usage: (range) => account.usage(range),
       topupInfo: () => account.topupInfo(),
       createTopup: (amount, paymentMethod) => account.createTopup(amount, paymentMethod),
       baseURL: () => config.baseURL,

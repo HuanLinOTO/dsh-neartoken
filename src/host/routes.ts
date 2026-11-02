@@ -13,10 +13,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
+  USAGE_PATH, isUsageRange,
 } from '../protocol.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts'
 import { normalizeAffiliateCode } from '../affiliate.ts'
-import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState } from '../protocol.ts'
+import type {
+  NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState,
+} from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
 import { parseEnabled, parseMeta } from './whitelist.ts'
@@ -46,6 +49,11 @@ export interface NearTokenRouteDeps {
    * @param meta - the complete per-model overrides; absent keeps the stored ones.
    */
   saveModels: (enabled: readonly string[], meta: Readonly<Record<string, NearTokenModelMeta>> | undefined) => Promise<void>
+  /**
+   * One window of the account's usage, read with the stored key.
+   * @param range - the window to read.
+   */
+  usage: (range: NearTokenUsageRange) => Promise<NearTokenUsageState>
   /** The site's top-up offer, read with the stored key. */
   topupInfo: () => Promise<NearTokenTopupInfo>
   /** Start one top-up order; the caller opens the returned checkout link. */
@@ -101,6 +109,28 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, await deps.account.status())
     },
   }), `neartoken: POST ${REFRESH_PATH}`)
+
+  // The usage overview: one window of spending and tokens, read with the stored
+  // key. A site without the endpoint, or one out of reach, still answers 200
+  // with a reason the page prints — an empty chart would read as "no usage",
+  // which is a different fact from "nothing to read".
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: USAGE_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method !== 'GET') {
+        sendMethodNotAllowed(res, 'GET')
+        return
+      }
+      const range = queryParam(req, 'range') ?? 'day'
+      if (!isUsageRange(range)) {
+        sendJson(res, 400, { code: 'bad-request', message: 'range 必须是 day / week / month' })
+        return
+      }
+      sendJson(res, 200, await deps.usage(range))
+    },
+  }), `neartoken: GET ${USAGE_PATH}`)
 
   // The start of an authorization. The optional body carries the invite code a
   // referring page left on the browser window: a hint the site's own sign-up
@@ -403,6 +433,22 @@ export async function readJsonObject(
     return undefined
   }
   return parsed as JsonObject
+}
+
+/**
+ * Read one query parameter off a request.
+ * @param req - the request to read.
+ * @param name - the parameter name.
+ * @returns the value, or undefined when the request carries none.
+ */
+function queryParam(req: IncomingMessage, name: string): string | undefined {
+  // The registered path is exact, so whatever follows the '?' is this route's
+  // own query string; nothing else needs parsing.
+  const url = req.url ?? ''
+  const mark = url.indexOf('?')
+  const search = mark === -1 ? '' : url.slice(mark + 1)
+  const value = new URLSearchParams(search).get(name)
+  return value === null ? undefined : text(value)
 }
 
 /** One non-empty string member, or undefined. */

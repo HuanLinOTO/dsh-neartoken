@@ -47,16 +47,33 @@
    这个按钮走 Host：页面自己 `window.open` 开出来的窗口会被困在承载页面的外壳里（Electron 桌面端会另开一个应用窗口、macOS 上甚至没有任何反应），所以由 Host 调平台启动器交给**系统默认浏览器**（macOS `open` / Windows `rundll32 url.dll,FileProtocolHandler` / Linux `xdg-open`）。地址固定取 Host 自己等待的那个，页面无法让 Host 打开任意 URL。
    卡片同时把确认地址当作可选文字列出来（带「复制链接」按钮）—— 没有桌面环境的机器（远程、容器）启动器可能不存在，把地址贴进自己的浏览器即可。
 4. 插件轮询到批准后自动完成：把站点为该插件铸造的 API key 写进 credentials 的 `NEARTOKEN_API_KEY`，并挂上 `neartoken` provider。
-5. 「断开连接」删掉本地凭据、撤掉 provider，并调用站点的撤销端点。
+5. 卡片右上角的「断开连接」删掉本地凭据、撤掉 provider，并调用站点的撤销端点。
 6. 卡片下方的「模型白名单」勾选即自动保存 —— 未勾选的不再出现在模型选择器里，且当场生效（Host 用 `AdapterRegistrationHandle.replace()` 重新声明同一条路由，同步发布 `llm/adapters-updated`，浏览器重拉目录）。没设置过白名单时默认全部显示，「全部显示」清空白名单。
 7. 账户卡片里的「充值」区：点档位或自己填金额 → 「去支付」→ 站点生成易支付订单，插件把支付页交给系统浏览器打开，付完余额在 5 分钟内自动刷新。**只有 DSH 设备授权签发的密钥能下单**；换成普通令牌时这里会显示「重新连接」。
-8. 再往下的「图像生成」卡片：先勾「启用 generate_image 工具」，再勾要用的生图模型并为每个模型选分组（选的是**计费分组**，不是模型），最后点保存。工具随开关挂载/撤下，模型立刻能用或不能用。
+8. 「数据概览」卡片：右上角切「日 / 周 / 月」，看这个窗口的消耗（括注当前余额）、Token 数，以及按模型堆积的曲线，见下节。
+9. 再往下的「图像生成」卡片：先勾「启用 generate_image 工具」，再勾要用的生图模型并为每个模型选分组（选的是**计费分组**，不是模型），最后点保存。工具随开关挂载/撤下，模型立刻能用或不能用。
 
 备用路径：直接让 credentials 服务存 `NEARTOKEN_API_KEY`，或启动环境导出同名变量 —— provider 会在启动时按凭据现状挂载。
 
 > 设备授权流需要 new-api 侧实现对应端点，契约见 [HANDOFF-new-api.md](HANDOFF-new-api.md) 第一部分。站点尚未实现时会直接报「站点拒绝发起设备授权」。
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
+
+## 数据概览（消耗 / Token / 模型堆积）
+
+账户卡片下方是「数据概览」：窗口内的消耗金额（括注当前余额）、窗口内的 Token 数，以及按模型堆积的面积图。右上角的「日 / 周 / 月」切换整个窗口 —— 桶宽由站点给，插件不自己造桶：
+
+| 窗口 | 回看 | 桶宽 | 桶数 |
+|---|---|---|---|
+| 日 | 24 小时 | 1 小时 | 24 |
+| 周 | 7 天 | 6 小时 | 28 |
+| 月 | 30 天 | 1 天 | 30 |
+
+数据来自站点的 `GET /api/dsh/device/usage?range=day|week|month`（契约见 [HANDOFF-new-api.md](HANDOFF-new-api.md) 第七部分），和聊天用同一把 DSH 密钥认证。**不复用站点控制台的统计端点**（`/api/data/self` 之类）：那些要浏览器会话，relay key 读不到；`/api/log/token` 只回最近若干条日志，做不了月视图。
+
+曲线按模型堆叠 Token；模型多于 5 个时其余合并成「其他」，图例给每个模型的占比。每个桶点上去有原生提示（时间 + 该桶总量）。窗口数字取自站点 `quota_data` 聚合表（与站点自己的「消耗分布」同源），所以最近几分钟的花费可能还没进表。
+
+站点没有这个端点、或读不到时，卡片只留一行说明（「站点未提供用量统计。」/「暂时无法从站点读取用量。」），**不画空图** —— 空图会被读成「这段时间没有用量」，那是另一个结论。
 
 ## 邀请码（`window.NEARTOKEN_AFF`）
 
@@ -271,13 +288,14 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 - 生图一次一张；`size` 对 images 通道只是建议，上游常忽略（实测不传 size 时 gpt-image-2.5-flare 出 1536x1024）。
 - 生图结果默认只存 attachment；要给文件就传 `path`（必须是不存在的路径，且只对本地文件系统后端生效）。
 - 生图失败按站点原话报错（限流、渠道无可用 channel、模型不支持该端点都会原样透出），不重试、不跨分组兜底 —— 换分组是用户的决定。
+- 数据概览读的是**站点侧**的用量端点，插件自己不做统计也不落盘：站点没升级就只显示一行「站点未提供用量统计。」。金额换算沿用站点 `/api/status` 的 `quota_per_unit` / `usd_exchange_rate`，与账号卡片同源，两块数字不会互相打架。
 
 ## 开发
 
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / config / affiliate / wire-parse / images / image-settings / image-tool
+pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / usage / config / affiliate / wire-parse / images / image-settings / image-tool
 pnpm run typecheck  # 两个 face 分别检查（host 与 client 的 ctx.sessions 声明互相冲突，不能同 program）
 pnpm run build      # lib/index.js (host) + lib/client.js (client) + lib/types
 ```
