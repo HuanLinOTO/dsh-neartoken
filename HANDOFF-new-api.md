@@ -495,7 +495,7 @@ Authorization: Bearer <relay key>
 | 取消 | `POST …/cancel` | 未实现；客户端断开不影响任务 |
 | 退路 | 旧站点 404 回落同步 | 未认领模型由站点自己回落同步 relay（同一端点返回 `data`） |
 
-## 11.3 DSH 插件侧改造清单（未实现，等站点上线）
+## 11.3 DSH 插件侧改造清单（0.20.0 已实现）
 
 1. `NearTokenImageClient` 增加 submit → poll → fetch：`POST /v1/images/tasks` 拿 `task_id`；`GET /v1/images/tasks/{task_id}` 每 3 s（退避到 5 s）轮询到 `SUCCESS`/`FAILURE`；`SUCCESS` 时下载 `data[0].url`。
 2. 提交响应兼容两种：`202 + task_id`（异步）与 `200 + data`（站点回落同步，老渠道）。后者直接复用现有 `extractImageReply`。
@@ -504,6 +504,8 @@ Authorization: Bearer <relay key>
 5. 工具被中止（`exec.signal`）时停止轮询即可，站点任务会跑完并结算。
 6. 参考图（`image` 字段）沿用现在的 data URL 数组；站点按 `generate` 语义解码，插件自判图生图。
 7. 旧站点（`POST /v1/images/tasks` 404）回落到现有同步 `/v1/images/generations`。
+
+> 0.20.0 已按此清单实现（`src/host/images.ts` 的 `imagesReply` / `settleTask`），轮询节奏 3 s 起、每次 +1 s 退避到 5 s。实现取舍：不做第 4 条后半句的「重启后用同一 `task_id` 继续」—— 插件没有跨进程的任务表，进程没了就是这次工具调用结束，任务由站点跑完结算。
 
 ## 11.4 验收要点（站点侧已跑通的部分）
 

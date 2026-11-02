@@ -111,8 +111,18 @@ function answer(body: unknown, status = 200): Response {
   } as unknown as Response
 }
 
-/** The generation client over one route and one fake carrier. */
-function clientOver(send: typeof fetch, timeoutMs = 1_000): NearTokenImageClient {
+/** A minimal PNG, as the site would base64 it. */
+const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')
+
+/**
+ * The generation client over one route and one fake carrier.
+ * @param send - the fake HTTP carrier.
+ * @param timeoutMs - the generation budget.
+ * @param poll - the poll cadence; zero polls without waiting, as a test wants.
+ */
+function clientOver(
+  send: typeof fetch, timeoutMs = 1_000, poll = { firstMs: 0, maxMs: 0 },
+): NearTokenImageClient {
   return new NearTokenImageClient({
     baseURL: () => 'https://site.example',
     apiKey: async () => 'sk-test',
@@ -126,6 +136,7 @@ function clientOver(send: typeof fetch, timeoutMs = 1_000): NearTokenImageClient
       endpoints: ['image-generation', 'openai'],
     }],
     timeoutMs: () => timeoutMs,
+    poll: () => poll,
     fetch: send,
   })
 }
@@ -139,7 +150,7 @@ describe('NearTokenImageClient', () => {
     }) as unknown as typeof fetch
     const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
     expect(image.mediaType).toBe('image/png')
-    expect(calls[0]?.url).toBe('https://site.example/v1/images/generations')
+    expect(calls[0]?.url).toBe('https://site.example/v1/images/tasks')
     expect((calls[0]?.init?.headers as Record<string, string>)['x-neartoken-group']).toBe('#39')
   })
 
@@ -191,5 +202,111 @@ describe('NearTokenImageClient', () => {
     const send = (() => Promise.resolve(answer({ choices: [{ message: { content: 'nope' } }] }))) as unknown as typeof fetch
     await expect(clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' }))
       .rejects.toThrow(/answered without an image/)
+  })
+})
+
+describe('NearTokenImageClient durable tasks', () => {
+  it('waits for a submitted task and reads the picture its result carries', async () => {
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      if (url === 'https://site.example/v1/images/tasks') {
+        return Promise.resolve(answer({ task_id: 'task_1', status: 'SUBMITTED' }, 202))
+      }
+      const polls = calls.filter(call => call.endsWith('/task_1')).length
+      return Promise.resolve(polls === 1
+        ? answer({ task_id: 'task_1', status: 'IN_PROGRESS', progress: '40%' })
+        : answer({ task_id: 'task_1', status: 'SUCCESS', data: [{ b64_json: PNG_BASE64 }] }))
+    }) as unknown as typeof fetch
+
+    const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+
+    expect(image.mediaType).toBe('image/png')
+    expect(calls).toEqual([
+      'https://site.example/v1/images/tasks',
+      'https://site.example/v1/images/tasks/task_1',
+      'https://site.example/v1/images/tasks/task_1',
+    ])
+  })
+
+  it('downloads the picture a finished task answers as a url', async () => {
+    const send = ((url: string) => Promise.resolve(url === 'https://site.example/v1/images/tasks'
+      ? answer({ task_id: 'task_2', status: 'SUBMITTED' }, 202)
+      : url === 'https://site.example/v1/images/tasks/task_2'
+        ? answer({ task_id: 'task_2', status: 'SUCCESS', data: [{ url: 'https://cdn.example/1.png' }] })
+        : answer({}))) as unknown as typeof fetch
+
+    const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+
+    expect(image.mediaType).toBe('image/png')
+  })
+
+  it('reports the reason the site gave for a failed task', async () => {
+    const send = ((url: string) => Promise.resolve(url === 'https://site.example/v1/images/tasks'
+      ? answer({ task_id: 'task_3', status: 'SUBMITTED' }, 202)
+      : answer({
+        task_id: 'task_3',
+        status: 'FAILURE',
+        fail_reason: 'DataInspectionFailed: content rejected',
+        error: { message: 'DataInspectionFailed: content rejected' },
+      }))) as unknown as typeof fetch
+
+    await expect(clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' }))
+      .rejects.toThrow(/reported task task_3 as FAILURE: DataInspectionFailed/)
+  })
+
+  it('falls back to the synchronous route on a site that does not know tasks', async () => {
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      return Promise.resolve(url === 'https://site.example/v1/images/tasks'
+        ? answer('{"error":{"message":"not found"}}', 404)
+        : answer({ data: [{ b64_json: PNG_BASE64 }] }))
+    }) as unknown as typeof fetch
+
+    const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+
+    expect(image.mediaType).toBe('image/png')
+    expect(calls).toEqual([
+      'https://site.example/v1/images/tasks',
+      'https://site.example/v1/images/generations',
+    ])
+  })
+
+  it('re-reads the same task through a gateway failure instead of submitting again', async () => {
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      if (url === 'https://site.example/v1/images/tasks') {
+        return Promise.resolve(answer({ task_id: 'task_4', status: 'SUBMITTED' }, 202))
+      }
+      const polls = calls.filter(call => call.endsWith('/task_4')).length
+      return Promise.resolve(polls === 1
+        ? answer('{"error":{"message":"bad gateway"}}', 503)
+        : answer({ task_id: 'task_4', status: 'SUCCESS', data: [{ b64_json: PNG_BASE64 }] }))
+    }) as unknown as typeof fetch
+
+    const image = await clientOver(send).generate({ model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat' })
+
+    expect(image.mediaType).toBe('image/png')
+    expect(calls.filter(call => call === 'https://site.example/v1/images/tasks')).toHaveLength(1)
+  })
+
+  it('stops polling when the caller cancels, leaving the task to the site', async () => {
+    const controller = new AbortController()
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      if (url === 'https://site.example/v1/images/tasks') {
+        return Promise.resolve(answer({ task_id: 'task_5', status: 'SUBMITTED' }, 202))
+      }
+      controller.abort(new Error('the turn was stopped'))
+      return Promise.resolve(answer({ task_id: 'task_5', status: 'IN_PROGRESS' }))
+    }) as unknown as typeof fetch
+
+    await expect(clientOver(send).generate({
+      model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'a cat', signal: controller.signal,
+    })).rejects.toThrow(/the turn was stopped/)
+    expect(calls).toHaveLength(2)
   })
 })

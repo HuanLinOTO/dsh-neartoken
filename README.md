@@ -220,7 +220,7 @@ location / {
 
 | 通道 | 判定 | 请求 | 响应 |
 |---|---|---|---|
-| `images` | 声明含 `image-generation`（gpt-image 系） | `POST /v1/images/generations` | `data[0].b64_json` 或临时 `url` |
+| `images` | 声明含 `image-generation`（gpt-image 系） | `POST /v1/images/tasks` 提交 → `GET /v1/images/tasks/<id>` 轮询 | 任务 `SUCCESS` 的 `data[0].url` / `b64_json`；站点回落同步时直接是 `data[0]` |
 | `genai` | 声明含 `gemini`（nano-banana、`gemini-*-image`） | `POST /v1beta/models/<model>:generateContent` | `candidates[0].content.parts[].inlineData`（结构化） |
 | `chat` | 其余（只有 `openai` 的，如 grok-imagine） | `POST /v1/chat/completions` | 回复文本里的 `data:image/...;base64,` 或图片链接 |
 
@@ -234,7 +234,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 
 `images` 传工作区里的图片路径，工具读成 data URL 后按通道发送：
 
-- **images 通道**：作为 `image` 数组（data URL）发给 `/v1/images/generations`（站点 DTO 里没有可用的 `edits` 路由，参考图只能搭生成请求）
+- **images 通道**：作为 `image` 数组（data URL）随任务提交发给 `/v1/images/tasks`（站点 DTO 里没有可用的 `edits` 路由，参考图只能搭生成请求）
 - **genai 通道**：作为 `inlineData` part 与提示词一起进 `contents[0].parts`
 - **chat 通道**：作为 `image_url` content part 与提示词一起进 `messages`
 
@@ -251,13 +251,22 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 
 限制：一次只出一张图（`n` 未暴露）；`mask` 局部重绘、`input_fidelity` 未暴露。
 
+### 异步任务
+
+`images` 通道的模型走站点的 **durable task**：`POST /v1/images/tasks` 立刻返回 `202 + task_id`，插件每 3 秒（退避到 5 秒）轮询 `GET /v1/images/tasks/<id>`，`SUCCESS` 后再取 `data[0].url` / `b64_json`。慢模型不再靠一条长 HTTP 撑时间 —— 连接断了，任务还在站点上跑。
+
+- **轮询只重读，不重提交**：轮询撞上 5xx、网关故障或断网，按同一 `task_id` 再来一次；任务没有幂等键，重复提交会重复计费，所以提交没拿到任务就原样报给模型，由模型决定要不要重试。
+- **取消只停轮询**：`exec.signal` 中止后本地不再查询，站点上的任务照常跑完并按站点规则计费。
+- **失败带站点原话**：`FAILURE` 的 `fail_reason`（例如 `DataInspectionFailed: …`）直接进错误消息，不用去站点后台翻。
+- **两种回落都能接**：站点没把该模型认领成任务时，同一端点直接回 `200 + data[]`；不认这个端点的老站点回 404，插件改用 `POST /v1/images/generations` 同步等一次。
+
 ### 超时
 
 生图是几十秒到几分钟的活，所以有两条时间线，故意错开：
 
 | 层 | 值 | 超时后模型看到什么 |
 |---|---|---|
-| 插件自己的预算 | `imageTimeoutMs`（默认 300 秒） | `the site did not return an image within 300s (imageTimeoutMs); … retry, raise imageTimeoutMs, or enable a faster image model` |
+| 插件自己的预算 | `imageTimeoutMs`（默认 300 秒），**从提交到拿到图的总预算**（含轮询） | `the site did not return an image within 300s (imageTimeoutMs); … a submitted task keeps running on the site and is billed when it finishes …` |
 | 工具调用截止时间 | `imageTimeoutMs + 30 秒`，声明给 harness 的 timeout policy | 通用的 `tool call timed out after …ms` |
 
 自己那条早 30 秒触发，所以正常情况模型拿到的是**能指路**的那条（等了多久、该调哪个旋钮）；harness 那条只兜住「工具无视 abort 继续跑」。预算耗尽和调用方取消是分开处理的（`AbortSignal.any` 里单独持有预算信号），取消原样向上传递，不会被写成超时。

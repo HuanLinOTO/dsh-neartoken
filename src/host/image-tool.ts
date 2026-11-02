@@ -243,7 +243,8 @@ export function registerGenerateImageTool(ctx: Context, deps: ImageToolDeps): ()
     name: 'generate_image',
     description: 'Generate one image from a text prompt with the configured image model '
       + '(the gpt-image, nano-banana, and gemini image families) and return the image itself. '
-      + 'One call takes 20-60 seconds. Write the prompt as a full description of the picture you want; '
+      + 'A call takes 20-60 seconds, and a queued or slow model can take minutes. '
+      + 'Write the prompt as a full description of the picture you want; '
       + 'quoted text that must appear in the image is rendered by the model, but long lines may smear. '
       + 'Pass images to edit or compose from existing files and say what to keep and what to change; '
       + 'the first reference picture also sets the output aspect ratio. '

@@ -3,11 +3,15 @@
  * image models accept and the two result envelopes they answer with.
  *
  * The site lists picture generators next to chat models, and they do not share
- * one API. A model the catalog marks `image-generation` answers
- * `POST /v1/images/generations` with either a base64 body or a short-lived URL;
- * the Gemini-shaped ones (nano-banana, `*-image`) answer a chat completion whose
- * text embeds the picture. Both paths end here as encoded bytes, which is what
- * a tool result can carry.
+ * one API. A model the catalog marks `image-generation` is asked through the
+ * task endpoint (`POST /v1/images/tasks`): the site answers a durable task id at
+ * once and the picture arrives by polling, because a slow generator outlives
+ * any single HTTP response. The same endpoint answers the picture itself when
+ * nothing claims the model as a task, and a site too old to know it answers 404
+ * — the synchronous `POST /v1/images/generations` is then used once. The
+ * Gemini-shaped ones (nano-banana, `*-image`) answer a chat completion whose
+ * text embeds the picture. All paths end here as encoded bytes, which is what a
+ * tool result can carry.
  *
  * @module
  */
@@ -26,6 +30,25 @@ const IMAGE_NAME = /image|imagine|nano-banana|imagen|flux|seedream|dall-?e|midjo
  * a picture model.
  */
 const NON_IMAGE_NAME = /tts|transcri|\basr\b|speech|embed|rerank|veo|video|lyria|music|sora|whisper/i
+
+/** The site's durable-task surface for picture models. */
+const TASKS_PATH = '/v1/images/tasks'
+
+/** The synchronous picture surface: a site without tasks, and a site that answers one here anyway. */
+const GENERATIONS_PATH = '/v1/images/generations'
+
+/** First poll interval, and the ceiling it backs off to (HANDOFF-new-api.md part 7). */
+const POLL_FIRST_MS = 3_000
+const POLL_MAX_MS = 5_000
+
+/** How much each poll adds before it reaches {@link POLL_MAX_MS}. */
+const POLL_STEP_MS = 1_000
+
+/**
+ * Statuses worth re-reading the same task for: a gateway's own failure says
+ * nothing about the task, which is still running behind it.
+ */
+const TRANSIENT_STATUS: ReadonlySet<number> = new Set([408, 425, 429, 500, 502, 503, 504])
 
 /** How one image model is asked for a picture. */
 export type ImageChannel = 'images' | 'genai' | 'chat'
@@ -241,6 +264,11 @@ export interface NearTokenImageDeps {
   routes: () => Promise<readonly NearTokenRoute[]>
   /** How long one generation may take before it is abandoned, in milliseconds. */
   timeoutMs: () => number
+  /**
+   * Poll cadence for a durable task: the first wait and the ceiling it backs
+   * off to. Defaults to 3 s and 5 s; a test passes zeros to poll immediately.
+   */
+  poll?: () => { readonly firstMs: number; readonly maxMs: number }
   /** HTTP carrier; defaults to the process's own fetch. */
   fetch?: typeof fetch
 }
@@ -253,6 +281,22 @@ export interface NearTokenGeneratedImage {
   readonly bytes: Uint8Array
 }
 
+/** One generation once its channel, route, credential, and budget are resolved. */
+interface ImageAttempt {
+  readonly model: string
+  readonly group: string
+  readonly prompt: string
+  readonly size?: string
+  readonly quality?: string
+  readonly background?: string
+  readonly images?: readonly ImagePayload[]
+  readonly channel: ImageChannel
+  readonly route: NearTokenRoute | undefined
+  readonly key: string
+  readonly signal: AbortSignal
+  readonly send: typeof fetch
+  readonly timeoutMs: number
+}
 /**
  * Ask the site for one picture and return its bytes.
  *
@@ -299,7 +343,8 @@ export class NearTokenImageClient {
       if (!budget.aborted) throw error
       throw new Error(
         `the site did not return an image within ${String(Math.round(timeoutMs / 1_000))}s`
-        + ` (imageTimeoutMs); ${request.model} can be this slow — retry, raise imageTimeoutMs, or enable a faster image model`,
+        + ` (imageTimeoutMs); ${request.model} can be this slow — a submitted task keeps running on the site`
+        + ' and is billed when it finishes, so raise imageTimeoutMs or enable a faster image model',
         { cause: error },
       )
     })
@@ -307,94 +352,17 @@ export class NearTokenImageClient {
   }
 
   /**
-   * One request, one answer: the parts of a generation that the time budget wraps.
+   * One generation under the time budget: the channel decides whether the
+   * picture comes back in the answer or has to be waited for, and both shapes
+   * end as one picture reference.
    * @param request - the call, already resolved to a channel and group.
    * @returns the encoded picture.
    */
-  private async attempt(request: {
-    readonly model: string
-    readonly group: string
-    readonly prompt: string
-    readonly size?: string
-    readonly quality?: string
-    readonly background?: string
-    readonly images?: readonly ImagePayload[]
-    readonly channel: ImageChannel
-    readonly route: NearTokenRoute | undefined
-    readonly key: string
-    readonly signal: AbortSignal
-    readonly send: typeof fetch
-    readonly timeoutMs: number
-  }): Promise<NearTokenGeneratedImage> {
+  private async attempt(request: ImageAttempt): Promise<NearTokenGeneratedImage> {
     const pictures = request.images ?? []
-    const path = request.channel === 'images'
-      ? '/v1/images/generations'
-      : request.channel === 'genai'
-        ? `/v1beta/models/${request.model}:generateContent`
-        : '/v1/chat/completions'
-    // A reference picture makes this body megabytes of base64, so it goes
-    // through the same encoding layer as the chat wires (see request-body.ts).
-    const response = await postJson(request.send, `${this.deps.baseURL()}${path}`, {
-      headers: {
-        ...attributionHeaders(),
-        // An image tool call has no session, so it announces the client only.
-        ...clientHeaders(),
-        'content-type': 'application/json',
-        // Gemini reads its own credential header; the compatible surfaces take
-        // a bearer token.
-        ...request.channel === 'genai'
-          ? { 'x-goog-api-key': request.key }
-          : { authorization: `Bearer ${request.key}` },
-        ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
-      },
-      json: JSON.stringify(request.channel === 'images'
-        ? {
-          model: request.model,
-          prompt: request.prompt,
-          n: 1,
-          ...request.size === undefined ? {} : { size: request.size },
-          ...request.quality === undefined ? {} : { quality: request.quality },
-          ...request.background === undefined ? {} : { background: request.background },
-          // The site's own field for reference pictures is `image`; the edit
-          // route is not usable here, so a picture to start from rides the
-          // generation call instead.
-          ...pictures.length === 0
-            ? {}
-            : { image: pictures.map(picture => `data:${picture.mediaType};base64,${picture.data}`) },
-        }
-        : request.channel === 'genai'
-          ? {
-            contents: [{
-              role: 'user',
-              parts: [
-                { text: request.prompt },
-                ...pictures.map(picture => ({ inlineData: { mimeType: picture.mediaType, data: picture.data } })),
-              ],
-            }],
-          }
-          : {
-            model: request.model,
-            messages: [{
-              role: 'user',
-              content: pictures.length === 0
-                ? request.prompt
-                : [
-                  { type: 'text', text: request.prompt },
-                  ...pictures.map(picture => ({
-                    type: 'image_url',
-                    image_url: { url: `data:${picture.mediaType};base64,${picture.data}` },
-                  })),
-                ],
-            }],
-            stream: false,
-          }),
-      signal: request.signal,
-    })
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 400)
-      throw new Error(`the site refused ${request.model} with HTTP ${String(response.status)}: ${detail}`)
-    }
-    const reply = extractImageReply(await response.json())
+    const reply = request.channel === 'images'
+      ? await this.imagesReply(request, pictures)
+      : await this.chatReply(request, pictures)
     if (reply === undefined) {
       throw new Error(`${request.model} answered without an image; the model may not generate pictures on this site`)
     }
@@ -406,6 +374,212 @@ export class NearTokenImageClient {
       throw new Error(`${request.model} returned ${String(bytes.byteLength)} bytes that are not a PNG/JPEG/WebP/GIF image`)
     }
     return { model: request.model, group: request.group, mediaType, bytes }
+  }
+
+  /** The headers every picture call carries; only the credential header is the channel's own. */
+  private requestHeaders(request: ImageAttempt): Record<string, string> {
+    return {
+      ...attributionHeaders(),
+      // An image tool call has no session, so it announces the client only.
+      ...clientHeaders(),
+      'content-type': 'application/json',
+      // Gemini reads its own credential header; the compatible surfaces take
+      // a bearer token.
+      ...request.channel === 'genai'
+        ? { 'x-goog-api-key': request.key }
+        : { authorization: `Bearer ${request.key}` },
+      ...request.route?.groupRef === undefined ? {} : { 'x-neartoken-group': request.route.groupRef },
+    }
+  }
+
+  /** The headers a poll carries: the same credential, no routing decision left to make. */
+  private pollHeaders(request: ImageAttempt): Record<string, string> {
+    return {
+      ...attributionHeaders(),
+      ...clientHeaders(),
+      authorization: `Bearer ${request.key}`,
+    }
+  }
+
+  /**
+   * The serialized body one channel sends.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded.
+   * @returns the JSON body.
+   */
+  private requestBody(request: ImageAttempt, pictures: readonly ImagePayload[]): string {
+    return JSON.stringify(request.channel === 'images'
+      ? {
+        model: request.model,
+        prompt: request.prompt,
+        n: 1,
+        ...request.size === undefined ? {} : { size: request.size },
+        ...request.quality === undefined ? {} : { quality: request.quality },
+        ...request.background === undefined ? {} : { background: request.background },
+        // The site's own field for reference pictures is `image`; the edit
+        // route is not usable here, so a picture to start from rides the
+        // generation call instead.
+        ...pictures.length === 0
+          ? {}
+          : { image: pictures.map(picture => `data:${picture.mediaType};base64,${picture.data}`) },
+      }
+      : request.channel === 'genai'
+        ? {
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: request.prompt },
+              ...pictures.map(picture => ({ inlineData: { mimeType: picture.mediaType, data: picture.data } })),
+            ],
+          }],
+        }
+        : {
+          model: request.model,
+          messages: [{
+            role: 'user',
+            content: pictures.length === 0
+              ? request.prompt
+              : [
+                { type: 'text', text: request.prompt },
+                ...pictures.map(picture => ({
+                  type: 'image_url',
+                  image_url: { url: `data:${picture.mediaType};base64,${picture.data}` },
+                })),
+              ],
+          }],
+          stream: false,
+        })
+  }
+
+  /**
+   * One refusal, carrying the status and the site's own words.
+   * @param request - the attempt that was refused.
+   * @param response - the site's answer.
+   * @returns the error to throw.
+   */
+  private async refusal(request: ImageAttempt, response: Response): Promise<Error> {
+    const detail = (await response.text()).slice(0, 400)
+    return new Error(`the site refused ${request.model} with HTTP ${String(response.status)}: ${detail}`)
+  }
+
+  /**
+   * The chat-shaped channels: one request that answers the picture.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded.
+   * @returns the picture reference, or undefined when the answer carries none.
+   */
+  private async chatReply(request: ImageAttempt, pictures: readonly ImagePayload[]): Promise<ImageReply | undefined> {
+    const path = request.channel === 'genai'
+      ? `/v1beta/models/${request.model}:generateContent`
+      : '/v1/chat/completions'
+    // A reference picture makes this body megabytes of base64, so it goes
+    // through the same encoding layer as the chat wires (see request-body.ts).
+    const response = await postJson(request.send, `${this.deps.baseURL()}${path}`, {
+      headers: this.requestHeaders(request),
+      json: this.requestBody(request, pictures),
+      signal: request.signal,
+    })
+    if (!response.ok) throw await this.refusal(request, response)
+    return extractImageReply(await response.json())
+  }
+
+  /**
+   * The `images` channel: a durable task when the site runs one, the picture
+   * itself when it does not.
+   *
+   * Which of the two an answer is, is the answer's own business — a task id
+   * means polling, `data[]` means the picture is already here, and a 404 means
+   * this site predates the task endpoint. Choosing by configuration would break
+   * the moment the site ships or drops a task plugin.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded.
+   * @returns the picture reference the answer carries.
+   */
+  private async imagesReply(request: ImageAttempt, pictures: readonly ImagePayload[]): Promise<ImageReply | undefined> {
+    const submitted = await postJson(request.send, `${this.deps.baseURL()}${TASKS_PATH}`, {
+      headers: this.requestHeaders(request),
+      json: this.requestBody(request, pictures),
+      signal: request.signal,
+    })
+    // A site too old to know the task endpoint answers 404: the same body goes
+    // once to the route this plugin used before.
+    if (submitted.status === 404) {
+      await submitted.body?.cancel().catch(() => {})
+      return this.syncImagesReply(request, pictures)
+    }
+    if (!submitted.ok) throw await this.refusal(request, submitted)
+    const body: unknown = await submitted.json()
+    const taskId = taskIdOf(body)
+    // Nothing claims the model as a task, so the site answered the picture
+    // synchronously on this same endpoint.
+    if (taskId === undefined) return extractImageReply(body)
+    return this.settleTask(request, taskId)
+  }
+
+  /**
+   * The synchronous images route, for a site that answers 404 on submit.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded.
+   * @returns the picture reference the answer carries.
+   */
+  private async syncImagesReply(request: ImageAttempt, pictures: readonly ImagePayload[]): Promise<ImageReply | undefined> {
+    const response = await postJson(request.send, `${this.deps.baseURL()}${GENERATIONS_PATH}`, {
+      headers: this.requestHeaders(request),
+      json: this.requestBody(request, pictures),
+      signal: request.signal,
+    })
+    if (!response.ok) throw await this.refusal(request, response)
+    return extractImageReply(await response.json())
+  }
+
+  /**
+   * Poll one submitted task until the site reports a terminal state.
+   *
+   * Polling is the only retry: a transient gateway failure or a dropped
+   * connection re-reads the same task, so a flaky link never submits — and
+   * bills — a second generation. The caller's budget is the exit; once it
+   * fires the task keeps running on the site and is billed when it finishes.
+   * @param request - the attempt that submitted the task.
+   * @param taskId - the id the submit answer carried.
+   * @returns the picture reference the finished task carries.
+   * @throws {Error} when the task fails, disappears, or the budget runs out.
+   */
+  private async settleTask(request: ImageAttempt, taskId: string): Promise<ImageReply | undefined> {
+    const poll = this.deps.poll?.() ?? { firstMs: POLL_FIRST_MS, maxMs: POLL_MAX_MS }
+    const url = `${this.deps.baseURL()}${TASKS_PATH}/${encodeURIComponent(taskId)}`
+    let waitMs = poll.firstMs
+    for (;;) {
+      // The submit answer is not a result, so the first read waits one interval.
+      await waitFor(waitMs, request.signal)
+      waitMs = Math.min(poll.maxMs, waitMs + POLL_STEP_MS)
+      let response: Response
+      try {
+        response = await request.send(url, { headers: this.pollHeaders(request), signal: request.signal })
+      } catch (error) {
+        // A dropped poll says nothing about the task: keep reading it.
+        if (request.signal.aborted) throw error
+        continue
+      }
+      if (response.status === 404) {
+        throw new Error(
+          `the site no longer has task ${taskId} (HTTP 404): its result expired or the account changed; submit again`,
+        )
+      }
+      if (!response.ok) {
+        if (!TRANSIENT_STATUS.has(response.status) || request.signal.aborted) {
+          throw await this.refusal(request, response)
+        }
+        await response.body?.cancel().catch(() => {})
+        continue
+      }
+      const body: unknown = await response.json()
+      const status = taskStatusOf(body)
+      if (status === 'SUCCESS') return extractImageReply(body)
+      if (status === 'FAILURE') {
+        throw new Error(`the site reported task ${taskId} as FAILURE: ${taskFailureReason(body)}`)
+      }
+      // SUBMITTED / QUEUED / IN_PROGRESS / UNKNOWN: still working.
+    }
   }
 
   /**
@@ -421,5 +595,71 @@ export class NearTokenImageClient {
     if (!response.ok) throw new Error(`the generated image URL answered HTTP ${String(response.status)}`)
     return new Uint8Array(await response.arrayBuffer())
   }
+}
+
+/**
+ * The task id an answer carries, when it carries one.
+ * @param body - the parsed answer.
+ * @returns the id, or undefined when this was not a task answer.
+ */
+function taskIdOf(body: unknown): string | undefined {
+  if (typeof body !== 'object' || body === null) return undefined
+  const id = (body as Record<string, unknown>).task_id
+  return typeof id === 'string' && id.length > 0 ? id : undefined
+}
+
+/**
+ * The task state one answer carries, upper-cased.
+ * @param body - the parsed answer.
+ * @returns the state, or an empty string when the answer names none.
+ */
+function taskStatusOf(body: unknown): string {
+  if (typeof body !== 'object' || body === null) return ''
+  const status = (body as Record<string, unknown>).status
+  return typeof status === 'string' ? status.toUpperCase() : ''
+}
+
+/**
+ * Why the site reported a task as failed.
+ * @param body - the parsed task answer.
+ * @returns the site's own reason, or a generic one when it gave none.
+ */
+function taskFailureReason(body: unknown): string {
+  const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {}
+  const error = record.error
+  const detail = typeof error === 'object' && error !== null
+    ? (error as Record<string, unknown>).message
+    : undefined
+  const reason = typeof record.fail_reason === 'string' && record.fail_reason.length > 0
+    ? record.fail_reason
+    : typeof detail === 'string' && detail.length > 0 ? detail : undefined
+  return (reason ?? 'image generation failed').slice(0, 400)
+}
+
+/**
+ * Wait one poll interval, ending early when the generation is cancelled.
+ * @param ms - how long to wait; the tests pass zero to poll without waiting.
+ * @param signal - the generation's cancellation and time budget.
+ */
+async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('the image generation was cancelled')
+  }
+  if (ms <= 0) return
+  await new Promise<void>((resolve, reject) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', cancel)
+    }
+    const cancel = (): void => {
+      done()
+      reject(signal.reason instanceof Error ? signal.reason : new Error('the image generation was cancelled'))
+    }
+    const timer = setTimeout(() => {
+      done()
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', cancel, { once: true })
+  })
 }
 
