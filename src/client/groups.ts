@@ -212,6 +212,31 @@ export function foldModels<M extends { readonly id: string; readonly name: strin
 }
 
 /**
+ * Fold one group name into the badge texts that spell its tier out.
+ * @param group - a group name, e.g. `[低价][备用] GPT Pro`.
+ * @returns the badge texts, trimmed and lowercased for comparison.
+ */
+function badgeTexts(group: string): readonly string[] {
+  return parseGroupLabel(group).badges.map(badge => badge.text.trim().toLowerCase())
+}
+
+/**
+ * Score one candidate group against the tier the human already picked.
+ * The same badge SET is the closest thing to "the same group" when the site
+ * names each family's offering after its own family; otherwise the number of
+ * shared badges orders the candidates.
+ * @param current - badge texts of the group in use.
+ * @param candidate - the candidate's group name.
+ * @returns the sort keys, larger meaning closer.
+ */
+function tierRank(current: readonly string[], candidate: string): { same: boolean; shared: number } {
+  const texts = badgeTexts(candidate)
+  const set = new Set(texts)
+  const shared = current.filter(text => set.has(text)).length
+  return { same: shared === current.length && set.size === current.length, shared }
+}
+
+/**
  * Pick the variant a model row should route to.
  * @param option - the row being chosen.
  * @param preferredProvider - the currently selected provider, kept when it offers the model.
@@ -223,5 +248,18 @@ export function chooseVariant<M>(
 ): ModelVariant<M> | undefined {
   const local = option.variants.filter(variant => variant.provider === preferredProvider)
   const pool = local.length > 0 ? local : option.variants
-  return pool.find(variant => variant.group === preferredGroup) ?? pool[0]
+  const exact = pool.find(variant => variant.group === preferredGroup)
+  if (exact !== undefined) return exact
+  // The group in use belongs to another family (`[低价] DeepSeek` while the new
+  // model is offered as `[低价][备用] GPT Pro`). Its tier badges still say which
+  // offering the human wants, so rank by them instead of taking the site's first
+  // entry — that entry is often the dearest group and reads as a silent reset.
+  const current = preferredGroup === undefined ? [] : badgeTexts(preferredGroup)
+  if (current.length === 0) return pool[0]
+  const ranked = pool
+    .map((variant, index) => ({ variant, index, rank: tierRank(current, variant.group ?? '') }))
+    .toSorted((left, right) => Number(right.rank.same) - Number(left.rank.same)
+      || right.rank.shared - left.rank.shared
+      || left.index - right.index)
+  return ranked[0]?.variant
 }

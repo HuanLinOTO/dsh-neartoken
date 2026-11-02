@@ -18,6 +18,16 @@ const catalog: readonly Entry[] = [
   { id: 'default::glm-5.3', name: 'glm-5.3 @ default' },
 ]
 
+/** One model the site offers under several families' groups, in the site's order. */
+const astra: readonly Entry[] = [
+  { id: '[满血] GPT 不降智精选::gpt-6-astra', name: 'gpt-6-astra @ [满血] GPT 不降智精选' },
+  { id: '[满血] GPT Pro 500 高速::gpt-6-astra', name: 'gpt-6-astra @ [满血] GPT Pro 500 高速' },
+  { id: '[官key] GPT::gpt-6-astra', name: 'gpt-6-astra @ [官key] GPT' },
+  { id: '[低价][备用] GPT Pro::gpt-6-astra', name: 'gpt-6-astra @ [低价][备用] GPT Pro' },
+  { id: '[低价][满血] GPT Pro 2::gpt-6-astra', name: 'gpt-6-astra @ [低价][满血] GPT Pro 2' },
+  { id: '[低价] GPT 福利::gpt-6-astra', name: 'gpt-6-astra @ [低价] GPT 福利' },
+]
+
 describe('splitModelName', () => {
   it('splits the group suffix off the model name', () => {
     expect(splitModelName('glm-5.3 @ [低价][满血] 国模')).toEqual({ model: 'glm-5.3', group: '[低价][满血] 国模' })
@@ -55,6 +65,31 @@ describe('chooseVariant', () => {
   it('falls back to the first variant when the preferred group is gone', () => {
     const [option] = foldModels('neartoken', catalog)
     expect(option === undefined ? undefined : chooseVariant(option, 'neartoken', 'retired')?.group).toBe('[低价] Grok')
+  })
+
+  it('keeps the tier when the site names the same model under another family', () => {
+    const [option] = foldModels('neartoken', astra)
+    expect(option === undefined
+      ? undefined
+      : chooseVariant(option, 'neartoken', '[低价] DeepSeek')?.group).toBe('[低价] GPT 福利')
+  })
+
+  it('keeps a tier whose badges only partly survive the family switch', () => {
+    const [option] = foldModels('neartoken', astra)
+    expect(option === undefined
+      ? undefined
+      : chooseVariant(option, 'neartoken', '[满血][官Key] DeepSeek')?.group).toBe('[满血] GPT 不降智精选')
+  })
+
+  it('matches a tier badge regardless of the site\'s casing', () => {
+    const mixed: readonly Entry[] = [
+      { id: '[满血] GPT::gpt-6-astra', name: 'gpt-6-astra @ [满血] GPT' },
+      { id: '[官key] GPT::gpt-6-astra', name: 'gpt-6-astra @ [官key] GPT' },
+    ]
+    const [option] = foldModels('neartoken', mixed)
+    expect(option === undefined
+      ? undefined
+      : chooseVariant(option, 'neartoken', '[官Key] 国模')?.group).toBe('[官key] GPT')
   })
 })
 
