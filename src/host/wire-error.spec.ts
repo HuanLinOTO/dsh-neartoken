@@ -30,7 +30,22 @@ describe('gateway refusals', () => {
 
   it('classifies refused credentials as AUTH, which no retry can fix', () => {
     expect(gatewayError('unauthorized', 401).code).toBe('AUTH')
-    expect(gatewayError('forbidden', 403).code).toBe('AUTH')
+  })
+
+  it('keeps a 403 distinct from a broken key, so the suspension is not reported as one', () => {
+    // The client renders AUTH as "the API key is invalid"; a 403 is a policy or
+    // account refusal just as often, so the status alone must not pick AUTH.
+    expect(gatewayError('forbidden', 403).code).toBe('HTTP_403')
+  })
+
+  it('names the model-access suspension and where it is lifted', () => {
+    const error = gatewayError(
+      '{"error":{"message":"Model access is suspended after repeated content policy violations.","type":"new_api_error","code":"model_access_restricted"}}',
+      403,
+    )
+    expect(error.code).toBe('HTTP_403')
+    expect(error.message).toContain('Model access is suspended')
+    expect(error.message).toContain('模型访问')
   })
 
   it('classifies a request the gateway will always reject as INVALID_REQUEST', () => {

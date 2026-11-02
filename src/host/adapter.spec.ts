@@ -228,6 +228,26 @@ describe('stream', () => {
     await dispatch(adapter, '[低价] Grok::grok-4.6')
     expect((body as { model?: string }).model).toBe('grok-4.6')
   })
+
+  it('reports a body read that dies mid-answer as a retryable TRANSPORT failure', async () => {
+    const adapter = adapterOver(expandRoutes(parsePricing(payload)))
+    // The shape undici reports a dropped socket with once the response exists: a
+    // bare TypeError that carries no code, so nothing downstream could classify
+    // it and the turn ended as an unclassified "UNKNOWN" instead of being retried.
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"x"}\n\n'))
+        controller.error(new TypeError('terminated'))
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch
+    const reading = (async () => {
+      for await (const chunk of adapter.stream(request('default::grok-4.6'))) void chunk
+    })()
+    await expect(reading).rejects.toMatchObject({
+      code: 'TRANSPORT',
+      message: expect.stringContaining('terminated'),
+    })
+  })
 })
 
 describe('stream wire selection', () => {

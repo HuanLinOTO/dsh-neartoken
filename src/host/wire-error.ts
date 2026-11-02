@@ -31,6 +31,19 @@ const FUNCTION_RESPONSE_MISMATCH = /number of function response parts/iu
 const FUNCTION_RESPONSE_MISMATCH_HINT =
   ' 提示：Gemini 原生协议下这批工具结果与调用对不上，重试不会成功；请升级 neartoken 插件，或换用别的模型后新开会话'
 
+/**
+ * The code a New API site answers with when it suspended this account's model
+ * access over repeated upstream content-safety rejections.
+ *
+ * The fix lives in the site console, not in the key, so the refusal text says
+ * which of the two it is.
+ */
+const MODEL_ACCESS_RESTRICTED_CODE = 'model_access_restricted'
+
+/** What the account holder can do about that suspension. */
+const MODEL_ACCESS_RESTRICTED_HINT =
+  ' 提示：站点已暂停该账号的模型访问（多次上游内容安全拒绝），与 API Key 无关；请登录站点控制台提交解除申请'
+
 /** The `error` object of a gateway error body, when the body carries one. */
 function errorObjectOf(body: string): Record<string, unknown> | undefined {
   const parsed = parseJsonObject(body)
@@ -68,11 +81,15 @@ function detailOf(body: string): string {
 /**
  * Classify one gateway refusal (a non-2xx answer or a rejected body).
  *
- * Codes follow the shared taxonomy: AUTH for credentials the gateway refused,
- * QUOTA for an exhausted balance, RATE_LIMIT for throttling, SERVER for the
- * gateway's own failures, INVALID_REQUEST for a request it will always
- * reject, and `HTTP_<status>` for anything else. Only RATE_LIMIT and SERVER
- * are transient by default; the policy provider owns the rest.
+ * Codes follow the shared taxonomy: AUTH only for credentials the gateway
+ * refused (401, `authentication_error`, `permission_error`), QUOTA for an
+ * exhausted balance, RATE_LIMIT for throttling, SERVER for the gateway's own
+ * failures, INVALID_REQUEST for a request it will always reject, and
+ * `HTTP_<status>` for anything else. A 403 stays distinct: a gateway answers
+ * it for a policy or account suspension as readily as for a bad key, and the
+ * client renders AUTH as "the API key is invalid", which would report a
+ * suspension as a credential problem. Only RATE_LIMIT and SERVER are transient
+ * by default; the policy provider owns the rest.
  * @param body - the raw error response body.
  * @param status - the HTTP status the gateway answered with.
  * @param headers - the response headers, for `retry-after` and request identity.
@@ -83,7 +100,7 @@ export function gatewayError(body: string, status: number, headers?: Headers): L
   const type = typeof error?.type === 'string' ? error.type : ''
   const detail = detailOf(body)
   let code: string
-  if (status === 401 || status === 403 || type === 'authentication_error' || type === 'permission_error') code = 'AUTH'
+  if (status === 401 || type === 'authentication_error' || type === 'permission_error') code = 'AUTH'
   else if (isQuotaExceededError(detail) || status === 402) code = 'QUOTA'
   else if (status === 429 || type === 'rate_limit_error') code = 'RATE_LIMIT'
   else if (isContextWindowExceededError(detail)) code = 'CONTEXT_WINDOW_EXCEEDED'
@@ -93,9 +110,11 @@ export function gatewayError(body: string, status: number, headers?: Headers): L
   const retry = headers?.get('retry-after')
   const delay = retry == null ? NaN : /^\d+(?:\.\d+)?$/u.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()
   const id = headers?.get('request-id') ?? headers?.get('x-request-id')
-  const hint = code === 'INVALID_REQUEST' && FUNCTION_RESPONSE_MISMATCH.test(detail)
-    ? FUNCTION_RESPONSE_MISMATCH_HINT
-    : ''
+  const hint = error?.code === MODEL_ACCESS_RESTRICTED_CODE
+    ? MODEL_ACCESS_RESTRICTED_HINT
+    : code === 'INVALID_REQUEST' && FUNCTION_RESPONSE_MISMATCH.test(detail)
+      ? FUNCTION_RESPONSE_MISMATCH_HINT
+      : ''
   return new LlmError(
     `NearToken answered ${status}: ${(embeddedMessage(body) ?? body).slice(0, 500)}${hint}`,
     code,
@@ -121,14 +140,17 @@ export function streamFailure(detail: string): LlmError {
 }
 
 /**
- * Classify a transport-level failure: the request never produced a response.
+ * Classify a transport-level failure: the request or its body read never
+ * finished.
  *
- * undici wraps the underlying cause in a `TypeError: fetch failed`; the chain
- * is rendered into the message so the real failure (DNS, TLS, reset) is not
- * masked by the wrapper.
- * @param error - the value the fetch rejected with.
+ * undici wraps the underlying cause in a `TypeError: fetch failed` before a
+ * response exists, and fails an established body read with a bare
+ * `TypeError: terminated` when the socket drops mid-answer; the chain is
+ * rendered into the message either way, so the real failure (DNS, TLS, reset,
+ * dropped socket) is not masked by the wrapper.
+ * @param error - the value the fetch or the body read rejected with.
  * @returns the classified error, chained to the original.
  */
 export function transportFailure(error: unknown): LlmError {
-  return new LlmError(`NearToken could not be reached: ${errorChain(error).slice(0, 500)}`, 'TRANSPORT', { cause: error })
+  return new LlmError(`NearToken transport failed: ${errorChain(error).slice(0, 500)}`, 'TRANSPORT', { cause: error })
 }

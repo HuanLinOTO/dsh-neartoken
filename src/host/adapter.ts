@@ -16,7 +16,7 @@
  * rest of the catalog stays on chat completions.
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { attributionHeaders, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmResolvedModelInfo, ModelModality, ReasoningEffortId, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
@@ -248,6 +248,17 @@ export class NearTokenAdapter extends LlmAdapter {
       if (options.signal?.aborted) throw error
       throw transportFailure(error)
     }
-    yield* wire.parse(response, options.signal)
+    try {
+      yield* wire.parse(response, options.signal)
+    } catch (error) {
+      // A body read that dies after a healthy start is the transport's own
+      // failure (undici reports the dropped socket as a bare
+      // `TypeError: terminated`); the wires classify only the refusals they read
+      // themselves. Left raw, it reaches the agent loop unclassified, where no
+      // retry policy matches it and the client can only render the turn as an
+      // "UNKNOWN" failure instead of waiting the connection out.
+      if (error instanceof LlmError || options.signal?.aborted === true) throw error
+      throw transportFailure(error)
+    }
   }
 }
