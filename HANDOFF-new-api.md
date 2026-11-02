@@ -2,7 +2,7 @@
 
 > 面向 new-api（D:\Projects\new-api）与 `dsh-neartoken` 两侧的共同契约。
 > 分七部分，均由 new-api 侧实现：**设备授权（第一部分）**、**分组路由（第二部分）**、**模型容量清单（第三部分）**、**实时钱包（第四部分）**、**在线充值（第五部分）**、**邀请码（第六部分）**、**异步图像任务（第七部分）**。
-> DSH 侧除第七部分外均已实现完毕。
+> 站点侧七部分均已实现；DSH 侧插件对第七部分（异步图像任务）的改造尚未落地，见 11.3。
 
 ---
 
@@ -395,24 +395,18 @@ GET /dsh/pay?trade_no=<trade_no>&sig=<sig>      # 匿名，只读
 
 ---
 
-# 第七部分：异步图像任务（提交 + 轮询）
+# 第七部分：异步图像任务（new-api 已实现）
 
-## 11. 为什么要把生图改成异步
+> 结论先行：站点**不需要新造端点**。new-api 早已有一套异步图像任务（提交建 durable task → 轮询），原先只挂在浏览器会话鉴权的 playground 面（`POST /pg/images/generations`、`GET /pg/images/tasks/:task_id`）。本轮把同一套实现暴露到 relay 面（TokenAuth），DSH 侧改用这两个端点即可。
 
-同步 `POST /v1/images/generations` 实测 43–114 秒，慢组更久，上游偶发 504。插件侧一次生图被工具 deadline 包住（`imageTimeoutMs` 默认 300 s + 30 s 余量）：只要连接一断或网关掐超时，图就没了，而站点可能已经花了上游的钱。
+## 11. 端点契约（字段名以 new-api 实现为准）
 
-改成「提交拿 id → 轮询拿结果」之后：提交 2 秒内返回；插件断线、重启、切会话都能凭 id 把结果取回来；失败带稳定 `error.code`，能不能重试由插件判断；用户取消还能退款。
+鉴权：`Authorization: Bearer <relay key>`，与 `/v1/images/generations` 同一把。站点侧实现在 `router/relay-router.go`（路由）、`controller/plugin_protocol_image.go`（`ImageTaskSubmit` / `ImageTaskFetch`），契约文档见 new-api 仓库 `docs/image-task-api.md`。
 
-## 11.1 端点契约（字段名已冻结，不得改）
-
-三个路由挂在 `/v1/images/tasks`，用与 `/v1/chat/completions` 同一把 relay key（`Authorization: Bearer`）。分组头 `x-neartoken-group: #<id>` 与同步端点同语义：走 `CanUseGroup`，不通过返 403 且沿用既有文案；不带该头则按令牌自身分组。
-
-### ① 提交任务
+### ① 提交
 
 ```
 POST /v1/images/tasks
-Authorization: Bearer <relay key>
-x-neartoken-group: #39
 Content-Type: application/json
 
 {
@@ -422,140 +416,103 @@ Content-Type: application/json
   "size": "1024x1024",
   "quality": "high",
   "background": "opaque",
-  "image": ["data:image/png;base64,..."],
-  "client_request_id": "8f0c2f9e-3b1a-4c77-9a0e-2d5f5f3c9a11"
+  "image": ["data:image/png;base64,..."]
 }
 ```
 
-- 业务字段与同步 `/v1/images/generations` **完全一致**（`image` 是站点自己的参考图字段，data URL 数组；`size` / `quality` / `background` 只对 `image-generation` 通道的模型有意义）。
-- `client_request_id` 可选但推荐：幂等键。同一 token 下同值 24 小时内返回**同一个任务**。
-- 校验失败（模型不存在 / 模型关闭 / 分组不可用 / 参考图超限）→ 400，OpenAI 风格错误体，**不建任务、不扣费**。
-- 成功必须**立即返回 202**，不得在提交里等上游：
+请求体就是 OpenAI Images API 的 JSON 体（multipart → 415）。任务插件认领时**立即**返回 `202`，不等上游：
 
-```
-202 {
-  "id": "imgtask_01J8Z9K3QP",
-  "object": "image.task",
-  "status": "queued",
+```json
+{
+  "task_id": "task_9Qm3xT7zCwKpV2sLdRfHnB8yEaUoJi4g",
+  "id": "task_9Qm3xT7zCwKpV2sLdRfHnB8yEaUoJi4g",
+  "status": "SUBMITTED",
+  "progress": "",
   "model": "gpt-image-2.5-flare",
   "group": "[低价][促销] GPT Image",
-  "created_at": 1762262400,
-  "poll_after_ms": 2000
+  "created_at": 1762000000
 }
 ```
 
-- 配额：提交时按该分组倍率预扣（复用既有的 `PreConsumeQuota`），失败 / 取消全额退回，成功按实际用量结算。**倍率在提交那一刻解析并写进任务记录**，执行时不重解析——否则分组改名或改倍率会把账算到另一个组上。
-- 队列满 / 并发上限打满 → 429 `image_task_queue_full` + `Retry-After`。
+没有任务插件认领的模型（普通图像渠道）**回落同步 relay**，返回 `200` + OpenAI Images 响应（`{"created":…,"data":[{"url":…}]}`）。客户端按字段判断：有 `task_id` 是异步，有 `data` 是同步。
 
-### ② 查询任务
+### ② 轮询
 
 ```
-GET /v1/images/tasks/imgtask_01J8Z9K3QP
+GET /v1/images/tasks/{task_id}
 Authorization: Bearer <relay key>
 ```
 
-```
-200 {
-  "id": "imgtask_01J8Z9K3QP",
-  "object": "image.task",
-  "status": "succeeded",
-  "model": "gpt-image-2.5-flare",
-  "group": "[低价][促销] GPT Image",
-  "created_at": 1762262400,
-  "started_at": 1762262402,
-  "finished_at": 1762262479,
-  "progress": 100,
-  "poll_after_ms": 2000,
-  "result": {
-    "data": [
-      { "url": "https://<site>/images/task/01J8Z9K3QP.png", "expires_at": 1762264279 }
-    ]
-  },
-  "error": null,
-  "usage": { "quota": 123456, "group_ratio": 0.2 }
-}
-```
-
-- `status` 取值固定六个：`queued` / `running` / `succeeded` / `failed` / `canceled` / `expired`。
-- 非终态时 `result` 与 `error` 都是 `null`；`progress` 可选，只在 `running` 有意义。
-- `failed` 时：
+非终态（`200`，只有状态，没有图）：
 
 ```json
-"error": { "code": "upstream_timeout", "message": "上游 300 秒未返回", "retryable": true }
+{"task_id":"task_9Qm…Ji4g","id":"task_9Qm…Ji4g","status":"IN_PROGRESS","progress":"40%","model":"gpt-image-2.5-flare","created_at":1762000000}
 ```
 
-- 结果至少给一种：`url`（推荐，短期站内链接，**至少 30 分钟有效**）或 `b64_json`。插件拿到即下载并落 attachment。
-- 终态记录保留 **1 小时**（可配置）。过期后查询返回 `status: "expired"` + 410 `image_task_expired`，`result` 置空。
-- 别人的任务 id 一律 404，不泄漏存在性。
+成功（`200`）：
 
-### ③ 取消（推荐实现）
-
-```
-POST /v1/images/tasks/imgtask_01J8Z9K3QP/cancel
+```json
+{"task_id":"task_9Qm…Ji4g","id":"task_9Qm…Ji4g","status":"SUCCESS","progress":"100%","model":"gpt-image-2.5-flare","created_at":1762000000,"data":[{"url":"https://…/1.png"}]}
 ```
 
-- `queued` / `running` → 200 `status: "canceled"`，配额退回；上游已开始且不可中断时，后台丢弃结果。
-- 已终态 → 200 带当前 status（幂等），不报错。
+失败（仍然是 `200`，失败是任务结果不是请求错误）：
 
-## 11.2 状态机
-
-```
-queued ──▶ running ──▶ succeeded
-   │           │
-   │           └──────▶ failed
-   └───────────┴──────▶ canceled
-任意终态 ──(保留期结束)──▶ expired
+```json
+{"task_id":"task_9Qm…Ji4g","id":"task_9Qm…Ji4g","status":"FAILURE","progress":"","model":"gpt-image-2.5-flare","created_at":1762000000,"fail_reason":"DataInspectionFailed: …","error":{"message":"DataInspectionFailed: …"}}
 ```
 
-服务端自己设上游超时（建议默认 300 s，可配置），超时置 `failed` + `upstream_timeout` + `retryable: true`。**客户端断开 / 停止轮询绝不取消任务**——异步的意义就在这里。
+`fail_reason` 与 `error.message` 同值；上游没给原因时是 `image generation failed`。
 
-## 11.3 错误码表
+### 状态取值（大写）
 
-| code | HTTP | 含义 | retryable |
-|---|---|---|---|
-| `invalid_request` | 400 | 字段缺失或形状不对 | false |
-| `model_not_found` | 404 | 模型不在站点清单 | false |
-| `model_disabled` | 400 | 模型被关闭 / 不在令牌白名单 | false |
-| `group_forbidden` | 403 | `CanUseGroup` 不通过（沿用既有文案） | false |
-| `insufficient_quota` | 403 | 额度不足 | false |
-| `image_task_queue_full` | 429 | 队列满（带 `Retry-After`） | true |
-| `image_task_not_found` | 404 | id 不存在或不属于该 token | false |
-| `image_task_expired` | 410 | 记录超过保留期 | false |
-| `upstream_timeout` | — | 任务级：上游超时 | true |
-| `upstream_error` | — | 任务级：上游 5xx / 渠道故障 | true |
-| `content_refused` | — | 任务级：上游拒绝生成（安全策略） | false |
+| status | 含义 | 终态 |
+|---|---|---|
+| `SUBMITTED` | 已提交上游，尚未确认受理 | 否 |
+| `QUEUED` | 上游排队 | 否 |
+| `IN_PROGRESS` | 生成中 | 否 |
+| `SUCCESS` | 完成，响应带 `data` | 是 |
+| `FAILURE` | 失败，响应带 `fail_reason` | 是 |
+| `UNKNOWN` | 网关认不出上游回包，继续轮询 | 否 |
 
-HTTP 层错误统一 OpenAI 风格：`{ "error": { "message": "...", "type": "...", "code": "..." } }`。任务级失败仍然是 HTTP 200。
+### 错误情形
 
-## 11.4 站点内部实现要求
+| 情形 | 状态码 | 响应 |
+|---|---|---|
+| 任务不存在 / 他人任务 / 结果已丢弃 / 平台插件未加载 / 插件不再认领图像协议 | 404 | `{"error":{"message":"Task not found","type":"invalid_request_error"}}`（彼此不可区分，不泄漏存在性） |
+| 提交体不合法 | 400 | `{"error":{"message":"…","type":"invalid_request_error","code":"…"}}` |
+| 提交用 multipart | 415 | `{"error":{"message":"this route requires a JSON body",…}}` |
+| 渲染失败 | 500 | `{"error":{"message":"Failed to render the task result","type":"server_error"}}` |
 
-1. **执行器只有一份**：把同步 `/v1/images/generations` 现在做的「解析模型与分组 → 编码参考图 → 选渠道 → 计费 → 读回图片字节」抽成一个可复用的执行器，异步任务只是多一层任务表 + 调度。同步端点行为保持不变（其它客户端还在用）。
-2. **任务表落库**：id、token_id、user_id、group、group_ratio、model、client_request_id、status、请求体、结果引用、error、created/started/finished/expires 时间戳。进程重启后未完成任务继续跑或明确置 `failed`（不许静默丢）。
-3. **并发上限可配**：被打满返回 429，不要无限排队把内存撑爆。
-4. **结果存储**：图落站点自己的存储，签名 URL 出站；`b64_json` 只在必要时返回。
-5. **可观测**：任务 id 出现在站点日志（后台可查），方便对账「用户说生成了但没扣费 / 扣了费但没图」。
-6. **幂等索引**：`(token_id, client_request_id)` 唯一；同值重复提交返回同一 id + `"idempotent": true`（HTTP 200，不是 202）。
+## 11.2 与最初草案的差异（DSH 侧必须按实际实现改）
 
-## 11.5 验收用例（curl）
+| 项 | 草案（本文件旧版） | 实际实现 |
+|---|---|---|
+| 状态字面值 | 小写 `queued/running/succeeded/…` | 大写 `SUBMITTED/QUEUED/IN_PROGRESS/SUCCESS/FAILURE/UNKNOWN` |
+| 终态失败 | `error.code` + `retryable` | `fail_reason` 字符串 + `error.message`（无 retryable） |
+| 结果 | `result.data[].url`（或 b64） | `data[].url`；轮询不内联 `b64_json` |
+| 轮询节奏 | 服务端 `poll_after_ms` | 无该字段，客户端固定 3 s 起、退避到 5 s |
+| 幂等 | `client_request_id` | 未实现（重复提交会建两条任务） |
+| 取消 | `POST …/cancel` | 未实现；客户端断开不影响任务 |
+| 退路 | 旧站点 404 回落同步 | 未认领模型由站点自己回落同步 relay（同一端点返回 `data`） |
 
-1. 提交 → 2 秒内拿到 202 + id（不许等上游）。
-2. 轮询：`queued` → `running` → `succeeded`，下载 `result.data[0].url` 得到可解码的 PNG/JPEG。
-3. 同一 `client_request_id` 再提交一次 → 同一 id、HTTP 200、`idempotent: true`，不产生第二条任务。
-4. 并发打满 → 429 `image_task_queue_full` + `Retry-After`。
-5. 带一个令牌看不到的分组头 → 403，文案与聊天端点一致。
-6. 主渠道故障 → `failed` + `upstream_error` + `retryable: true`，预扣配额全额退回。
-7. 取消运行中任务 → `canceled`，配额退回。
-8. 保留期后查询 → `expired` / 410。
-9. 提交后立即杀掉客户端 → 任务照常跑到 `succeeded`，稍后凭 id 能查到。
-10. 参考图（`image` 字段）一并转发到上游，行为与同步端点一致。
+## 11.3 DSH 插件侧改造清单（未实现，等站点上线）
 
-## 11.6 插件侧对应改造（本仓库后续版本，站点上线后做）
+1. `NearTokenImageClient` 增加 submit → poll → fetch：`POST /v1/images/tasks` 拿 `task_id`；`GET /v1/images/tasks/{task_id}` 每 3 s（退避到 5 s）轮询到 `SUCCESS`/`FAILURE`；`SUCCESS` 时下载 `data[0].url`。
+2. 提交响应兼容两种：`202 + task_id`（异步）与 `200 + data`（站点回落同步，老渠道）。后者直接复用现有 `extractImageReply`。
+3. `imageTimeoutMs` 语义从「一次 HTTP 的预算」改成「提交到终态的总预算」；工具 deadline 仍加 30 s 余量。
+4. 轮询遇 5xx/网络错误退避重试，不重复提交；进程退出不取消任务，重启后可用同一 `task_id` 继续。
+5. 工具被中止（`exec.signal`）时停止轮询即可，站点任务会跑完并结算。
+6. 参考图（`image` 字段）沿用现在的 data URL 数组；站点按 `generate` 语义解码，插件自判图生图。
+7. 旧站点（`POST /v1/images/tasks` 404）回落到现有同步 `/v1/images/generations`。
 
-| 项 | 做法 |
-|---|---|
-| 调用链 | `NearTokenImageClient.generate()` 拆成 submit → poll → fetch 三步 |
-| 轮询节奏 | 遵守 `poll_after_ms`，夹在 1 s–10 s 之间；连续 5xx 退避重试，不重复提交 |
-| 预算 | `imageTimeoutMs` 从「一次 HTTP 的预算」改成「提交到终态的总预算」 |
-| 取消 | 工具调用被中止时 best-effort 调 `cancel`；进程退出则不调，靠站点自己跑完 |
-| 兼容 | `POST /v1/images/tasks` 返回 404（旧站点）时回落到现有同步通道 |
-| 工具结果 | 仍是 attachment + 文件落盘，对模型可见的输出不变 |
+## 11.4 验收要点（站点侧已跑通的部分）
+
+- new-api：`go build ./...` 通过；`go test ./relay/constant/ ./middleware/`、`go test ./controller/ -run 'TestImageTask…'`、`go test ./router/ -run 'TestImageTask…'` 全绿。
+- 新增用例覆盖：202 + 任务身份、未认领回落同步 relay、轮询四态（SUBMITTED/IN_PROGRESS/SUCCESS/FAILURE）、他人/不存在/插件未加载一律 404、`/pg` 面行为不变。
+- 未做：PostgreSQL 集成、真实上游联调、部署。
+
+## 11.5 已知风险
+
+1. 未认领回落同步时，`Distribute` 的路径过滤仍用真实路径，限制端点的 advanced-custom 渠道可能选不到渠道而 503；task-plugin 渠道与普通渠道不受影响。
+2. 提交端点固定按 `generate` 解码；编辑专用校验（缺参考图即拒）只在 `/v1/images/edits` 生效。
+3. 无幂等键：网络抖动后重试提交会重复建任务、重复计费。DSH 侧需自行避免盲目重提（只在连 `202` 都没拿到时才重试）。
