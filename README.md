@@ -9,14 +9,14 @@
 
 ## 架构
 
-插件只在三条流向上说话，其余都是它们的支撑：
+插件只在四条流向上说话，其余都是它们的支撑：
 
 | 流向 | 路径 |
 |---|---|
 | **登录** | 设置页 → `POST /neartoken/authorize` → 站点 `POST /api/dsh/device/authorize` 拿到确认码 → 用户在自己浏览器里批准 → 插件按 `interval` 轮询 `POST /api/dsh/device/token`（`authorization_pending` / `slow_down` 退避 +2s / `access_denied` / `expired_token` / `granted`）→ 把站点铸造的 key 写进 credentials 的 `NEARTOKEN_API_KEY` |
 | **目录** | `GET /api/pricing`（TTL 缓存）→ 按 (分组, 模型) 展开成 `"<组>::<模型>"` → 可见性过滤 → `listModels` 交给 DSH |
 | **出字** | `stream()` → 按模型选协议 → 站点 `/v1/messages`、`/v1beta/models/*:streamGenerateContent`、`/v1/responses`、`/v1/chat/completions`。`body.model` 是裸模型名，`x-neartoken-group` 头带分组的 `#<id>`，每个请求另带**会话亲和键**（`prompt_cache_key` / `metadata.user_id`，见已知限制） |
-| **画图** | 工具 `generate_image` → 站点 `/v1/images/generations`（声明了 `image-generation` 的模型）或 `/v1/chat/completions`（gemini 系）→ 取回 bytes → 存进 attachment → 结果里带图 |
+| **画图** | 工具 `generate_image` → 声明了 `image-generation` 的模型走 `POST /v1/images/tasks` 提交再轮询（老站点 404 才回落同步 `/v1/images/generations`），gemini 系走 `/v1beta/models/*:generateContent`，其余走 `/v1/chat/completions` → 取回 bytes → 存进 attachment → 结果里带图 |
 
 一条实现约束：provider 只有在凭据存在时才挂载，且 `credentials` 服务可能晚于本插件就绪，所以启动时先同步一次、再用 `ctx.inject` 同步一次。
 
@@ -35,7 +35,12 @@
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
 | `src/host/relay.ts` | 模型接口走哪个域名：站点根或长连接端点，由模型选择器里的开关决定 |
 | `src/host/topup.ts` | 站点充值面：读 amount 档位与渠道、下单，把 403 `DSH_TOKEN_REQUIRED` 翻成「是否 DSH 密钥」的原因 |
-| `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
+| `src/host/images.ts` | 生图：挑通道、提交与轮询任务、三种响应都读成 bytes |
+| `src/host/new-api.ts` | 站点 `/api/*` 的唯一 HTTP 出口，以及「站点没应答」的错误分类 |
+| `src/host/usage.ts` | 数据概览：读 `/api/dsh/device/usage`，折成按模型堆叠的桶 |
+| `src/host/request-body.ts` | 请求体 ≥16 KB 时 brotli 压缩，上游不认就以明文重发一次 |
+| `src/host/wire-images.ts` | 请求里每张图的内联与重编码（`imageMaxEdge` / `imageMaxBytes`） |
+| `src/host/wire-error.ts` | 网关拒绝与传输失败映射到共享重试码表 |
 | `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
 | `src/host/image-settings.ts` | 生图设置读写与校验（模型必须是站点当前的生图模型，分组必须是该模型自己的分组） |
 | `src/client/` | 设置页、模型选择器、分组胶囊渲染 |
@@ -56,7 +61,7 @@
 
 备用路径：直接让 credentials 服务存 `NEARTOKEN_API_KEY`，或启动环境导出同名变量 —— provider 会在启动时按凭据现状挂载。
 
-> 设备授权流需要 new-api 侧实现对应端点，契约见 [HANDOFF-new-api.md](HANDOFF-new-api.md) 第一部分。站点尚未实现时会直接报「站点拒绝发起设备授权」。
+> 设备授权流需要 new-api 侧实现对应端点，契约见 [HANDOFF-new-api.md](HANDOFF-new-api.md) 第一部分。站点已实现；换成没实现的老站点会直接报「站点拒绝发起设备授权」。
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
 
@@ -114,6 +119,7 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |
 | `modelOverrides` | `{}` | 按裸模型名逐条修正容量与推理等级，见下 |
+| `modelMeta` | `{}` | 设置页「覆盖」写入的上下文 / 最大输出 / 输入类型；volatile，优先级高于 `modelOverrides` |
 | `enabledModels` | `[]` | 模型白名单（裸模型名）；空数组 = 全部显示。volatile，设置页直接写它 |
 | `imageMaxEdge` | `2048` | 发送到上游前图片的长边上限（像素）；更大的图按长边缩到它，见下「图片压缩」 |
 | `imageMaxBytes` | `2097152` | 单张请求图的编码字节上限；超出走编码质量阶梯，必要时把 PNG 转成 JPEG / WebP |
@@ -138,7 +144,7 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 
 **旧域名要给还在跑旧版插件的客户端继续用，只能做反向代理，不能做 302/307 重定向**：
 
-- **302 把 POST 降级成 GET 并丢掉请求体**：登录（`/api/dsh/device/*`）、出字（`/v1/*`）、生图（`/v1/images/generations`）、充值全部失败。只剩匿名的 `GET /api/pricing` 和 `GET /api/status` 还能过，现场表现是「模型列表能显示，一发消息就报错」。
+- **302 把 POST 降级成 GET 并丢掉请求体**：登录（`/api/dsh/device/*`）、出字（`/v1/*`）、生图（`/v1/images/tasks` 与回落用的 `/v1/images/generations`）、充值全部失败。只剩匿名的 `GET /api/pricing` 和 `GET /api/status` 还能过，现场表现是「模型列表能显示，一发消息就报错」。
 - **跨 origin 的重定向会剥掉 `Authorization` 头**（302 / 307 / 308 一样，是 fetch 规范行为）：凡是带 key 的请求落到新域名都成了未认证请求，一律 401。307 只救得回匿名端点，结果更迷惑 —— 登录能成功，之后每个模型都 401。
 
 反向代理保留方法、请求体和请求头，SSE 也不会断：
@@ -282,7 +288,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 
 ## 已知限制
 
-- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；**图片按各协议发送** —— chat 用 `image_url` part、anthropic 用 `source.base64`、genai 用 `inlineData`、responses 用 `input_image`。发送前先按 `imageMaxEdge` / `imageMaxBytes` 重编码（见「图片压缩」），所以线上字节与媒体类型未必等于附件里的原图。**工具结果里的图片也发**（`read_image` 的结果就是一段文本信封 + 一张图）：anthropic 把图塞回同一个 `tool_result` 的 content 块数组；genai 在同一 user turn 的 parts 里补 `inlineData`；chat 的 tool 消息只能放字符串、responses 的 `function_call_output` 同理，所以图跟在**整段连续工具结果之后**的一条 user 消息 / 条目里（并行调用时不会把 tool 消息切断）。字节由 `attachments.readImage` 在请求前内联；没有 attachments 服务或读不出来会**让请求失败**，不再静默降级成纯文本（曾经就是这样：贴的截图模型根本收不到）。会话里被 image-offload 标记的图片（`offloaded: true`）不发字节；插件也不替它生成占位文本，所以那一次图片对模型完全不可见。文件块（非图片附件）仍不发；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
+- 四套 wire（chat / anthropic / genai / responses）各自解析 SSE；**图片按各协议发送** —— chat 用 `image_url` part、anthropic 用 `source.base64`、genai 用 `inlineData`、responses 用 `input_image`。发送前先按 `imageMaxEdge` / `imageMaxBytes` 重编码（见「图片压缩」），所以线上字节与媒体类型未必等于附件里的原图。**工具结果里的图片也发**（`read_image` 的结果就是一段文本信封 + 一张图）：anthropic 把图塞回同一个 `tool_result` 的 content 块数组；genai 在同一 user turn 的 parts 里补 `inlineData`；chat 的 tool 消息只能放字符串、responses 的 `function_call_output` 同理，所以图跟在**整段连续工具结果之后**的一条 user 消息 / 条目里（并行调用时不会把 tool 消息切断）。字节由 `attachments.readImageRequest` 在请求前内联并重编码（不支持请求版时退回 `readImage` 的原图）；没有 attachments 服务或读不出来会**让请求失败**，不再静默降级成纯文本（曾经就是这样：贴的截图模型根本收不到）。会话里被 image-offload 标记的图片（`offloaded: true`）不发字节；插件也不替它生成占位文本，所以那一次图片对模型完全不可见。文件块（非图片附件）仍不发；`/model` 弹窗仍是内置平铺列表；箭头键盘导航未接。
 - **genai 线的并行工具调用必须收在同一个 user turn 里**：Gemini 校验「一个 functionCall turn ↔ 紧随其后那条 user turn 里等量的 functionResponse parts」，每条工具结果各开一条 user turn 会被上游拒成 400 `Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn`。它是**确定性**错误：历史不变就必然复现，重试、换分组都无用，只能新开会话（0.16.1 及以前踩中过一次：一轮发了 6 个并行 `read`，整轮就此作废）。0.16.2 起把整段连续的工具结果折进同一个 user turn；Gemini ≥ 3 另给 `functionCall` / `functionResponse` 带上 `id`（同一个函数被并行调多次时才分得清谁答谁），`gemma*` 与更早的 Gemini 不发该字段，只按函数名匹配。
 - **anthropic 线的工具结果同样必须合批**：messages API 校验「一条 assistant turn 的 `tool_use` ↔ 紧随其后那条 user turn 的 `tool_result`」一一对应。并行调用时若每条结果各开一条 user 消息，网关报 400 `Invalid message sequence: tool_use and tool_result blocks must be correctly paired and ordered`（0.17.1 以前 anthropic 线就是这个形状 —— genai 线 0.16.2 修了同类问题，anthropic 线漏了）。现在整段连续结果折进紧邻 assistant 的那一条 user 消息；结果没记录（中断、fork、压缩裁剪）的调用补一句占位结果；对不上任何调用的结果丢弃；批内混进来的 user 文本移到结果之后；相邻同角色轮次合并、`tool_result` 固定排在 user 消息首位。这条是**请求体形状**的错，与历史记录无关：升级后此前必挂的会话下一轮就能继续。
 - **请求体按需 brotli 压缩**：每次请求都带全量工具定义，body 常在几十到几百 KB，带截图时上 MB。上游（New API 的 `DecompressRequestMiddleware`）在解析前解压 `content-encoding` 为 gzip / br / zstd 的 body，实测三条 wire（chat / messages / responses）全通；deflate 不支持，且不带该头就按明文解析。所以 **≥16 KB 的 body 以 brotli quality 5 发送**：实测 57 KB 的工具密集请求压到 468 B、2 MB 真实源码压到 418 KB（19%）。四条聊天 wire 与出图的三条通道（`images` / `genai` / `chat`）共用同一个出口 `postJson`，阈值与回落只有一份 —— 带参考图的出图请求是另一个 base64 大户。选型依据：同 CPU 下 brotli 比 gzip 小 8–14%；zstd level 3 与 gzip 等大但快 5 倍，只在 CPU 吃紧时更优；而 brotli 的**运行时默认 quality 是 11**，2 MB 上要 3.7 秒，必须显式钉 5。低于阈值走明文 —— 那么小的上行不值一次压缩加解压。图片主导的请求收益有天花板（base64 编码的已压缩图只能压到 75%，那 25% 只是还原 base64 膨胀），真正的杠杆仍是 `imageMaxEdge` / `imageMaxBytes`。若上游某天不认该编码（400 且 body 解析失败），同一请求立刻以明文重发一次：被拒的请求从未计费，代价是一个往返而不是整次调用。
@@ -311,7 +317,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm run test       # vitest：account / pricing / adapter / model-caps / groups / whitelist / routes / usage / config / affiliate / wire-parse / images / image-settings / image-tool
+pnpm run test       # vitest：host 22 个 spec + client 1 个，见 src/host/*.spec.ts
 pnpm run typecheck  # 两个 face 分别检查（host 与 client 的 ctx.sessions 声明互相冲突，不能同 program）
 pnpm run build      # lib/index.js (host) + lib/client.js (client) + lib/types
 ```
