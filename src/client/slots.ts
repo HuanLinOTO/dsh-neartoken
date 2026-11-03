@@ -4,6 +4,7 @@
  * made here is what the /model popup shows next, and vice versa.
  */
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
+import type { NearTokenLinkState } from '../protocol.ts'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
@@ -22,4 +23,11 @@ export interface ModelGroupSelectInjected {
    * @returns the Host outcome, or undefined when this Session cannot select a model.
    */
   select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>
+  /** Read the long-connection switch beside the endpoint it moves the `/v1` family to. */
+  readLink: () => Promise<NearTokenLinkState>
+  /**
+   * Store the long-connection switch.
+   * @param direct - whether model-facing requests leave from the direct endpoint.
+   */
+  saveLink: (direct: boolean) => Promise<void>
 }

@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
-import type { NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
 /** What the routes need from the plugin. */
@@ -45,6 +45,13 @@ export interface NearTokenRouteDeps {
     createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>;
     /** Site root, for turning the site-relative checkout link absolute. */
     baseURL: () => string;
+    /** The long-connection switch, the site root, and the endpoint it moves the `/v1` family to. */
+    link: () => NearTokenLinkState;
+    /**
+     * Persist the long-connection switch.
+     * @param direct - whether model-facing requests leave from the direct endpoint.
+     */
+    saveLink: (direct: boolean) => Promise<void>;
     /** The picture models beside the stored image-generation setting. */
     images: () => Promise<NearTokenImagesState>;
     /**

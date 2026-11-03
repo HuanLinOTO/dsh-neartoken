@@ -20,6 +20,7 @@ import { imageCatalog, NearTokenImageSettings, parseImagePatch } from './host/im
 import { registerGenerateImageTool } from './host/image-tool.ts'
 import { NearTokenImageClient } from './host/images.ts'
 import { NearTokenProvider } from './host/provider-mount.ts'
+import { DEFAULT_DIRECT_ENDPOINT, relayBaseURL as resolveRelayBaseURL } from './host/relay.ts'
 import { openInSystemBrowser } from './host/browser.ts'
 import type { NearTokenModelMeta } from './protocol.ts'
 import { registerNearTokenRoutes } from './host/routes.ts'
@@ -72,6 +73,10 @@ interface SettingsPresentation {
 /** Resolved configuration shape the loader hands to {@link apply}. */
 export interface Options {
   baseURL: string
+  /** Origin the long-connection switch moves the model-facing endpoints to. */
+  directEndpoint: string
+  /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
+  directLink: Volatile<boolean>
   apiKeyEnv: string
   catalogTtlMs: number
   /** The capacity every model without a better answer reports, in tokens. */
@@ -96,6 +101,17 @@ export interface Options {
 export const Config = z.object({
   /** Site root without a trailing slash. */
   baseURL: z.string().default('https://neartoken.cc'),
+  /**
+   * Origin the long-connection switch moves the model-facing `/v1` family to.
+   * The dashboard endpoints (`/api/*`) stay on `baseURL` either way.
+   */
+  directEndpoint: z.string().default(DEFAULT_DIRECT_ENDPOINT),
+  /**
+   * The long-connection switch: whether `/v1` requests leave from
+   * `directEndpoint` instead of the site root. Volatile, so the model picker's
+   * toggle reaches this running plugin without a remount.
+   */
+  directLink: z.boolean().default(false).volatile(),
   /** Credential reference the sign-in writes and the adapter resolves. */
   apiKeyEnv: z.string().default('NEARTOKEN_API_KEY'),
   /** How long one pricing load stays fresh, in milliseconds. */
@@ -198,11 +214,17 @@ export function apply(ctx: Context, config: Options): void {
     }
     return value
   }
+  // The model-facing origin follows the picker's switch; the dashboard routes
+  // below keep talking to the site root, which is the only origin serving
+  // `/api/*`.
+  const relayBaseURL = (): string =>
+    resolveRelayBaseURL(config.baseURL, config.directLink.get(), config.directEndpoint)
   const provider = new NearTokenProvider(ctx, {
     provider: PROVIDER,
     displayName: DISPLAY_NAME,
     settingsNs: SETTINGS_NS,
     baseURL: () => config.baseURL,
+    relayBaseURL,
     apiKey: resolveApiKey,
     enabled: () => config.enabledModels.get(),
     catalogTtlMs: () => config.catalogTtlMs,
@@ -233,7 +255,7 @@ export function apply(ctx: Context, config: Options): void {
     settings: () => ctx.get('settings') as WhitelistSettings | undefined,
   })
   const images = new NearTokenImageClient({
-    baseURL: () => config.baseURL,
+    baseURL: relayBaseURL,
     apiKey: resolveApiKey,
     routes: async () => await provider.fullCatalog(),
     timeoutMs: () => config.imageTimeoutMs,
@@ -322,6 +344,21 @@ export function apply(ctx: Context, config: Options): void {
       topupInfo: () => account.topupInfo(),
       createTopup: (amount, paymentMethod) => account.createTopup(amount, paymentMethod),
       baseURL: () => config.baseURL,
+      link: () => ({
+        direct: config.directLink.get(),
+        baseURL: config.baseURL,
+        directBaseURL: config.directEndpoint,
+      }),
+      // The switch is an ordinary Settings write of the volatile field, exactly
+      // like the whitelist: the Loader commits it into this running fiber, so
+      // the next `/v1` request already leaves from the chosen origin.
+      saveLink: async (direct) => {
+        const settings = ctx.get('settings') as WhitelistSettings | undefined
+        if (settings === undefined) {
+          throw new Error('neartoken: the long-connection switch needs the settings service')
+        }
+        await settings.update(SETTINGS_NS, { directLink: direct })
+      },
       images: () => imageSettings.state(),
       // The catalog is the authority on which models and groups a save may
       // name, so the body is checked against the same load the tool calls from.

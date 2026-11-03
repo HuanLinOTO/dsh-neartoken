@@ -20,7 +20,7 @@ import { createPortal } from 'react-dom'
 import type { ModelReasoningEffort, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import {
   IconCheckOutlineRegular, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular,
-  IconCloseFillRegular, IconDataOutlineRegular, StateDot,
+  IconCloseFillRegular, IconDataOutlineRegular, StateDot, Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelGroupSelectInjected } from './slots.ts'
@@ -79,7 +79,7 @@ function effortFor(model: ModelCatalogModel, previous: string | undefined): stri
  * @returns the trigger and, while open, the three-level menu.
  */
 export function ModelGroupSelect(
-  { locked, available, directory, load, select, t }:
+  { locked, available, directory, load, select, readLink, saveLink, t }:
   ModelGroupSelectInjected & Pick<PropsRuntime<'conversation.input.model'>, 'locked'> & PropsLocale<'modelGroups'>,
 ) {
   const state = useSyncExternalStore(
@@ -96,6 +96,12 @@ export function ModelGroupSelect(
   const menuRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [menuPos, setMenuPos] = useState<CSSProperties | null>(null)
+  /** The long-connection switch, once the Host answered; undefined while unread. */
+  const [direct, setDirect] = useState<boolean | undefined>(undefined)
+  /** Whether a switch write is on the wire. */
+  const [linkBusy, setLinkBusy] = useState(false)
+  /** Why the last switch write was refused; cleared by the next one. */
+  const [linkError, setLinkError] = useState<string | null>(null)
   const id = useId()
 
   const accountName = t('provider.account')
@@ -209,6 +215,20 @@ export function ModelGroupSelect(
     if (open && pane === 'model' && showSearch) searchRef.current?.focus()
   }, [open, pane, showSearch])
 
+  // The switch belongs to this plugin's own provider and describes the Host, so
+  // it is read once per open rather than carried in the catalog.
+  const ownSeat = located !== undefined && isGroupedProvider(located.provider.id)
+  useEffect(() => {
+    if (!open || !ownSeat) return
+    let live = true
+    readLink().then((next) => {
+      if (live) setDirect(next.direct)
+    }, (failure: unknown) => {
+      if (live) setLinkError(t('link.failed', { message: failure instanceof Error ? failure.message : String(failure) }))
+    })
+    return () => { live = false }
+  }, [open, ownSeat, readLink, t])
+
   if (!available) return null
 
   const settle = (result: Awaited<ReturnType<ModelGroupSelectInjected['select']>>): void => {
@@ -268,6 +288,20 @@ export function ModelGroupSelect(
       provider: current.provider,
       model: current.model,
       ...effort === undefined ? {} : { reasoningEffort: effort },
+    })
+  }
+
+  const toggleDirect = (next: boolean): void => {
+    setDirect(next)
+    setLinkBusy(true)
+    setLinkError(null)
+    void saveLink(next).then(() => {
+      setLinkBusy(false)
+    }, (failure: unknown) => {
+      // The stored switch did not move, so the control goes back with it.
+      setDirect(!next)
+      setLinkBusy(false)
+      setLinkError(t('link.failed', { message: failure instanceof Error ? failure.message : String(failure) }))
     })
   }
 
@@ -363,6 +397,20 @@ export function ModelGroupSelect(
                   {groupChoices.length > 1 && <IconChevronRightOutlineRegular className={css.cellChevron} />}
                 </button>
               )}
+              {ownSeat && (
+                <div className={css.cellSwitch}>
+                  <span className={css.cellLabel}>{t('link.label')}</span>
+                  <span className={css.cellValue}>
+                    <Switch
+                      checked={direct === true}
+                      disabled={linkBusy || direct === undefined}
+                      label={t('link.label')}
+                      onChange={toggleDirect}
+                    />
+                  </span>
+                </div>
+              )}
+              {linkError === null ? null : <div className={css.linkError} role="status">{linkError}</div>}
               {reasoning !== undefined && (
                 <button type="button" role="menuitem" className={css.cell} onClick={() => { setPane('effort') }}>
                   <span className={css.cellLabel}>{t('menu.effort')}</span>

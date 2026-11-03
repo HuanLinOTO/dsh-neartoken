@@ -10,8 +10,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { AUTHORIZE_PATH, IMAGES_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH, USAGE_PATH } from '../protocol.ts'
-import type { NearTokenImagesState, NearTokenModelsState, NearTokenStatus, NearTokenUsageState } from '../protocol.ts'
+import {
+  AUTHORIZE_PATH, IMAGES_PATH, LINK_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH, USAGE_PATH,
+} from '../protocol.ts'
+import type {
+  NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenUsageState,
+} from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
 import type { NearTokenAccount } from './account.ts'
@@ -29,6 +33,13 @@ const IMAGES: NearTokenImagesState = {
   enabled: true,
   models: [{ model: 'gpt-image-2.5-flare', channel: 'images', groups: [{ group: 'promo', ratio: '0.8x' }] }],
   selection: { 'gpt-image-2.5-flare': 'promo' },
+}
+
+/** The long-connection switch the link route answers. */
+const LINK: NearTokenLinkState = {
+  direct: false,
+  baseURL: 'https://site.example',
+  directBaseURL: 'https://direct.site.example',
 }
 
 /** The usage window the usage route answers. */
@@ -79,11 +90,13 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   answer: (path: string, req: IncomingMessage) => Promise<Answer>
   saves: { enabled: readonly string[]; meta: unknown }[]
   imageSaves: unknown[]
+  linkSaves: boolean[]
   opened: string[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   const saves: { enabled: readonly string[]; meta: unknown }[] = []
   const imageSaves: unknown[] = []
+  const linkSaves: boolean[] = []
   const opened: string[] = []
   const ctx = {
     effect: (register: () => unknown) => register(),
@@ -102,6 +115,8 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
+    link: () => LINK,
+    saveLink: async (direct) => { linkSaves.push(direct) },
     usage: async (range) => ({ ...USAGE, range }),
     topupInfo: async () => OFFER,
     createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
@@ -112,6 +127,7 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   return {
     saves,
     imageSaves,
+    linkSaves,
     opened,
     async answer(path, req) {
       const handler = handlers.get(path)
@@ -314,6 +330,44 @@ describe('POST /neartoken/models', () => {
   })
 })
 
+describe('the link route', () => {
+  it('answers the switch beside both origins it chooses between', async () => {
+    const { answer } = routesOver()
+    const { status, body } = await answer(LINK_PATH, request('GET'))
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual(LINK)
+  })
+
+  it('forwards the state the picker asked for', async () => {
+    const { answer, linkSaves } = routesOver()
+    const { status } = await answer(LINK_PATH, request('POST', JSON.stringify({ direct: true })))
+    expect(status).toBe(200)
+    expect(linkSaves).toEqual([true])
+  })
+
+  it('refuses a body that states no boolean', async () => {
+    const { answer, linkSaves } = routesOver()
+    const { status, body } = await answer(LINK_PATH, request('POST', JSON.stringify({ direct: 'yes' })))
+    expect(status).toBe(400)
+    expect(JSON.parse(body)).toEqual({ code: 'bad-request', message: 'direct 必须是布尔值' })
+    expect(linkSaves).toEqual([])
+  })
+
+  it('reports a refused write instead of pretending the switch moved', async () => {
+    const { answer } = routesOver({ saveLink: async () => { throw new Error('no settings service') } })
+    const { status, body } = await answer(LINK_PATH, request('POST', JSON.stringify({ direct: true })))
+    expect(status).toBe(500)
+    expect(JSON.parse(body)).toEqual({ code: 'save-failed', message: 'no settings service' })
+  })
+
+  it('serves only GET and POST', async () => {
+    const { answer } = routesOver()
+    const { status, headers } = await answer(LINK_PATH, request('DELETE'))
+    expect(status).toBe(405)
+    expect(headers['allow']).toBe('GET, POST')
+  })
+})
+
 describe('the same-origin fence', () => {
   it('refuses every request the connection service rejects, before any route work', async () => {
     const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
@@ -335,6 +389,8 @@ describe('the same-origin fence', () => {
       saveModels: async (enabled, meta) => { saves.push({ enabled, meta }) },
       images: async () => IMAGES,
       saveImages: async () => undefined,
+      link: () => LINK,
+      saveLink: async () => undefined,
       usage: async () => USAGE,
       topupInfo: async () => OFFER,
       createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),

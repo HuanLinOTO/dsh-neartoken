@@ -15,6 +15,8 @@ export declare const zh: {
     'menu.model': string;
     'menu.group': string;
     'menu.effort': string;
+    'link.label': string;
+    'link.failed': string;
     'effort.providerDefault': string;
     'status.loading': string;
     'error.action': string;
@@ -154,6 +156,8 @@ export declare const en: {
     'menu.model': string;
     'menu.group': string;
     'menu.effort': string;
+    'link.label': string;
+    'link.failed': string;
     'effort.providerDefault': string;
     'status.loading': string;
     'error.action': string;

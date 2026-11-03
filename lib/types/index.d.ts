@@ -15,6 +15,10 @@ import type { NearTokenModelMeta } from './protocol.ts';
 /** Resolved configuration shape the loader hands to {@link apply}. */
 export interface Options {
     baseURL: string;
+    /** Origin the long-connection switch moves the model-facing endpoints to. */
+    directEndpoint: string;
+    /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
+    directLink: Volatile<boolean>;
     apiKeyEnv: string;
     catalogTtlMs: number;
     /** The capacity every model without a better answer reports, in tokens. */
@@ -41,6 +45,17 @@ export interface Options {
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     /** Site root without a trailing slash. */
     baseURL: z<string, string, "defined">;
+    /**
+     * Origin the long-connection switch moves the model-facing `/v1` family to.
+     * The dashboard endpoints (`/api/*`) stay on `baseURL` either way.
+     */
+    directEndpoint: z<string, string, "defined">;
+    /**
+     * The long-connection switch: whether `/v1` requests leave from
+     * `directEndpoint` instead of the site root. Volatile, so the model picker's
+     * toggle reaches this running plugin without a remount.
+     */
+    directLink: z<boolean, boolean, "volatile-defined">;
     /** Credential reference the sign-in writes and the adapter resolves. */
     apiKeyEnv: z<string, string, "defined">;
     /** How long one pricing load stays fresh, in milliseconds. */
@@ -134,6 +149,17 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, Schemastery.ObjectT<NoInfer<{
     /** Site root without a trailing slash. */
     baseURL: z<string, string, "defined">;
+    /**
+     * Origin the long-connection switch moves the model-facing `/v1` family to.
+     * The dashboard endpoints (`/api/*`) stay on `baseURL` either way.
+     */
+    directEndpoint: z<string, string, "defined">;
+    /**
+     * The long-connection switch: whether `/v1` requests leave from
+     * `directEndpoint` instead of the site root. Volatile, so the model picker's
+     * toggle reaches this running plugin without a remount.
+     */
+    directLink: z<boolean, boolean, "volatile-defined">;
     /** Credential reference the sign-in writes and the adapter resolves. */
     apiKeyEnv: z<string, string, "defined">;
     /** How long one pricing load stays fresh, in milliseconds. */

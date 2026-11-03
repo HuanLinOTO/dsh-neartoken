@@ -1,4 +1,4 @@
-import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 /**
  * A top-up call the Host refused, carrying its stable code so the page can tell
  * "this key is not a device key, reconnect" from "the site said no".
@@ -64,6 +64,13 @@ export interface NearTokenApi {
     images(): Promise<NearTokenImagesState>;
     /** Save the image-generation setting: the tool's switch and one group per enabled model. */
     saveImages(patch: NearTokenImagesPatch): Promise<void>;
+    /** Read the long-connection switch, the site root, and the endpoint it moves to. */
+    link(): Promise<NearTokenLinkState>;
+    /**
+     * Store the long-connection switch.
+     * @param direct - whether model-facing requests leave from the direct endpoint.
+     */
+    saveLink(direct: boolean): Promise<void>;
 }
 /**
  * Build the carrier.

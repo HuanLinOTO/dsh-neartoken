@@ -24,7 +24,7 @@
 |---|---|
 | `src/index.ts` | 配置 schema、按凭据现状挂载 provider、装配其余模块 |
 | `src/host/account.ts` | RFC 8628 形状的设备授权：发起、按 interval 轮询、把 key 写进 credentials |
-| `src/host/routes.ts` | 设置页调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置） |
+| `src/host/routes.ts` | 设置页与模型选择器调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置 / 长连接端点） |
 | `src/host/whitelist.ts` | 白名单读写在插件自身 Config 的 `enabledModels`（volatile），存 profile patch |
 | `src/host/pricing.ts` | 拉 `/api/pricing`，展开成 `"<组>::<模型>"` 路由，过滤出能聊的模型 |
 | `src/host/model-caps.ts` | 一个模型能不能聊、上下文窗口多大、可选的推理等级（只读站点声明，不存模型表） |
@@ -33,6 +33,7 @@
 | `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
 | `src/host/session-key.ts` | 从 `GenerateOptions.sessionId` 取会话亲和键，四条 wire 用它让站点把会话粘在同一渠道 |
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
+| `src/host/relay.ts` | 模型接口走哪个域名：站点根或长连接端点，由模型选择器里的开关决定 |
 | `src/host/topup.ts` | 站点充值面：读 amount 档位与渠道、下单，把 403 `DSH_TOKEN_REQUIRED` 翻成「是否 DSH 密钥」的原因 |
 | `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
 | `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
@@ -58,6 +59,8 @@
 > 设备授权流需要 new-api 侧实现对应端点，契约见 [HANDOFF-new-api.md](HANDOFF-new-api.md) 第一部分。站点尚未实现时会直接报「站点拒绝发起设备授权」。
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
+
+模型选择器的根菜单里，「分组」下面一行是**长连接端点**开关：打开后所有**模型接口**（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/images/*`、Gemini 的 `/v1beta/*`）改走 `https://direct.neartoken.cc`，站点控制台的 `/api/*`（目录、用量、钱包、充值、设备授权）仍走 `baseURL`。开关写进插件配置的 `directLink`（volatile），点完立刻对下一次请求生效，不需要重启。它只出现在本插件自己的 provider 上。
 
 模型选择器里的分组是**显式选择**：换模型时先保留当前分组；新模型不在该分组时，按分组名上的档位标签（`[低价]` / `[满血]` / `[官key]` 等）就近匹配同一档位的分组，而不是落回站点目录里的第一个分组——那一个往往是倍率最高的。跨模型族（`[低价] DeepSeek` → GPT）也按标签匹配。
 
@@ -105,6 +108,8 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `baseURL` | `https://neartoken.cc` | 站点根地址，不带尾斜杠 |
+| `directEndpoint` | `https://direct.neartoken.cc` | 长连接端点；模型选择器打开开关后模型接口改走它，`/api/*` 不受影响 |
+| `directLink` | `false` | 长连接端点开关；volatile，模型选择器直接写它 |
 | `apiKeyEnv` | `NEARTOKEN_API_KEY` | 授权写入、adapter 读取的凭据引用名 |
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |

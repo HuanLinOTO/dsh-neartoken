@@ -24,8 +24,10 @@ export interface NearTokenProviderDeps {
   displayName: string
   /** Settings namespace the configurable-provider entry reports. */
   settingsNs: string
-  /** Site root without a trailing slash. */
+  /** Site root without a trailing slash; the dashboard endpoints live here. */
   baseURL: () => string
+  /** Origin the model-facing `/v1` family is sent to, which the switch may move. */
+  relayBaseURL: () => string
   /** Resolves the stored bearer key; throws `MISSING_CREDENTIAL` when absent. */
   apiKey: () => Promise<string>
   /** Model names the user keeps visible; empty advertises the whole catalog. */
@@ -90,7 +92,7 @@ export class NearTokenProvider {
       routes: () => this.pricing.load(),
       enabled: this.deps.enabled,
       apiKey: this.deps.apiKey,
-      baseURL: this.deps.baseURL,
+      baseURL: this.deps.relayBaseURL,
       defaultContextWindow: this.deps.defaultContextWindow,
       modelOverride: this.deps.modelOverride,
       attachments: this.deps.attachments,

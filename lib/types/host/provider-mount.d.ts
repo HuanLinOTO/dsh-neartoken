@@ -20,8 +20,10 @@ export interface NearTokenProviderDeps {
     displayName: string;
     /** Settings namespace the configurable-provider entry reports. */
     settingsNs: string;
-    /** Site root without a trailing slash. */
+    /** Site root without a trailing slash; the dashboard endpoints live here. */
     baseURL: () => string;
+    /** Origin the model-facing `/v1` family is sent to, which the switch may move. */
+    relayBaseURL: () => string;
     /** Resolves the stored bearer key; throws `MISSING_CREDENTIAL` when absent. */
     apiKey: () => Promise<string>;
     /** Model names the user keeps visible; empty advertises the whole catalog. */

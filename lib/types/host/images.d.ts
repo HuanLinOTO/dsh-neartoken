@@ -67,7 +67,7 @@ export declare function extractImageReply(body: unknown): ImageReply | undefined
 export declare function sniffImageMediaType(data: Uint8Array): ImageMediaType | undefined;
 /** External facts one generation reads at call time. */
 export interface NearTokenImageDeps {
-    /** Site root without a trailing slash. */
+    /** Origin of the model-facing endpoints (`/v1` and Gemini's `/v1beta`), without a trailing slash. */
     baseURL: () => string;
     /** Resolves the stored bearer key. */
     apiKey: () => Promise<string>;

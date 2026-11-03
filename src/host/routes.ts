@@ -12,13 +12,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
-  USAGE_PATH, isUsageRange,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LINK_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
+  TOPUP_PATH, USAGE_PATH, isUsageRange,
 } from '../protocol.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts'
 import { normalizeAffiliateCode } from '../affiliate.ts'
 import type {
-  NearTokenImagesState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState,
+  NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange,
+  NearTokenUsageState,
 } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
@@ -60,6 +61,13 @@ export interface NearTokenRouteDeps {
   createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>
   /** Site root, for turning the site-relative checkout link absolute. */
   baseURL: () => string
+  /** The long-connection switch, the site root, and the endpoint it moves the `/v1` family to. */
+  link: () => NearTokenLinkState
+  /**
+   * Persist the long-connection switch.
+   * @param direct - whether model-facing requests leave from the direct endpoint.
+   */
+  saveLink: (direct: boolean) => Promise<void>
   /** The picture models beside the stored image-generation setting. */
   images: () => Promise<NearTokenImagesState>
   /**
@@ -291,6 +299,41 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       sendJson(res, 200, { ok: true })
     },
   }), `neartoken: ${IMAGES_PATH}`)
+
+  // The long-connection switch the model picker carries: on means every
+  // model-facing request leaves from the direct endpoint instead of the site
+  // root. The dashboard routes here never follow it — that endpoint serves the
+  // relay only.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: LINK_PATH,
+    handler: async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      if (req.method === 'GET') {
+        sendJson(res, 200, deps.link())
+        return
+      }
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'GET, POST')
+        return
+      }
+      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+      if (body === undefined) return
+      if (typeof body.direct !== 'boolean') {
+        sendJson(res, 400, { code: 'bad-request', message: 'direct 必须是布尔值' })
+        return
+      }
+      try {
+        await deps.saveLink(body.direct)
+      } catch (error: unknown) {
+        // A refused write leaves the stored switch where it was; the picker puts
+        // its toggle back and reports this message.
+        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+    },
+  }), `neartoken: ${LINK_PATH}`)
 
   // Top-up: GET reads what the site sells, POST starts one order and hands the
   // checkout page to the platform launcher. The page never builds the gateway

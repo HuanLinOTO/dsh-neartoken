@@ -86,6 +86,8 @@ export function apply(ctx: ClientContext): void {
           select: (selection: ModelSelection) => available
             ? directory.select(selection)
             : Promise.resolve(undefined),
+          readLink: () => api.link(),
+          saveLink: (direct: boolean) => api.saveLink(direct),
         }
       },
     }, ModelGroupSelect))

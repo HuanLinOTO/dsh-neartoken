@@ -5,12 +5,13 @@
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
-  USAGE_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LINK_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
+  TOPUP_PATH, USAGE_PATH,
 } from '../protocol.ts'
 import type {
-  BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenImagesPatch, NearTokenImagesState, NearTokenModelsPatch,
-  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState,
+  BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkPatch,
+  NearTokenLinkState, NearTokenModelsPatch, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo,
+  NearTokenUsageRange, NearTokenUsageState,
 } from '../protocol.ts'
 
 /**
@@ -85,6 +86,13 @@ export interface NearTokenApi {
   images(): Promise<NearTokenImagesState>
   /** Save the image-generation setting: the tool's switch and one group per enabled model. */
   saveImages(patch: NearTokenImagesPatch): Promise<void>
+  /** Read the long-connection switch, the site root, and the endpoint it moves to. */
+  link(): Promise<NearTokenLinkState>
+  /**
+   * Store the long-connection switch.
+   * @param direct - whether model-facing requests leave from the direct endpoint.
+   */
+  saveLink(direct: boolean): Promise<void>
 }
 
 /**
@@ -198,6 +206,20 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
       if (!response.ok) {
         // The Host refuses a selection its catalog does not have; its message
         // names the reason, so the page shows that rather than a status code.
+        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
+        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
+      }
+    },
+    async link() {
+      return await jsonOf<NearTokenLinkState>(await fetcher(LINK_PATH, { headers: { accept: 'application/json' } }))
+    },
+    async saveLink(direct) {
+      const response = await fetcher(LINK_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ direct } satisfies NearTokenLinkPatch),
+      })
+      if (!response.ok) {
         const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
         throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
       }

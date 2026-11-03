@@ -34,6 +34,8 @@ export const LOGOUT_PATH = '/neartoken/logout'
 export const MODELS_PATH = '/neartoken/models'
 /** Read the picture models and the image-generation setting; POST one change to it. */
 export const IMAGES_PATH = '/neartoken/images'
+/** Read the long-connection switch; POST its new state. */
+export const LINK_PATH = '/neartoken/link'
 /** Read the site's top-up offer; POST one order and open its checkout page. */
 export const TOPUP_PATH = '/neartoken/topup'
 
@@ -258,6 +260,22 @@ export interface NearTokenImagesPatch {
   readonly enabled: boolean
   /** Bare model name to the group name it must route through. */
   readonly models: Readonly<Record<string, string>>
+}
+
+/** The `GET /neartoken/link` answer. */
+export interface NearTokenLinkState {
+  /** Whether the model-facing `/v1` family goes to {@link NearTokenLinkState.directBaseURL}. */
+  readonly direct: boolean
+  /** The site root; the dashboard `/api` endpoints stay here either way. */
+  readonly baseURL: string
+  /** The endpoint `/v1` requests use while the switch is on. */
+  readonly directBaseURL: string
+}
+
+/** The `POST /neartoken/link` request body. */
+export interface NearTokenLinkPatch {
+  /** Whether the model-facing `/v1` family should use the direct endpoint. */
+  readonly direct: boolean
 }
 
 /** How far back the usage overview looks. */

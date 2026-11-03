@@ -30,6 +30,7 @@ function providerOver() {
     displayName: 'NearToken',
     settingsNs: 'ui-neartoken-provider',
     baseURL: () => 'https://example.test',
+    relayBaseURL: () => 'https://example.test',
     apiKey: async () => 'k'.repeat(48),
     enabled: () => [],
     catalogTtlMs: () => 300_000,

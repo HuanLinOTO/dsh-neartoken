@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { Config } from '../index.ts'
+import { DEFAULT_DIRECT_ENDPOINT } from './relay.ts'
 
 /**
  * Resolve the plugin configuration the way the Loader does.
@@ -19,6 +20,8 @@ import { Config } from '../index.ts'
  */
 async function resolved(input: Record<string, unknown>): Promise<{
   baseURL: unknown
+  directEndpoint: string
+  directLink: { get(): boolean }
   defaultContextWindow: number
   modelOverrides: Record<string, unknown>
   enabledModels: { get(): readonly string[] }
@@ -39,6 +42,8 @@ async function resolved(input: Record<string, unknown>): Promise<{
   }
   return resolvedConfig as {
     baseURL: unknown
+    directEndpoint: string
+    directLink: { get(): boolean }
     defaultContextWindow: number
     modelOverrides: Record<string, unknown>
     enabledModels: { get(): readonly string[] }
@@ -48,6 +53,19 @@ async function resolved(input: Record<string, unknown>): Promise<{
 describe('Config', () => {
   it('marks the whitelist volatile, which is what lets Settings write it into a running plugin', () => {
     expect(Config.dict?.enabledModels?.meta.volatile).toBe(true)
+  })
+
+  it('marks the long-connection switch volatile, which is what lets the model picker write it', () => {
+    expect(Config.dict?.directLink?.meta.volatile).toBe(true)
+    // The endpoint itself is a deployment knob: changing it is a profile edit,
+    // not something a toggle rewrites.
+    expect(Config.dict?.directEndpoint?.meta.volatile).toBeUndefined()
+  })
+
+  it('resolves the switch off, so a fresh install talks to the site root', async () => {
+    const config = await resolved({})
+    expect(config.directLink.get()).toBe(false)
+    expect(config.directEndpoint).toBe(DEFAULT_DIRECT_ENDPOINT)
   })
 
   it('keeps the deployment knobs out of the live-editable form', () => {
