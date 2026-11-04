@@ -132,29 +132,6 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
         reasoning: [low, medium, high, max]
 ```
 
-### 站点地址迁移（0.17.0）
-
-站点从 `https://llm.pko.svcfusion.com` 迁到 `https://neartoken.cc`，`baseURL` 的默认值随之改变。凭据里存的 key 不变：同一套 New API 数据下，升级后不需要重新登录。
-
-**旧域名要给还在跑旧版插件的客户端继续用，只能做反向代理，不能做 302/307 重定向**：
-
-- **302 把 POST 降级成 GET 并丢掉请求体**：登录（`/api/dsh/device/*`）、出字（`/v1/*`）、生图（`/v1/images/generations`）、充值全部失败。只剩匿名的 `GET /api/pricing` 和 `GET /api/status` 还能过，现场表现是「模型列表能显示，一发消息就报错」。
-- **跨 origin 的重定向会剥掉 `Authorization` 头**（302 / 307 / 308 一样，是 fetch 规范行为）：凡是带 key 的请求落到新域名都成了未认证请求，一律 401。307 只救得回匿名端点，结果更迷惑 —— 登录能成功，之后每个模型都 401。
-
-反向代理保留方法、请求体和请求头，SSE 也不会断：
-
-```nginx
-location / {
-  proxy_pass https://neartoken.cc;
-  proxy_http_version 1.1;
-  proxy_set_header Host $host;
-  proxy_buffering off;        # 不关会把流式出字整段缓冲
-  proxy_read_timeout 600s;    # 生图有 114 秒的先例
-}
-```
-
-旧域名退役前，新版插件照常直连 `https://neartoken.cc`，两者互不影响。
-
 ### 图片压缩
 
 **图片在离开本机前先被重编码**，不是原图直传：请求前把每张图交给 harness 的附件服务（`attachments.readImageRequest`）按 `imageMaxEdge` / `imageMaxBytes` 生成一份请求版，sharp 缩放 + 质量阶梯重编码（有 alpha 走 WebP、无 alpha 走 JPEG），结果按「附件 + 目标尺寸 + 字节预算」缓存，同一张图重复发不重复编码。已经被上游视觉网格丢掉的分辨率不再上传，也就不再计费。
