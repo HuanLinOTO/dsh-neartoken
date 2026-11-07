@@ -4,7 +4,10 @@
  * result is left dangling without a call.
  */
 import { describe, expect, it } from 'vitest'
-import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, ReasoningEffortId, ReplayEnvelope, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { parseSse, serializeRequest } from './anthropic-wire.ts'
 import { wireFor } from './protocol-router.ts'
 
 /** A harness message as the loop hands it over, without durable identity. */
@@ -57,6 +60,119 @@ function calls(...ids: string[]): Loose {
     content: ids.map(id => ({ type: 'tool-call', id, name: 'read', arguments: '{}' })),
   }
 }
+
+
+/** The signature the upstream issued for the turn's thinking block. */
+const SIGNATURE = 'EqQBCkgIAhABGAIiQHNpZ25hdHVyZQ=='
+
+/** One SSE frame carrying one event payload. */
+function frame(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`
+}
+
+/** The whole turn: a signed thinking block, then the answer. */
+const TURN = [
+  frame({ type: 'message_start', message: { id: 'msg_1', usage: { input_tokens: 3 } } }),
+  frame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
+  frame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'pondering' } }),
+  frame({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } }),
+  frame({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+  frame({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'done' } }),
+  frame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } }),
+  frame({ type: 'message_stop' }),
+]
+
+/**
+ * Collect every chunk one parser produces.
+ * @param pieces - the response body fragments.
+ * @returns the chunks in emission order.
+ */
+async function drain(pieces: readonly string[]): Promise<StreamChunk[]> {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder()
+      for (const piece of pieces) controller.enqueue(encoder.encode(piece))
+      controller.close()
+    },
+  })
+  const all: StreamChunk[] = []
+  for await (const chunk of parseSse(new Response(body, { status: 200 }), undefined)) all.push(chunk)
+  return all
+}
+
+/**
+ * The replay state one streamed turn finishes with.
+ * @param pieces - the response body fragments.
+ * @returns the envelope from the terminal chunk, if the turn stored one.
+ */
+async function replayOf(pieces: readonly string[]): Promise<ReplayEnvelope | undefined> {
+  const finish = (await drain(pieces)).at(-1)
+  return finish?.type === 'finish' ? finish.replayState : undefined
+}
+
+/**
+ * One request whose history holds a single assistant turn.
+ * @param model - the catalog id this request asks for.
+ * @param source - the stored provider, model, and replay state of that turn.
+ * @returns the harness request.
+ */
+function withTurn(model: string, source: { provider: string; model: string; replayState?: unknown }): GenerateOptions {
+  return {
+    provider: 'neartoken',
+    model,
+    reasoningEffort: brandString<ReasoningEffortId>('high'),
+    messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+      createAssistantMessage({
+        content: [{ type: 'reasoning', text: 'pondering' }, { type: 'text', text: 'done' }],
+        source,
+      }),
+    ],
+  }
+}
+
+describe('Claude thinking signatures', () => {
+  it('stores the signature the turn closed its thinking block with', async () => {
+    expect(await replayOf(TURN)).toEqual({
+      response: { kind: 'neartoken-anthropic', version: 1 },
+      blocks: [{ type: 'reasoning', signature: SIGNATURE }, { type: 'text' }],
+    })
+  })
+
+  it('stores nothing for a turn whose thinking block was never signed', async () => {
+    const unsigned = TURN.filter(piece => !piece.includes('signature_delta'))
+    expect(await replayOf(unsigned)).toBeUndefined()
+  })
+
+  it('sends the thinking block back ahead of the answer, signature intact', async () => {
+    const replayState = await replayOf(TURN)
+    const model = 'claude-sonnet-4.5'
+    const body = serializeRequest(withTurn(model, { provider: 'neartoken', model, replayState }), model)
+    const messages = body.messages as { role: string; content: Record<string, unknown>[] }[]
+    expect(messages[1]?.content).toMatchObject([
+      { type: 'thinking', thinking: 'pondering', signature: SIGNATURE },
+      { type: 'text', text: 'done' },
+    ])
+  })
+
+  it('replays a turn recorded under the catalog id it was picked from', async () => {
+    const replayState = await replayOf(TURN)
+    const id = '[特价] Claude::claude-sonnet-4.5'
+    const body = serializeRequest(withTurn(id, { provider: 'neartoken', model: id, replayState }), 'claude-sonnet-4.5')
+    const messages = body.messages as { content: Record<string, unknown>[] }[]
+    expect(messages[1]?.content[0]).toMatchObject({ type: 'thinking', signature: SIGNATURE })
+  })
+
+  it('replays nothing recorded for another model', async () => {
+    const replayState = await replayOf(TURN)
+    const body = serializeRequest(
+      withTurn('claude-sonnet-4.5', { provider: 'neartoken', model: 'claude-opus-4.5', replayState }),
+      'claude-sonnet-4.5',
+    )
+    const messages = body.messages as { content: Record<string, unknown>[] }[]
+    expect(messages[1]?.content.map(block => block['type'])).toEqual(['text'])
+  })
+})
 
 describe('Claude tool rounds', () => {
   it('answers a parallel batch in the single turn that follows it', () => {

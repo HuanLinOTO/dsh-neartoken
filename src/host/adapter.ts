@@ -26,6 +26,7 @@ import {
 } from './model-caps.ts'
 import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { wireFor } from './protocol-router.ts'
+import { decodeRoute } from './route-id.ts'
 import { postJson } from './request-body.ts'
 import { transportFailure } from './wire-error.ts'
 import { inlineImages } from './wire-images.ts'
@@ -33,6 +34,9 @@ import type { ImageRequestPolicy } from './wire-images.ts'
 import type { ImageSource } from './wire-images.ts'
 import { sessionKeyOf } from './session-key.ts'
 import { selectedRoutes } from './whitelist.ts'
+
+// Re-exported for callers that decode a catalog id without holding an adapter.
+export { decodeRoute } from './route-id.ts'
 
 /** Display name of the single provider route this adapter owns. */
 export const NEARTOKEN_PROVIDER_NAME = 'NearToken'
@@ -107,18 +111,6 @@ export interface NearTokenDeps {
   imagePolicy: () => ImageRequestPolicy
 }
 
-/**
- * Decode one catalog model id into its routing parts.
- * @param id - a catalog id ("`[低价] Grok::grok-4.6`") or a bare model name.
- * @returns the group (when the id carries one) and the real model name.
- */
-export function decodeRoute(id: string): { group?: string; model: string } {
-  // Last, not first: a group name may itself contain '::', and the catalog id's
-  // own separator is the one closest to the model.
-  const at = id.lastIndexOf('::')
-  if (at <= 0) return { model: id }
-  return { group: id.slice(0, at), model: id.slice(at + 2) }
-}
 
 /** The NearToken provider adapter. */
 export class NearTokenAdapter extends LlmAdapter {

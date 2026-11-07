@@ -3,6 +3,7 @@ import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk }
 import type { NearTokenRoute } from './pricing.ts';
 import type { ImageRequestPolicy } from './wire-images.ts';
 import type { ImageSource } from './wire-images.ts';
+export { decodeRoute } from './route-id.ts';
 /** Display name of the single provider route this adapter owns. */
 export declare const NEARTOKEN_PROVIDER_NAME = "NearToken";
 /** What an operator may state about one bare model name in the plugin configuration. */
@@ -42,15 +43,6 @@ export interface NearTokenDeps {
     /** The bounds every request image is re-encoded to before it is sent. */
     imagePolicy: () => ImageRequestPolicy;
 }
-/**
- * Decode one catalog model id into its routing parts.
- * @param id - a catalog id ("`[低价] Grok::grok-4.6`") or a bare model name.
- * @returns the group (when the id carries one) and the real model name.
- */
-export declare function decodeRoute(id: string): {
-    group?: string;
-    model: string;
-};
 /** The NearToken provider adapter. */
 export declare class NearTokenAdapter extends LlmAdapter {
     private readonly deps;

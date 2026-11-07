@@ -40,6 +40,14 @@ export interface Options {
         enabled: boolean;
         models: Record<string, string>;
     }>;
+    /** The web-search setting: the tools' switch, the group they bill to, and their two budgets. */
+    exaSearch: Volatile<{
+        enabled: boolean;
+        group: string;
+        maxResults: number;
+        maxCharacters: number;
+        timeoutMs: number;
+    }>;
 }
 /** Configuration surface; prototype keeps every knob optional. */
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
@@ -146,6 +154,36 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         /** Bare model name to the group name its requests route through. */
         models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
     }>>>, "volatile">;
+    /**
+     * The web-search setting: whether `exa_search` / `exa_fetch` are mounted, the
+     * group they bill to, and the budgets that decide a call's cost and context.
+     * On by default — a search costs a fraction of a picture, and a profile that
+     * has no Exa channel simply gets a clear refusal instead of a hidden tool.
+     * Volatile, so a save reaches this running plugin without a remount.
+     */
+    exaSearch: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the tools are mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Group every call bills to; empty takes the catalog's first offering. */
+        group: z<string, string, "defined">;
+        /** Most results one search may return. Money and context both grow with it. */
+        maxResults: z<number, number, "defined">;
+        /** Longest text one hit or page may contribute, in characters. */
+        maxCharacters: z<number, number, "defined">;
+        /** How long one search or fetch may take, in milliseconds. */
+        timeoutMs: z<number, number, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the tools are mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Group every call bills to; empty takes the catalog's first offering. */
+        group: z<string, string, "defined">;
+        /** Most results one search may return. Money and context both grow with it. */
+        maxResults: z<number, number, "defined">;
+        /** Longest text one hit or page may contribute, in characters. */
+        maxCharacters: z<number, number, "defined">;
+        /** How long one search or fetch may take, in milliseconds. */
+        timeoutMs: z<number, number, "defined">;
+    }>>>, "volatile">;
 }>>, Schemastery.ObjectT<NoInfer<{
     /** Site root without a trailing slash. */
     baseURL: z<string, string, "defined">;
@@ -249,6 +287,36 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         /** Bare model name to the group name its requests route through. */
         models: z<import("@deepseek-ai/cosmokit").Dict<string, string>, import("@deepseek-ai/cosmokit").Dict<string, string>, "defined">;
+    }>>>, "volatile">;
+    /**
+     * The web-search setting: whether `exa_search` / `exa_fetch` are mounted, the
+     * group they bill to, and the budgets that decide a call's cost and context.
+     * On by default — a search costs a fraction of a picture, and a profile that
+     * has no Exa channel simply gets a clear refusal instead of a hidden tool.
+     * Volatile, so a save reaches this running plugin without a remount.
+     */
+    exaSearch: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the tools are mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Group every call bills to; empty takes the catalog's first offering. */
+        group: z<string, string, "defined">;
+        /** Most results one search may return. Money and context both grow with it. */
+        maxResults: z<number, number, "defined">;
+        /** Longest text one hit or page may contribute, in characters. */
+        maxCharacters: z<number, number, "defined">;
+        /** How long one search or fetch may take, in milliseconds. */
+        timeoutMs: z<number, number, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the tools are mounted. */
+        enabled: z<boolean, boolean, "defined">;
+        /** Group every call bills to; empty takes the catalog's first offering. */
+        group: z<string, string, "defined">;
+        /** Most results one search may return. Money and context both grow with it. */
+        maxResults: z<number, number, "defined">;
+        /** Longest text one hit or page may contribute, in characters. */
+        maxCharacters: z<number, number, "defined">;
+        /** How long one search or fetch may take, in milliseconds. */
+        timeoutMs: z<number, number, "defined">;
     }>>>, "volatile">;
 }>>, "plain">;
 /** Required services: the LLM registry the adapter mounts into. */

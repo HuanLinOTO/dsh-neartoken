@@ -11,6 +11,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { sessionKeyOf } from './session-key.ts'
+import { wireCallId } from './wire-call-id.ts'
 import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
 import type { WireImage, WireImages } from './wire-images.ts'
 
@@ -138,7 +139,7 @@ function serializeMessage(message: RequestMessage, images: WireImages): WireMess
           && (block as { type?: string }).type === 'tool-call')
         .map(block => ({
           type: 'function',
-          id: block.id,
+          id: wireCallId(String(block.id)),
           function: { name: block.name, arguments: block.arguments },
         }))
       const text = textOf(content)
@@ -147,7 +148,7 @@ function serializeMessage(message: RequestMessage, images: WireImages): WireMess
       return wire
     }
     case 'tool':
-      return { role: 'tool', tool_call_id: message.toolCallId, content: textOf(content) }
+      return { role: 'tool', tool_call_id: wireCallId(String(message.toolCallId)), content: textOf(content) }
     default:
       return undefined
   }

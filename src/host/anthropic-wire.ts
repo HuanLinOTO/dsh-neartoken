@@ -27,16 +27,35 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { gatewayError } from './wire-error.ts'
 import type {
-  FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
-  ToolResultMessage,
+  FinishReason, GenerateOptions, ReplayEnvelope, RequestMessage, StreamChunk, ToolCallBlock,
+  ToolCallId, TokenUsage, ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
+import { decodeRoute } from './route-id.ts'
 import { sessionKeyOf } from './session-key.ts'
-import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { wireCallId } from './wire-call-id.ts'
 import { imageOf, imagesIn } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
 /** One Anthropic content block, as sent. */
 type WireBlock = Record<string, unknown>
+
+/** The replay envelope kind this wire writes and reads. */
+const REPLAY_KIND = 'neartoken-anthropic'
+
+/** The only envelope version this build understands. */
+const REPLAY_VERSION = 1
+
+/** Per-block replay metadata, index-aligned with the blocks the stream emitted. */
+type ReplayBlock = { type: 'text' | 'tool-call' } | ({ type: 'reasoning' } & { signature: string })
+
+/** What a stored envelope must match before this request may replay it. */
+interface ReplayGate {
+  /** The provider route this request goes to. */
+  provider: string
+  /** The model this request asks for. */
+  model: string
+}
 
 /** One serialized turn: the role the messages API reads, and its content blocks. */
 interface WireTurn {
@@ -60,14 +79,66 @@ function textOf(content: readonly unknown[]): string {
 }
 
 /**
+ * The thinking blocks one assistant turn hands back, ready to send.
+ *
+ * Nothing is reconstructed here: each block's signature is read out of the
+ * turn's own replay state, and the text in front of it is the summary this
+ * harness already holds. An envelope this build cannot use — another wire's
+ * kind, another version, another provider route, another model, a signature
+ * that was never issued, or a count that does not match the blocks that were
+ * streamed — is dropped whole: a thinking block without its signature is worse
+ * than none at all, because the API refuses the turn outright.
+ * @param message - the durable assistant message.
+ * @param gate - the provider route and model this request asks for.
+ * @param content - the message's content blocks, in the order they streamed.
+ * @returns the thinking blocks to send ahead of the text and the calls.
+ */
+function replayThinking(message: RequestMessage, gate: ReplayGate, content: readonly unknown[]): WireBlock[] {
+  const source = (message as {
+    source?: { kind?: string; provider?: string; model?: string; replayState?: unknown }
+  }).source
+  if (source?.kind !== 'model' || source.replayState === undefined) return []
+  // The gate names the bare model, because that is what the request asks the
+  // upstream for. The durable message records the catalog id it was chosen
+  // from, which still carries the group prefix the request never sees — so
+  // the two are decoded before they are compared.
+  const recorded = decodeRoute(source.model ?? '').model
+  if (source.provider !== gate.provider || recorded !== gate.model) return []
+  const envelope = asObject(source.replayState)
+  const response = asObject(envelope?.response)
+  if (response?.kind !== REPLAY_KIND || response.version !== REPLAY_VERSION) return []
+  const signatures: string[] = []
+  for (const raw of asArray(envelope?.blocks)) {
+    const block = asObject(raw)
+    if (block?.type !== 'reasoning') continue
+    const signature = stringOf(block.signature)
+    if (signature === undefined || signature === '') return []
+    signatures.push(signature)
+  }
+  const texts: string[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    const typed = block as { type?: string; text?: string }
+    if (typed.type === 'reasoning') texts.push(typed.text ?? '')
+  }
+  // The blocks pair by arrival order; a turn whose two sides disagree about how
+  // many it had is not one this build can put back together.
+  if (signatures.length === 0 || signatures.length !== texts.length) return []
+  return texts.map((text, at) => ({ type: 'thinking', thinking: text, signature: signatures[at] }))
+}
+
+/**
  * Map one harness message onto its Anthropic form.
  *
- * Assistant thinking blocks are not sent back: the harness ReasoningBlock
- * carries no signature, and the gateway drops a thinking block without one.
+ * An assistant turn carries its thinking blocks back first, each with the
+ * signature the upstream issued: the API refuses a replayed turn whose thinking
+ * lost it, and a delivery of this trajectory is rejected for the same reason.
  * @param message - one conversation message.
+ * @param gate - the provider route and model this request asks for.
+ * @param images - the request's inlined images.
  * @returns the wire message, or undefined when it carries nothing.
  */
-function serializeMessage(message: RequestMessage, images: WireImages = new Map()): WireTurn | undefined {
+function serializeMessage(message: RequestMessage, gate: ReplayGate, images: WireImages = new Map()): WireTurn | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
@@ -85,7 +156,7 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
       return blocks.length === 0 ? undefined : { role: 'user', content: blocks }
     }
     case 'assistant': {
-      const blocks: WireBlock[] = []
+      const blocks: WireBlock[] = replayThinking(message, gate, content)
       const text = textOf(content)
       if (text !== '') blocks.push({ type: 'text', text })
       for (const block of content) {
@@ -94,7 +165,12 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
         if (call.type !== 'tool-call') continue
         let input: unknown = {}
         try { input = call.arguments === undefined || call.arguments === '' ? {} : JSON.parse(call.arguments) } catch { input = {} }
-        blocks.push({ type: 'tool_use', id: call.id, name: call.name, input })
+        blocks.push({
+          type: 'tool_use',
+          id: call.id === undefined ? undefined : wireCallId(String(call.id)),
+          name: call.name,
+          input,
+        })
       }
       return blocks.length === 0 ? undefined : { role: 'assistant', content: blocks }
     }
@@ -127,13 +203,13 @@ function toolResultBlock(message: ToolResultMessage, images: WireImages = new Ma
   const text = textOf(content)
   const pictures = imagesIn(content, images)
   if (pictures.length === 0) {
-    return { type: 'tool_result', tool_use_id: message.toolCallId, content: text }
+    return { type: 'tool_result', tool_use_id: wireCallId(String(message.toolCallId)), content: text }
   }
   const blocks: WireBlock[] = text === '' ? [] : [{ type: 'text', text }]
   for (const image of pictures) {
     blocks.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } })
   }
-  return { type: 'tool_result', tool_use_id: message.toolCallId, content: blocks }
+  return { type: 'tool_result', tool_use_id: wireCallId(String(message.toolCallId)), content: blocks }
 }
 
 /**
@@ -263,9 +339,10 @@ export function serializeRequest(
     deferred = []
   }
   let system = options.system
+  const gate: ReplayGate = { provider: options.provider, model }
   for (const message of options.messages) {
     if (message.role === 'tool') {
-      const callId = String(message.toolCallId)
+      const callId = wireCallId(String(message.toolCallId))
       // A result whose call no assistant turn announced has nowhere to go on
       // this wire, and answering a call twice is refused.
       if (!open.includes(callId)) continue
@@ -289,7 +366,7 @@ export function serializeRequest(
     // The messages API has no system role inside the turn list; any later system
     // message (a prompt update) is folded into the user turn shape rather than
     // dropped, so it is read after the cached history.
-    const turn = serializeMessage(message, images)
+    const turn = serializeMessage(message, gate, images)
     if (turn === undefined) continue
     if (turn.role === 'assistant') {
       // A call the conversation never answered is closed here: it cannot stay
@@ -317,8 +394,8 @@ export function serializeRequest(
     // `display` decides whether the block has any text at all: a Claude 5
     // generation omits the summary unless it is asked for, and streams a
     // thinking block whose content is empty with only its signature filled in.
-    // The harness has nowhere to keep a signature, so an omitted display reads
-    // as "this model never thought".
+    // A summarized turn is the only kind this wire can hand back whole, and a
+    // signature with no text in front of it is not a turn anyone can replay.
     body.thinking = { type: 'adaptive', display: 'summarized' }
     body.output_config = { effort: claudeEffort(options.reasoningEffort) }
   }
@@ -360,6 +437,8 @@ interface OpenBlock {
 interface Assembly {
   /** Blocks in first-seen order, keyed by the wire's own block index. */
   blocks: Map<number, OpenBlock>
+  /** The signature each thinking block closed with, keyed by the wire index. */
+  signatures: Map<number, string>
   nextIndex: number
   usage: { input: number; cacheRead: number; cacheWrite: number; output: number } | null
   finish: string | null
@@ -458,8 +537,12 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
         argumentsDelta: partial,
       }
     }
-    // signature_delta and other thinking metadata are not part of the harness
-    // vocabulary: the ReasoningBlock has no place to keep them.
+    if (kind === 'signature_delta') {
+      // The signature is the whole point of the block: without it the turn
+      // cannot be replayed, and the harness has nowhere of its own to keep it.
+      const signature = stringOf(delta.signature)
+      if (signature !== undefined && signature !== '') state.signatures.set(wireIndex, signature)
+    }
     return
   }
   if (type === 'message_delta') {
@@ -473,6 +556,33 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
     state.usage.cacheWrite = numberOf(usage.cache_creation_input_tokens) ?? state.usage.cacheWrite
     state.usage.output = numberOf(usage.output_tokens) ?? state.usage.output
   }
+}
+
+/**
+ * Build the envelope this stream stores for the next turn.
+ *
+ * One entry per emitted block, in the order the wire opened them. Only the
+ * thinking blocks carry a signature; a turn that streamed none, or one whose
+ * signature never arrived, is stored as nothing at all.
+ * @param state - the finished assembly state.
+ * @returns the versioned envelope, or undefined when there is nothing to replay.
+ */
+function replayOf(state: Assembly): ReplayEnvelope | undefined {
+  const blocks: ReplayBlock[] = []
+  let signed = 0
+  const ordered = [...state.blocks.entries()].sort(([left], [right]) => left - right)
+  for (const [wireIndex, block] of ordered) {
+    if (block.kind !== 'reasoning') {
+      blocks.push({ type: block.kind })
+      continue
+    }
+    const signature = state.signatures.get(wireIndex)
+    if (signature === undefined) return undefined
+    blocks.push({ type: 'reasoning', signature })
+    signed += 1
+  }
+  if (signed === 0) return undefined
+  return { response: { kind: REPLAY_KIND, version: REPLAY_VERSION }, blocks }
 }
 
 /**
@@ -499,7 +609,7 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     const detail = await response.text().catch(() => '')
     throw gatewayError(detail, response.status, response.headers)
   }
-  const state: Assembly = { blocks: new Map(), nextIndex: 0, usage: null, finish: null }
+  const state: Assembly = { blocks: new Map(), signatures: new Map(), nextIndex: 0, usage: null, finish: null }
   for await (const payload of sseData(response, signal)) yield* consume(payload, state)
   for (const block of state.blocks.values()) {
     if (block.kind === 'text') {
@@ -530,5 +640,11 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     }
     yield { type: 'usage', usage }
   }
-  yield { type: 'finish', reason: finishOf(state.finish) }
+  // One entry per emitted block, in the same order and at the same positions, so
+  // assembly can prune a block and its entry together. Only a thinking block
+  // carries anything the next request needs, and a turn where any of them lost
+  // its signature has nothing worth handing back.
+  const replay = replayOf(state)
+  const finish = finishOf(state.finish)
+  yield replay === undefined ? { type: 'finish', reason: finish } : { type: 'finish', reason: finish, replayState: replay }
 }

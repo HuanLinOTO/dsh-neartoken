@@ -8,15 +8,69 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { gatewayError, streamFailure } from './wire-error.ts'
 import type {
-  FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
+  FinishReason, GenerateOptions, ReplayEnvelope, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import { asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { decodeRoute } from './route-id.ts'
 import { sessionKeyOf } from './session-key.ts'
+import { wireCallId } from './wire-call-id.ts'
 import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
 import type { WireImage, WireImages } from './wire-images.ts'
 
 /** One responses input item, as sent. */
 type InputItem = Record<string, unknown>
+
+/** The replay envelope kind this wire writes and reads. */
+const REPLAY_KIND = 'neartoken-responses'
+
+/** The only envelope version this build understands. */
+const REPLAY_VERSION = 1
+
+/**
+ * One reasoning item, reduced to what a later request sends back.
+ *
+ * The upstream issues the ciphertext on every turn; a client that keeps it can
+ * hand the turn's reasoning back verbatim, which is what this wire stores it
+ * for.
+ */
+interface ReasoningItem {
+  /** The upstream item id, when the wire sent one. */
+  id?: string
+  /** The visible summary entries, exactly as the upstream wrote them. */
+  summary: { type: 'summary_text'; text: string }[]
+  /** The opaque ciphertext that makes the item replayable. */
+  encryptedContent: string
+}
+
+/** Per-block replay metadata, index-aligned with the blocks the stream emitted. */
+type ReplayBlock = { type: 'text' | 'tool-call' } | ({ type: 'reasoning' } & ReasoningItem)
+
+/** What a stored envelope must match before this request may replay it. */
+interface ReplayGate {
+  /** The provider route this request goes to. */
+  provider: string
+  /** The model this request asks for. */
+  model: string
+}
+
+/**
+ * Read one summary list off the wire or out of a stored envelope.
+ * @param value - the candidate summary value.
+ * @returns the entries, or undefined when the value is not a summary list.
+ */
+function summaryOf(value: unknown): ReasoningItem['summary'] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const summary: ReasoningItem['summary'] = []
+  for (const raw of asArray(value)) {
+    const entry = asObject(raw)
+    const text = stringOf(entry?.text)
+    // Only the one summary kind this wire echoes back: an entry of another kind
+    // is not something a replay may relabel.
+    if (entry?.type !== 'summary_text' || text === undefined) return undefined
+    summary.push({ type: 'summary_text', text })
+  }
+  return summary
+}
 
 /**
  * Flatten one message's text blocks.
@@ -34,14 +88,66 @@ function textOf(content: readonly unknown[]): string {
 }
 
 /**
+ * The reasoning items one assistant turn hands back, ready to send.
+ *
+ * Nothing is reconstructed here: the turn's own ciphertext is read out of its
+ * replay state. An envelope this build cannot use — another wire's kind,
+ * another version, another provider route, another model, or one whose
+ * ciphertext is missing — is dropped whole, because a reasoning item without
+ * its ciphertext is worse than none at all.
+ * @param message - the durable assistant message.
+ * @param gate - the provider route and model this request asks for.
+ * @returns the reasoning items in upstream order; empty when nothing replays.
+ */
+function replayItems(message: RequestMessage, gate: ReplayGate): InputItem[] {
+  const source = (message as {
+    source?: { kind?: string; provider?: string; model?: string; replayState?: unknown }
+  }).source
+  if (source?.kind !== 'model' || source.replayState === undefined) return []
+  // The gate names the bare model, because that is what the request asks the
+  // upstream for. The durable message records the catalog id it was chosen
+  // from, which still carries the group prefix the request never sees — so
+  // the two are decoded before they are compared. Comparing them raw is how a
+  // turn chosen from a group stopped replaying at all.
+  const recorded = decodeRoute(source.model ?? '').model
+  if (source.provider !== gate.provider || recorded !== gate.model) return []
+  const envelope = asObject(source.replayState)
+  const response = asObject(envelope?.response)
+  if (response?.kind !== REPLAY_KIND || response.version !== REPLAY_VERSION) return []
+  const items: InputItem[] = []
+  for (const raw of asArray(envelope?.blocks)) {
+    const block = asObject(raw)
+    if (block?.type !== 'reasoning') continue
+    const encryptedContent = stringOf(block.encryptedContent)
+    const summary = summaryOf(block.summary)
+    if (encryptedContent === undefined || encryptedContent === '' || summary === undefined) return []
+    // The id travels with the item whenever the upstream issued one. It is the
+    // upstream's own name for the item, not a handle into server-side state:
+    // the request asks for store:false, so the ciphertext is the whole of what
+    // makes the item replayable. An item that arrived without an id is sent
+    // without one, never with an empty placeholder.
+    const id = stringOf(block.id)
+    items.push({
+      type: 'reasoning',
+      ...id === undefined || id === '' ? {} : { id },
+      summary,
+      encrypted_content: encryptedContent,
+    })
+  }
+  return items
+}
+
+/**
  * Map one harness message onto its responses input items.
  *
  * An assistant turn that both speaks and calls tools expands to one message item
- * followed by one `function_call` item per call.
+ * followed by one `function_call` item per call. Its reasoning item goes back
+ * ahead of both, which is the order the upstream answered in.
  * @param message - one conversation message.
+ * @param gate - the provider route and model this request asks for.
  * @returns the items, empty when the message carries nothing.
  */
-function serializeMessage(message: RequestMessage, images: WireImages = new Map()): InputItem[] {
+function serializeMessage(message: RequestMessage, gate: ReplayGate, images: WireImages = new Map()): InputItem[] {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'user':
@@ -60,22 +166,22 @@ function serializeMessage(message: RequestMessage, images: WireImages = new Map(
     }
     case 'assistant': {
       const text = textOf(content)
-      const items: InputItem[] = text === '' ? [] : [{ role: 'assistant', content: text }]
+      const turn: InputItem[] = text === '' ? [] : [{ role: 'assistant', content: text }]
       for (const block of content) {
         if (typeof block !== 'object' || block === null) continue
         const call = block as Partial<ToolCallBlock> & { type?: string }
         if (call.type !== 'tool-call') continue
-        items.push({
+        turn.push({
           type: 'function_call',
-          call_id: call.id,
+          call_id: call.id === undefined ? undefined : wireCallId(String(call.id)),
           name: call.name,
           arguments: call.arguments ?? '',
         })
       }
-      return items
+      return turn.length === 0 ? [] : [...replayItems(message, gate), ...turn]
     }
     case 'tool':
-      return [{ type: 'function_call_output', call_id: message.toolCallId, output: textOf(content) }]
+      return [{ type: 'function_call_output', call_id: wireCallId(String(message.toolCallId)), output: textOf(content) }]
     default:
       return []
   }
@@ -110,6 +216,7 @@ export function serializeRequest(
 ): Record<string, unknown> {
   const input: InputItem[] = []
   const pending: WireImage[] = []
+  const gate: ReplayGate = { provider: options.provider, model }
   for (const message of options.messages) {
     // A function_call_output is a string. The pictures an uninterrupted run of
     // tool results returned follow the last one, so a parallel batch keeps its
@@ -119,10 +226,22 @@ export function serializeRequest(
       pending.length = 0
     }
     if (message.role === 'tool') pending.push(...imagesIn(message.content as readonly unknown[], images))
-    input.push(...serializeMessage(message, images))
+    input.push(...serializeMessage(message, gate, images))
   }
   if (pending.length > 0) input.push(toolImagesItem(pending))
-  const body: Record<string, unknown> = { model, input, stream: true }
+  // store:false keeps the turn on the client, and `include` is what makes the
+  // upstream emit the ciphertext at all: an upstream that was not asked may
+  // answer with no reasoning item, and a turn without ciphertext cannot be
+  // replayed — a delivery that requires the ciphertext refuses the record too.
+  // Only a model that took a reasoning effort is asked; the include names a
+  // reasoning field an unasked model has nothing to put in.
+  const body: Record<string, unknown> = {
+    model,
+    input,
+    stream: true,
+    store: false,
+    ...options.reasoningEffort === undefined ? {} : { include: ['reasoning.encrypted_content'] },
+  }
   const affinityKey = sessionKeyOf(options)
   if (affinityKey !== undefined) body.prompt_cache_key = affinityKey
   if (options.system !== undefined && options.system.length > 0) body.instructions = options.system
@@ -155,6 +274,10 @@ interface OpenBlock {
 interface Assembly {
   text: OpenBlock | null
   reasoning: OpenBlock | null
+  /** The turn's finished reasoning item, kept to replay the next turn's history. */
+  reasoningItem: ReasoningItem | null
+  /** The (item, part) pair the last summary delta belonged to. */
+  summaryPart: string | null
   /** Tool calls keyed by the wire item id that owns their argument stream. */
   toolBlocks: Map<string, OpenBlock>
   nextIndex: number
@@ -197,6 +320,45 @@ function usageOf(value: unknown): TokenUsage | undefined {
 }
 
 /**
+ * Read one wire reasoning item down to what a replay sends back.
+ * @param item - the wire's `item` or one entry of `response.output`.
+ * @returns the item, or undefined when it carries no ciphertext or no summary.
+ */
+function reasoningItemOf(item: Record<string, unknown>): ReasoningItem | undefined {
+  const encryptedContent = stringOf(item.encrypted_content)
+  const summary = summaryOf(item.summary)
+  if (encryptedContent === undefined || encryptedContent === '' || summary === undefined) return undefined
+  const id = stringOf(item.id)
+  return { ...id === undefined ? {} : { id }, summary, encryptedContent }
+}
+
+/**
+ * Build the envelope this stream stores for the next turn.
+ *
+ * One entry per emitted block, in the same order and at the same positions, so
+ * assembly can prune a block and its entry together. Only the reasoning block
+ * carries anything the next request needs.
+ * @param state - the finished assembly state.
+ * @param item - the reasoning item the wire returned this turn.
+ * @returns the versioned envelope.
+ */
+function replayOf(state: Assembly, item: ReasoningItem): ReplayEnvelope {
+  const blocks = new Map<number, ReplayBlock>()
+  if (state.text !== null) blocks.set(state.text.index, { type: 'text' })
+  if (state.reasoning !== null) blocks.set(state.reasoning.index, { type: 'reasoning', ...item })
+  for (const block of state.toolBlocks.values()) blocks.set(block.index, { type: 'tool-call' })
+  const entries = [...blocks.entries()].sort(([left], [right]) => left - right)
+  // A turn whose reasoning never streamed a visible summary still has an item
+  // worth handing back: the request sends it first regardless of a position it
+  // never occupied, so it leads the list.
+  if (state.reasoning === null) entries.unshift([-1, { type: 'reasoning', ...item }])
+  return {
+    response: { kind: REPLAY_KIND, version: REPLAY_VERSION },
+    blocks: entries.map(([, block]) => block),
+  }
+}
+
+/**
  * Fold one responses event into the assembly state.
  * @param payload - one SSE data payload.
  * @param state - the live assembly state.
@@ -223,6 +385,12 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
     case 'response.output_item.done': {
       // Some upstreams only publish the finished arguments here.
       const item = asObject(event.item) ?? {}
+      if (stringOf(item.type) === 'reasoning') {
+        // The finished item is where the ciphertext arrives, and the turn it
+        // belongs to is the one this stream is still assembling.
+        state.reasoningItem = reasoningItemOf(item) ?? state.reasoningItem
+        return
+      }
       if (stringOf(item.type) !== 'function_call') return
       const key = stringOf(item.id) ?? ''
       const block = state.toolBlocks.get(key)
@@ -247,6 +415,19 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       }
       state.text.body += text
       yield { type: 'text-delta', index: state.text.index, text }
+      return
+    }
+    case 'response.reasoning_summary_part.added': {
+      // Every summary part is a thought of its own. Concatenating the deltas of
+      // two parts runs them together into one unreadable line — the upstream
+      // writes no separator because a part boundary is the separator — so one
+      // is inserted here, once per part, before its text arrives.
+      const part = `${stringOf(event.item_id) ?? ''}:${numberOf(event.summary_index) ?? 0}`
+      if (state.summaryPart !== null && state.summaryPart !== part && state.reasoning !== null) {
+        state.reasoning.body += '\n\n'
+        yield { type: 'reasoning-delta', index: state.reasoning.index, text: '\n\n' }
+      }
+      state.summaryPart = part
       return
     }
     case 'response.reasoning_summary_text.delta':
@@ -280,6 +461,17 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       const response = asObject(event.response) ?? {}
       const usage = usageOf(response.usage)
       if (usage !== undefined) state.usage = usage
+      // The terminal event repeats the whole output, so a turn whose
+      // reasoning item never arrived as its own `output_item.done` is still
+      // replayed from here.
+      if (state.reasoningItem === null) {
+        for (const raw of asArray(response.output)) {
+          const item = asObject(raw)
+          if (item === undefined || stringOf(item.type) !== 'reasoning') continue
+          state.reasoningItem = reasoningItemOf(item) ?? null
+          if (state.reasoningItem !== null) break
+        }
+      }
       if (type === 'response.incomplete') state.incomplete = true
       const status = stringOf(response.status)
       if (status !== undefined) state.status = status
@@ -324,7 +516,15 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     throw gatewayError(detail, response.status, response.headers)
   }
   const state: Assembly = {
-    text: null, reasoning: null, toolBlocks: new Map(), nextIndex: 0, usage: null, status: null, incomplete: false,
+    text: null,
+    reasoning: null,
+    reasoningItem: null,
+    summaryPart: null,
+    toolBlocks: new Map(),
+    nextIndex: 0,
+    usage: null,
+    status: null,
+    incomplete: false,
   }
   for await (const payload of sseData(response, signal)) yield* consume(payload, state)
   if (state.text !== null) {
@@ -350,5 +550,11 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     }
   }
   if (state.usage !== null) yield { type: 'usage', usage: state.usage }
-  yield { type: 'finish', reason: finishOf(state) }
+  const reason = finishOf(state)
+  // The envelope is worth storing whenever the turn has a reasoning item to
+  // hand back. A visible summary is not the test: an upstream may stream the
+  // item only with its terminal events, and requiring the streamed block threw
+  // away exactly those turns — the ones whose ciphertext was still good.
+  const replay = state.reasoningItem === null ? undefined : replayOf(state, state.reasoningItem)
+  yield replay === undefined ? { type: 'finish', reason } : { type: 'finish', reason, replayState: replay }
 }

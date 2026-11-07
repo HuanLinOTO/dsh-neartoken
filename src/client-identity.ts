@@ -41,6 +41,9 @@ const HEADER_VALUE = /^[\x20-\x7E]{1,200}$/
  * @returns `x-dsh-client` always; `x-dsh-session-id` only for a legal session id.
  */
 export function clientHeaders(sessionId?: string): Record<string, string> {
+  // `x-dsh-client` carries "<package>/<version>", which is where the recording
+  // side reads the plugin's version from; a second header for the same number
+  // was a duplicate.
   const headers: Record<string, string> = { 'x-dsh-client': CLIENT }
   if (sessionId !== undefined && HEADER_VALUE.test(sessionId)) headers['x-dsh-session-id'] = sessionId
   return headers

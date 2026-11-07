@@ -16,6 +16,8 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { NearTokenModelOverride } from './host/adapter.ts'
 import { NearTokenAccount } from './host/account.ts'
+import { NearTokenExaClient } from './host/exa-client.ts'
+import { registerExaTools } from './host/exa-tools.ts'
 import { imageCatalog, NearTokenImageSettings, parseImagePatch } from './host/image-settings.ts'
 import { registerGenerateImageTool } from './host/image-tool.ts'
 import { NearTokenImageClient } from './host/images.ts'
@@ -95,6 +97,14 @@ export interface Options {
   imageTimeoutMs: number
   /** The image-generation setting: the tool's switch and one group per enabled model. */
   imageGeneration: Volatile<{ enabled: boolean; models: Record<string, string> }>
+  /** The web-search setting: the tools' switch, the group they bill to, and their two budgets. */
+  exaSearch: Volatile<{
+    enabled: boolean
+    group: string
+    maxResults: number
+    maxCharacters: number
+    timeoutMs: number
+  }>
 }
 
 /** Configuration surface; prototype keeps every knob optional. */
@@ -178,6 +188,25 @@ export const Config = z.object({
     enabled: z.boolean().default(false),
     /** Bare model name to the group name its requests route through. */
     models: z.dict(z.string()).default({}),
+  }).volatile(),
+  /**
+   * The web-search setting: whether `exa_search` / `exa_fetch` are mounted, the
+   * group they bill to, and the budgets that decide a call's cost and context.
+   * On by default — a search costs a fraction of a picture, and a profile that
+   * has no Exa channel simply gets a clear refusal instead of a hidden tool.
+   * Volatile, so a save reaches this running plugin without a remount.
+   */
+  exaSearch: z.object({
+    /** Whether the tools are mounted. */
+    enabled: z.boolean().default(true),
+    /** Group every call bills to; empty takes the catalog's first offering. */
+    group: z.string().default(''),
+    /** Most results one search may return. Money and context both grow with it. */
+    maxResults: z.number().step(1).min(1).max(100).default(8),
+    /** Longest text one hit or page may contribute, in characters. */
+    maxCharacters: z.number().step(1).min(200).default(6_000),
+    /** How long one search or fetch may take, in milliseconds. */
+    timeoutMs: z.number().step(1).min(1_000).default(60_000),
   }).volatile(),
 })
 
@@ -291,6 +320,36 @@ export function apply(ctx: Context, config: Options): void {
     }
     syncImageTool = sync
     sync()
+  })
+  // The Exa tools are billed per call, and both the switch and the group they
+  // bill to are settings, so the client reads them at call time instead of
+  // freezing them at mount.
+  const exa = new NearTokenExaClient({
+    baseURL: relayBaseURL,
+    apiKey: resolveApiKey,
+    routes: async () => await provider.fullCatalog(),
+    timeoutMs: () => config.exaSearch.get().timeoutMs,
+  })
+  ctx.inject(['tools'], (toolCtx) => {
+    // Mounting the tools IS the switch, exactly as for generate_image: a profile
+    // that turned web search off never shows the model a tool whose every call
+    // would be refused.
+    let registered: (() => void) | undefined
+    const syncExa = (): void => {
+      if (config.exaSearch.get().enabled) {
+        if (registered !== undefined) return
+        registered = toolCtx.effect(() => registerExaTools(toolCtx, {
+          settings: () => config.exaSearch.get(),
+          client: exa,
+          timeoutMs: () => config.exaSearch.get().timeoutMs,
+        }), 'neartoken: exa_search and exa_fetch')
+        return
+      }
+      if (registered === undefined) return
+      registered()
+      registered = undefined
+    }
+    syncExa()
   })
   // A finished authorization is the moment the route appears: the site just
   // minted the key for this plugin, so the provider can serve immediately.

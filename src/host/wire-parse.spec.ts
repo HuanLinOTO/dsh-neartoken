@@ -546,3 +546,73 @@ describe('session affinity key', () => {
     expect(serializeResponses(inSession(''), 'gpt-5.5').prompt_cache_key).toBeUndefined()
   })
 })
+
+describe('tool-call ids that run past the wire cap', () => {
+  /**
+   * A history whose one call kept the composite id another provider left in it:
+   * the harness call id paired with the upstream item id, 91 characters.
+   * @returns the harness request.
+   */
+  function compositeCall(): GenerateOptions {
+    const id = brandString<ToolCallId>(
+      'call_94f08b1bd1c140c49605225f285886ab|fc_0e16f668eb0a995a016accc24717c481918755704238d6de66',
+    )
+    return {
+      ...request(),
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'read' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'tool-call', id, name: 'read', arguments: '{"a":1}' }],
+          source: { provider: 'NearToken', model: 'gpt-5.5' },
+        }),
+        createToolResultMessage({ callId: id, content: [{ type: 'text', text: 'done' }], isError: false }),
+      ],
+    }
+  }
+
+  /** The shape one shortened id has: a digest, well inside every wire's cap. */
+  const SHORTENED = /^call_[0-9a-f]{24}$/
+
+  it('shortens the responses call id, and pairs the call with its result', () => {
+    const input = serializeResponses(compositeCall(), 'gpt-5.5').input as Array<Record<string, unknown>>
+    const call = input.find(item => item.type === 'function_call')
+    const result = input.find(item => item.type === 'function_call_output')
+    expect(call?.call_id).toMatch(SHORTENED)
+    expect(result?.call_id).toBe(call?.call_id)
+  })
+
+  it('shortens the chat call id, and pairs the call with its result', () => {
+    const body = serializeChat(compositeCall(), 'grok-4.6')
+    const messages = body.messages as Array<{
+      role: string
+      tool_call_id?: string
+      tool_calls?: Array<{ id: string }>
+    }>
+    const call = messages.find(message => message.role === 'assistant')?.tool_calls?.[0]
+    const result = messages.find(message => message.role === 'tool')
+    expect(call?.id).toMatch(SHORTENED)
+    expect(result?.tool_call_id).toBe(call?.id)
+  })
+
+  it('shortens the messages call id, and pairs the call with its result', () => {
+    const body = serializeAnthropic(compositeCall(), 'claude-opus-5-5')
+    const turns = body.messages as Array<{ content: Array<{ type: string; id?: string; tool_use_id?: string }> }>
+    const blocks = turns.flatMap(turn => turn.content)
+    const call = blocks.find(block => block.type === 'tool_use')
+    const result = blocks.find(block => block.type === 'tool_result')
+    expect(call?.id).toMatch(SHORTENED)
+    expect(result?.tool_use_id).toBe(call?.id)
+  })
+
+  it('shortens the genai call id, and pairs the call with its result', () => {
+    // Gemini 3 and later match a response to its call by id; earlier ones match
+    // on the name alone and never carry one.
+    const partsOf = (body: Record<string, unknown>): Array<Record<string, unknown>> =>
+      (body.contents as Array<{ parts: Array<Record<string, unknown>> }>).flatMap(content => content.parts)
+    const parts = partsOf(serializeGenai(compositeCall(), 'gemini-4-argon'))
+    const call = parts.find(part => part.functionCall !== undefined)?.functionCall as { id?: string } | undefined
+    const result = parts.find(part => part.functionResponse !== undefined)?.functionResponse as { id?: string } | undefined
+    expect(call?.id).toMatch(SHORTENED)
+    expect(result?.id).toBe(call?.id)
+  })
+})

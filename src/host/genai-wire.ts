@@ -16,6 +16,7 @@ import type {
   ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { wireCallId } from './wire-call-id.ts'
 import { imageOf, imagesIn } from './wire-images.ts'
 import type { WireImages } from './wire-images.ts'
 
@@ -98,7 +99,7 @@ function serializeMessage(
         let args: unknown = {}
         try { args = call.arguments === undefined || call.arguments === '' ? {} : JSON.parse(call.arguments) } catch { args = {} }
         const functionCall: Record<string, unknown> = { name: call.name, args }
-        if (callIds && call.id !== undefined) functionCall.id = String(call.id)
+        if (callIds && call.id !== undefined) functionCall.id = wireCallId(String(call.id))
         parts.push({ functionCall })
       }
       return parts.length === 0 ? undefined : { role: 'model', parts }
@@ -130,7 +131,7 @@ function toolPartsOf(
   const functionResponse: Record<string, unknown> = { name, response: { result: textOf(content) } }
   // Without an id a batch that called the same function twice is answered by
   // name alone, which the model cannot tell apart.
-  if (callIds) functionResponse.id = callId
+  if (callIds) functionResponse.id = wireCallId(callId)
   const parts: Record<string, unknown>[] = [{ functionResponse }]
   for (const image of imagesIn(content, images)) {
     parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } })
