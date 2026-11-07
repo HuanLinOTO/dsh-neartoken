@@ -19,7 +19,7 @@
 | --- | --- |
 | 本仓库 | `D:/Projects/deepseek-harness/dsh-neartoken` |
 | DSH checkout | `D:/Projects/deepseek-harness/dsh`（peer 依赖全部以 `link:` 指向它，改了 DSH 包不用重装） |
-| 站点实现 | `D:/Projects/new-api`（New API fork，跑在 neartoken.cc） |
+| 站点实现 | `D:/Projects/NearToken/new-api`（New API fork，跑在 neartoken.cc） |
 | Exa 中转（站点侧） | `router/relay-router.go` 的 `/v1/exa/*`、`relay/helper/exa_request.go` 的计费单位推导 |
 | 构建产物 | `lib/`（生成物，不要手改） |
 

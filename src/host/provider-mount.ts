@@ -55,9 +55,17 @@ export class NearTokenProvider {
    * @param deps - the route name, site root, and credential lookup.
    */
   constructor(private readonly ctx: Context, private readonly deps: NearTokenProviderDeps) {
-    // One directory per plugin mount: a sign-out/sign-in cycle reuses the
-    // catalog it already loaded instead of fetching it again.
-    this.pricing = new PricingDirectory(ctx, deps.baseURL, deps.catalogTtlMs)
+    // One directory per plugin mount. A load is tagged with the key it was read
+    // under, so the catalog a signed-out page cached never answers for the
+    // account that just signed in — the groups differ between the two.
+    this.pricing = new PricingDirectory(ctx, deps.baseURL, deps.catalogTtlMs, async () => {
+      try {
+        return await deps.apiKey()
+      } catch {
+        // No stored key yet: the public catalog is the honest answer.
+        return undefined
+      }
+    })
   }
 
   /** Whether the route is currently registered. */

@@ -1,9 +1,12 @@
 /**
- * The NearToken pricing directory: one shared load of the New API
- * `/api/pricing` endpoint, expanded into per-(group, model) catalog routes.
+ * The NearToken pricing directory: one shared load of the site's catalog,
+ * expanded into per-(group, model) catalog routes.
  *
- * The endpoint is public (no key) and answers everything the catalog dimension
- * needs: the model list, each model's `enable_groups`, the `group_ratio`
+ * The payload comes from `/api/dsh/device/pricing` while a key is stored, which
+ * resolves the catalog for that account — a group published to it by name, and an
+ * internal group when the account administers the site, are published nowhere
+ * else — and from the public `/api/pricing` otherwise. Both answer everything
+ * the catalog dimension needs: the model list, each model's `enable_groups`, the `group_ratio`
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
  * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
@@ -200,20 +203,44 @@ export function parsePricing(value: unknown): NearTokenPricing {
   return { models, groupRatio: ratio, groupDescription: description, groupRefs: refs }
 }
 
+/** The public catalog: what an anonymous visitor may buy. */
+const PUBLIC_PRICING_PATH = '/api/pricing'
+
+/**
+ * The same catalog resolved for one account. The public endpoint answers
+ * anonymously, so it can never publish a group that exists only for one account
+ * or an internal group; this route authenticates with the relay key.
+ */
+const ACCOUNT_PRICING_PATH = '/api/dsh/device/pricing'
+
+/**
+ * A stable, non-secret tag for one key, used only as a cache dimension.
+ * @param key - the stored relay key.
+ * @returns a short fingerprint that never carries the key itself.
+ */
+function keyFingerprint(key: string): string {
+  let hash = 0
+  for (const char of key) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 4_294_967_291
+  return hash.toString(36)
+}
+
 /** Loads and caches the pricing payload for one adapter instance. */
 export class PricingDirectory {
-  private cache: { at: number; routes: readonly NearTokenRoute[] } | undefined
-  private inflight: Promise<readonly NearTokenRoute[]> | undefined
+  private cache: { at: number; identity: string; routes: readonly NearTokenRoute[] } | undefined
+  private inflight: { identity: string; promise: Promise<readonly NearTokenRoute[]> } | undefined
 
   /**
    * @param ctx - the owning plugin context (logging only).
    * @param baseURL - the site root, e.g. `https://neartoken.cc`.
    * @param ttlMs - how long one load stays fresh.
+   * @param apiKey - the stored relay key, or undefined while signed out; the key
+   * is what makes the catalog say which groups this account may use.
    */
   constructor(
     private readonly ctx: { logger: { warn: (message: string, ...args: unknown[]) => void } },
     private readonly baseURL: () => string,
     private readonly ttlMs: () => number,
+    private readonly apiKey: () => Promise<string | undefined> = async () => undefined,
   ) {}
 
   /**
@@ -234,17 +261,18 @@ export class PricingDirectory {
    * @param force - bypass the TTL and reload now.
    * @returns one route per (group, model); empty when the endpoint is unreachable.
    */
-  catalog(force = false): Promise<readonly NearTokenRoute[]> {
-    const fresh = this.cache !== undefined && Date.now() - this.cache.at < this.ttlMs()
-    if (!force && fresh && this.cache !== undefined) return Promise.resolve(this.cache.routes)
-    if (this.inflight !== undefined) return this.inflight
-    const operation = fetch(`${this.baseURL()}/api/pricing`, { headers: { accept: 'application/json' } })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`pricing endpoint answered ${response.status}`)
-        return expandRoutes(parsePricing(await response.json()))
-      })
+  async catalog(force = false): Promise<readonly NearTokenRoute[]> {
+    const key = await this.apiKey().catch(() => undefined)
+    const identity = key === undefined ? '' : keyFingerprint(key)
+    const fresh = this.cache !== undefined && this.cache.identity === identity
+      && Date.now() - this.cache.at < this.ttlMs()
+    if (!force && fresh && this.cache !== undefined) return this.cache.routes
+    // A load started for another identity says nothing about this one, so the
+    // shared promise is only reused inside the same account.
+    if (this.inflight !== undefined && this.inflight.identity === identity) return this.inflight.promise
+    const promise = this.readCatalog(key)
       .then((routes) => {
-        this.cache = { at: Date.now(), routes }
+        this.cache = { at: Date.now(), identity, routes }
         return routes
       })
       .catch((error: unknown) => {
@@ -253,7 +281,37 @@ export class PricingDirectory {
         return this.cache?.routes ?? []
       })
       .finally(() => { this.inflight = undefined })
-    this.inflight = operation
-    return operation
+    this.inflight = { identity, promise }
+    return promise
+  }
+
+  /**
+   * Read one catalog, preferring the account's own view.
+   * @param key - the stored relay key, or undefined while signed out.
+   * @returns the routes the site published for this caller.
+   */
+  private async readCatalog(key: string | undefined): Promise<readonly NearTokenRoute[]> {
+    if (key !== undefined) {
+      try {
+        return await this.fetchRoutes(ACCOUNT_PRICING_PATH, { accept: 'application/json', authorization: `Bearer ${key}` })
+      } catch (error) {
+        // A deployment older than the account route, or a key it refuses: the
+        // public catalog still offers every model the account can bill, minus
+        // the groups only that account may see.
+        this.ctx.logger.warn('neartoken: account catalog unavailable, falling back to the public one', error)
+      }
+    }
+    return await this.fetchRoutes(PUBLIC_PRICING_PATH, { accept: 'application/json' })
+  }
+
+  /**
+   * @param path - the catalog route to read.
+   * @param headers - what the route authenticates with, if anything.
+   * @returns the expanded routes.
+   */
+  private async fetchRoutes(path: string, headers: Record<string, string>): Promise<readonly NearTokenRoute[]> {
+    const response = await fetch(`${this.baseURL()}${path}`, { headers })
+    if (!response.ok) throw new Error(`${path} answered ${response.status}`)
+    return expandRoutes(parsePricing(await response.json()))
   }
 }

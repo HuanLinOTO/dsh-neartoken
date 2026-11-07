@@ -4,8 +4,8 @@
  * decodes back at dispatch. Both are asserted against one payload shaped like
  * the site's answer, including the non-latin1 group names it really uses.
  */
-import { describe, expect, it } from 'vitest'
-import { expandRoutes, parsePricing } from './pricing.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PricingDirectory, expandRoutes, parsePricing } from './pricing.ts'
 
 /** One pricing answer with a referred group, an unreferred one, and a ratio table. */
 const payload = {
@@ -131,3 +131,67 @@ describe('expandRoutes', () => {
     expect(routes.map(route => route.id)).toEqual(['g1::a', 'g2::a', 'g2::b'])
   })
 })
+
+describe('PricingDirectory', () => {
+  /** One catalog answer, shaped like the site's. */
+  const catalogBody = {
+    data: [{ model_name: 'glm-5.3', enable_groups: ['default', '内部'] }],
+    group_ratio: { default: 1, 内部: 1 },
+    usable_group: { default: '默认分组', 内部: 'Internal test group' },
+  }
+
+  /**
+   * Answer every catalog request and record what each one carried.
+   * @param answer - the response for one requested URL.
+   * @returns the recorded requests, in order.
+   */
+  function stubFetch(answer: (url: string) => Response): { url: string; authorization?: string }[] {
+    const calls: { url: string; authorization?: string }[] = []
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      calls.push({ url: input, authorization: (init?.headers as Record<string, string> | undefined)?.authorization })
+      return answer(input)
+    })
+    return calls
+  }
+
+  /** A directory whose site root and freshness never change. */
+  function directory(apiKey: () => Promise<string | undefined>): PricingDirectory {
+    return new PricingDirectory({ logger: { warn: () => {} } }, () => 'https://site.test', () => 60_000, apiKey)
+  }
+
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('reads the account catalog with the stored key', async () => {
+    const calls = stubFetch(() => new Response(JSON.stringify(catalogBody), { status: 200 }))
+    const routes = await directory(async () => 'sk-account').catalog()
+    expect(calls).toEqual([{ url: 'https://site.test/api/dsh/device/pricing', authorization: 'Bearer sk-account' }])
+    expect(routes.map(route => route.group)).toEqual(['default', '内部'])
+  })
+
+  it('reads the public catalog while signed out', async () => {
+    const calls = stubFetch(() => new Response(JSON.stringify(catalogBody), { status: 200 }))
+    await directory(async () => undefined).catalog()
+    expect(calls).toEqual([{ url: 'https://site.test/api/pricing', authorization: undefined }])
+  })
+
+  it('falls back to the public catalog when the account route is unavailable', async () => {
+    const calls = stubFetch(url => new Response(JSON.stringify(catalogBody), { status: url.endsWith('/api/pricing') ? 200 : 404 }))
+    const routes = await directory(async () => 'sk-account').catalog()
+    expect(calls.map(call => call.url)).toEqual([
+      'https://site.test/api/dsh/device/pricing',
+      'https://site.test/api/pricing',
+    ])
+    expect(routes).not.toEqual([])
+  })
+
+  it('reloads when the key changes instead of serving the cached catalog', async () => {
+    const calls = stubFetch(() => new Response(JSON.stringify(catalogBody), { status: 200 }))
+    let key: string | undefined = 'sk-first'
+    const pricing = directory(async () => key)
+    await pricing.catalog()
+    key = 'sk-second'
+    await pricing.catalog()
+    expect(calls.map(call => call.authorization)).toEqual(['Bearer sk-first', 'Bearer sk-second'])
+  })
+})
+

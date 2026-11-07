@@ -1,9 +1,12 @@
 /**
- * The NearToken pricing directory: one shared load of the New API
- * `/api/pricing` endpoint, expanded into per-(group, model) catalog routes.
+ * The NearToken pricing directory: one shared load of the site's catalog,
+ * expanded into per-(group, model) catalog routes.
  *
- * The endpoint is public (no key) and answers everything the catalog dimension
- * needs: the model list, each model's `enable_groups`, the `group_ratio`
+ * The payload comes from `/api/dsh/device/pricing` while a key is stored, which
+ * resolves the catalog for that account — a group published to it by name, and an
+ * internal group when the account administers the site, are published nowhere
+ * else — and from the public `/api/pricing` otherwise. Both answer everything
+ * the catalog dimension needs: the model list, each model's `enable_groups`, the `group_ratio`
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
  * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
@@ -80,18 +83,21 @@ export declare class PricingDirectory {
     private readonly ctx;
     private readonly baseURL;
     private readonly ttlMs;
+    private readonly apiKey;
     private cache;
     private inflight;
     /**
      * @param ctx - the owning plugin context (logging only).
      * @param baseURL - the site root, e.g. `https://neartoken.cc`.
      * @param ttlMs - how long one load stays fresh.
+     * @param apiKey - the stored relay key, or undefined while signed out; the key
+     * is what makes the catalog say which groups this account may use.
      */
     constructor(ctx: {
         logger: {
             warn: (message: string, ...args: unknown[]) => void;
         };
-    }, baseURL: () => string, ttlMs: () => number);
+    }, baseURL: () => string, ttlMs: () => number, apiKey?: () => Promise<string | undefined>);
     /**
      * Return the routes a chat request can use, reloading when the cache is
      * older than the TTL.
@@ -106,5 +112,17 @@ export declare class PricingDirectory {
      * @returns one route per (group, model); empty when the endpoint is unreachable.
      */
     catalog(force?: boolean): Promise<readonly NearTokenRoute[]>;
+    /**
+     * Read one catalog, preferring the account's own view.
+     * @param key - the stored relay key, or undefined while signed out.
+     * @returns the routes the site published for this caller.
+     */
+    private readCatalog;
+    /**
+     * @param path - the catalog route to read.
+     * @param headers - what the route authenticates with, if anything.
+     * @returns the expanded routes.
+     */
+    private fetchRoutes;
 }
 export {};
