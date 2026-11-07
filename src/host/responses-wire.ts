@@ -256,7 +256,10 @@ export function serializeRequest(
   if (options.temperature !== undefined) body.temperature = options.temperature
   if (options.maxTokens !== undefined) body.max_output_tokens = options.maxTokens
   if (options.reasoningEffort !== undefined) {
-    body.reasoning = { effort: options.reasoningEffort, summary: 'auto' }
+    // concise rather than auto: auto lets the model pick, and on this site it
+    // picks a summary that is a wall of headings with almost no prose, while
+    // concise streams the reasoning as text a reader can follow.
+    body.reasoning = { effort: options.reasoningEffort, summary: 'concise' }
   }
   return body
 }

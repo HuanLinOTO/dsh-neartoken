@@ -529,6 +529,17 @@ describe('session affinity key', () => {
     expect(serializeResponses(inSession('sess-1'), 'gpt-5.5').prompt_cache_key).toBe('sess-1')
   })
 
+  it('asks for a concise reasoning summary next to the ciphertext', () => {
+    // concise, not auto: auto lets the model answer with a wall of headings,
+    // while the reader wants the reasoning as text that can be followed.
+    const body = serializeResponses(
+      { ...request(), reasoningEffort: 'high' as GenerateOptions['reasoningEffort'] },
+      'gpt-5.5',
+    )
+    expect(body.reasoning).toEqual({ effort: 'high', summary: 'concise' })
+    expect(body.include).toEqual(['reasoning.encrypted_content'])
+  })
+
   it('presents the session to the chat wire too', () => {
     expect(serializeChat(inSession('sess-1'), 'grok-4.6').prompt_cache_key).toBe('sess-1')
   })
