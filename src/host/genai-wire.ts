@@ -12,8 +12,8 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { gatewayError } from './wire-error.ts'
 import type {
-  FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
-  ToolResultMessage,
+  FinishReason, GenerateOptions, ReplayEnvelope, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId,
+  TokenUsage, ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
 import { wireCallId } from './wire-call-id.ts'
@@ -22,6 +22,73 @@ import type { WireImages } from './wire-images.ts'
 
 /** One genai content object, as sent. */
 type WireContent = Record<string, unknown>
+
+/** The replay envelope kind this wire writes and reads. */
+const REPLAY_KIND = 'neartoken-genai'
+
+/** The only envelope version this build understands. */
+const REPLAY_VERSION = 1
+
+/**
+ * The signature a model turn must hand back on one of its calls.
+ *
+ * Gemini 3 and later validate every replayed model turn that called a
+ * function: a turn whose call parts carry no `thoughtSignature` is refused
+ * with 400 "Function call is missing a thought_signature in functionCall
+ * parts". The value is opaque and cannot be derived, so it is kept exactly as
+ * the upstream issued it and never synthesised.
+ *
+ * The envelope's block entries are index-aligned with the turn's content
+ * blocks, because the harness drops a whole envelope whose entries do not line
+ * up with the blocks it assembled. An entry of another wire, another version,
+ * or the wrong length is therefore ignored entire.
+ *
+ * The turn is deliberately not gated on provider or model, unlike the messages
+ * and responses wires: live probes showed one signature staying valid across
+ * requests and across Gemini models, while a turn that dropped a valid
+ * signature fails outright. Gating here would manufacture the failure the
+ * envelope exists to prevent.
+ * @param message - one conversation message.
+ * @returns one entry per content block, or undefined when nothing replays.
+ */
+function replayBlocksOf(message: RequestMessage): readonly unknown[] | undefined {
+  const source = (message as { source?: { kind?: string, replayState?: unknown } }).source
+  if (source?.kind !== 'model' || source.replayState === undefined) return undefined
+  const envelope = asObject(source.replayState)
+  const response = asObject(envelope?.response)
+  if (response?.kind !== REPLAY_KIND || response.version !== REPLAY_VERSION) return undefined
+  return asArray(envelope?.blocks)
+}
+
+/**
+ * Put each turn's own signature back on the call part it was issued for.
+ *
+ * The signature belongs on a `functionCall` part of the turn it was issued
+ * for — a signature parked on a part of its own is refused, while any call
+ * part of the turn accepts it. Blocks pair by position, so a batch keeps its
+ * pairing even when two calls name the same function.
+ * @param message - the durable assistant turn.
+ * @param content - its content blocks, in the order the turn streamed them.
+ * @param parts - its parts, already in wire order.
+ * @param callSlot - part index for each tool-call, keyed by its content index.
+ */
+function attachSignatures(
+  message: RequestMessage, content: readonly unknown[], parts: WireContent[],
+  callSlot: ReadonlyMap<number, number>,
+): void {
+  const blocks = replayBlocksOf(message)
+  // The entries pair with the blocks the harness assembled; a length mismatch
+  // means this build cannot tell which call a signature belongs to, and a
+  // guess would vouch for a call the upstream never signed.
+  if (blocks === undefined || blocks.length !== content.length) return
+  for (const [index, slot] of callSlot) {
+    const block = asObject(blocks[index])
+    if (block?.type !== 'tool-call') continue
+    const signature = stringOf(block.signature)
+    if (signature === undefined || signature === '') continue
+    parts[slot].thoughtSignature = signature
+  }
+}
 
 /**
  * Flatten one message's text blocks.
@@ -90,18 +157,25 @@ function serializeMessage(
     }
     case 'assistant': {
       const parts: Record<string, unknown>[] = []
+      const callSlot = new Map<number, number>()
       const text = textOf(content)
       if (text !== '') parts.push({ text })
-      for (const block of content) {
-        if (typeof block !== 'object' || block === null) continue
-        const call = block as Partial<ToolCallBlock> & { type?: string }
-        if (call.type !== 'tool-call') continue
+      content.forEach((raw, index) => {
+        if (typeof raw !== 'object' || raw === null) return
+        const call = raw as Partial<ToolCallBlock> & { type?: string }
+        if (call.type !== 'tool-call') return
         let args: unknown = {}
         try { args = call.arguments === undefined || call.arguments === '' ? {} : JSON.parse(call.arguments) } catch { args = {} }
         const functionCall: Record<string, unknown> = { name: call.name, args }
         if (callIds && call.id !== undefined) functionCall.id = wireCallId(String(call.id))
+        callSlot.set(index, parts.length)
         parts.push({ functionCall })
-      }
+      })
+      // A turn that called a tool only replays when it hands its own signature
+      // back; a signature this build never stored is not replaced with a
+      // synthetic one, so the upstream refuses the turn instead of the plugin
+      // silently vouching for a call it cannot sign for.
+      if (callSlot.size > 0) attachSignatures(message, content, parts, callSlot)
       return parts.length === 0 ? undefined : { role: 'model', parts }
     }
     case 'tool':
@@ -265,6 +339,8 @@ interface OpenBlock {
   id: string
   name: string
   body: string
+  /** The turn's signature, on the call part that carried it. */
+  signature?: string
 }
 
 /** Accumulator state for one in-flight genai stream. */
@@ -275,6 +351,8 @@ interface Assembly {
   nextIndex: number
   usage: { input: number; cached: number; output: number; reasoning: number | undefined } | null
   finish: string | null
+  /** A signature that arrived before the call it belongs to did. */
+  pendingSignature: string | null
 }
 
 /**
@@ -328,6 +406,11 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
   for (const entry of asArray(asObject(candidate.content)?.parts)) {
     const part = asObject(entry)
     if (part === undefined) continue
+    // The signature is what makes this turn replayable at all. It rides on the
+    // turn's first call part, and can also arrive on a part of its own that
+    // holds nothing else, so it is read before either part shape is dispatched.
+    const raw = stringOf(part.thoughtSignature)
+    const issued = raw === undefined || raw === '' ? null : raw
     const text = stringOf(part.text)
     const thought = part.thought === true
     if (text !== undefined && text.length > 0) {
@@ -349,12 +432,20 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       continue
     }
     const call = asObject(part.functionCall)
-    if (call === undefined) continue
+    if (call === undefined) {
+      if (issued !== null && state.pendingSignature === null) state.pendingSignature = issued
+      continue
+    }
     const name = stringOf(call.name) ?? ''
     const slot = state.toolBlocks.length
     const id = stringOf(call.id) ?? (name === '' ? `tool_${slot}` : `tool_${name}_${slot}`)
     const args = call.args === undefined ? '{}' : JSON.stringify(call.args)
+    const bound = issued ?? state.pendingSignature
     const block: OpenBlock = { ...open(state, 'tool-call'), id, name, body: args }
+    if (bound !== null) {
+      block.signature = bound
+      state.pendingSignature = null
+    }
     state.toolBlocks.push(block)
     yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
     yield {
@@ -394,6 +485,7 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
   }
   const state: Assembly = {
     text: null, reasoning: null, toolBlocks: [], nextIndex: 0, usage: null, finish: null,
+    pendingSignature: null,
   }
   for await (const payload of sseData(response, signal)) yield* consume(payload, state)
   // Emitted in first-seen order: genai may open a thought part before the text.
@@ -431,5 +523,24 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     }
     yield { type: 'usage', usage }
   }
-  yield { type: 'finish', reason: finishOf(state.finish, state.toolBlocks.length > 0) }
+  // A signature that arrived after the last call still belongs to this turn:
+  // the upstream validates the call parts, and a turn whose calls all came
+  // unsigned is the shape it refuses.
+  if (state.pendingSignature !== null && state.toolBlocks.length > 0 && state.toolBlocks[0].signature === undefined) {
+    state.toolBlocks[0].signature = state.pendingSignature
+  }
+  const reason = finishOf(state.finish, state.toolBlocks.length > 0)
+  // One entry per emitted block, index-aligned: the harness keeps the envelope
+  // only when its entries line up with the blocks it assembled, so a shorter
+  // list is dropped whole and the turn loses its signature on the next request.
+  const replay: ReplayEnvelope | undefined = ordered.some(block => block.signature !== undefined)
+    ? {
+      response: { kind: REPLAY_KIND, version: REPLAY_VERSION },
+      blocks: ordered.map(block => ({
+        type: block.kind,
+        ...block.signature === undefined ? {} : { signature: block.signature },
+      })),
+    }
+    : undefined
+  yield replay === undefined ? { type: 'finish', reason } : { type: 'finish', reason, replayState: replay }
 }

@@ -32,6 +32,20 @@ const FUNCTION_RESPONSE_MISMATCH_HINT =
   ' 提示：Gemini 原生协议下这批工具结果与调用对不上，重试不会成功；请升级 neartoken 插件，或换用别的模型后新开会话'
 
 /**
+ * Wording the gateway uses when a replayed Gemini turn lost the signature its
+ * function calls must carry back.
+ *
+ * Only a turn whose signature was never recorded reaches this: the plugin
+ * sends the value the upstream issued or nothing at all, never a substitute,
+ * so the conversation cannot be repaired from this side.
+ */
+const MISSING_THOUGHT_SIGNATURE = /thought_signature/iu
+
+/** What the user can do about it. */
+const MISSING_THOUGHT_SIGNATURE_HINT =
+  ' 提示：这轮工具调用没有记录上游签发的 thought_signature（旧会话、或中途换过模型），回放会被 Gemini 拒绝；插件不会伪造签名，请用该模型新开会话'
+
+/**
  * The code a New API site answers with when it suspended this account's model
  * access over repeated upstream content-safety rejections.
  *
@@ -112,9 +126,11 @@ export function gatewayError(body: string, status: number, headers?: Headers): L
   const id = headers?.get('request-id') ?? headers?.get('x-request-id')
   const hint = error?.code === MODEL_ACCESS_RESTRICTED_CODE
     ? MODEL_ACCESS_RESTRICTED_HINT
-    : code === 'INVALID_REQUEST' && FUNCTION_RESPONSE_MISMATCH.test(detail)
-      ? FUNCTION_RESPONSE_MISMATCH_HINT
-      : ''
+    : code === 'INVALID_REQUEST' && MISSING_THOUGHT_SIGNATURE.test(detail)
+      ? MISSING_THOUGHT_SIGNATURE_HINT
+      : code === 'INVALID_REQUEST' && FUNCTION_RESPONSE_MISMATCH.test(detail)
+        ? FUNCTION_RESPONSE_MISMATCH_HINT
+        : ''
   return new LlmError(
     `NearToken answered ${status}: ${(embeddedMessage(body) ?? body).slice(0, 500)}${hint}`,
     code,

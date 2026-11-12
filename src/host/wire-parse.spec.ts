@@ -434,6 +434,157 @@ describe('genai wire', () => {
   })
 })
 
+describe('genai thought signatures', () => {
+  /** The signature a live Gemini 4 turn issued on its first call. */
+  const SIGNATURE = 'EocKCoQKAWkUfRMuptIyWhlH'
+
+  /**
+   * The replay envelope one streamed turn finished with.
+   * @param pieces - the response body fragments.
+   * @returns the envelope from the terminal chunk, if the turn stored one.
+   */
+  async function replayOf(pieces: readonly string[]): Promise<unknown> {
+    const finish = (await drain(parseGenai(streamed(pieces), undefined))).at(-1)
+    return finish?.type === 'finish' ? finish.replayState : undefined
+  }
+
+  /**
+   * One envelope of this wire's shape.
+   * @param blocks - one entry per content block, in block order.
+   * @returns the envelope.
+   */
+  function envelope(blocks: readonly Record<string, unknown>[]): unknown {
+    return { response: { kind: 'neartoken-genai', version: 1 }, blocks }
+  }
+
+  /**
+   * One conversation whose assistant turn called both named tools at once.
+   * @param replayState - the envelope stored on that turn, when it had one.
+   * @returns the request, with one tool result per call.
+   */
+  function signedBatch(replayState?: unknown): GenerateOptions {
+    const calls = ['call_1', 'call_2']
+    return {
+      ...request(),
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'read both' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: calls.map(id => ({ type: 'tool-call', id: brandString<ToolCallId>(id), name: 'read', arguments: '{}' })),
+          source: {
+            provider: 'NearToken',
+            model: 'gemini-4-argon',
+            ...replayState === undefined ? {} : { replayState },
+          },
+        }),
+        ...calls.map(id => createToolResultMessage({
+          callId: brandString<ToolCallId>(id), content: [{ type: 'text', text: id }], isError: false,
+        })),
+      ],
+    } as GenerateOptions
+  }
+
+  /**
+   * The model turn a serialized request replays.
+   * @param options - the harness request.
+   * @returns that turn's parts.
+   */
+  function modelParts(options: GenerateOptions): Record<string, unknown>[] {
+    const body = serializeGenai(options, 'gemini-4-argon')
+    const contents = body.contents as Array<{ role: string, parts: Record<string, unknown>[] }>
+    return contents.find(content => content.role === 'model')?.parts ?? []
+  }
+
+  it('stores one entry per block, with the signature on its call', async () => {
+    const replay = await replayOf([
+      'data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"thinking"}]}}]}\n\n',
+      `data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"},"id":"call_1"},"thoughtSignature":"${SIGNATURE}"}]}}]}\n\n`,
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"b"},"id":"call_2"}}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    // The entries have to line up with the assembled blocks one for one: the
+    // harness keeps an envelope only when the counts agree, and a single-entry
+    // envelope was dropped whole — which is how a signed turn came back
+    // unsigned on the next request.
+    expect(replay).toEqual(envelope([
+      { type: 'reasoning' },
+      { type: 'tool-call', signature: SIGNATURE },
+      { type: 'tool-call' },
+    ]))
+  })
+
+  it('keeps a signature that arrived on a part of its own', async () => {
+    // A live stream may park the signature on an otherwise empty part instead
+    // of on the call itself; reading parts by their text used to drop it.
+    const replay = await replayOf([
+      `data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"${SIGNATURE}"}]}}]}\n\n`,
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{},"id":"call_1"}}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    expect(replay).toEqual(envelope([{ type: 'tool-call', signature: SIGNATURE }]))
+  })
+
+  it('keeps a signature that arrived after the last call', async () => {
+    const replay = await replayOf([
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{},"id":"call_1"}}]}}]}\n\n',
+      `data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"${SIGNATURE}"}]},"finishReason":"STOP"}]}\n\n`,
+    ])
+    expect(replay).toEqual(envelope([{ type: 'tool-call', signature: SIGNATURE }]))
+  })
+
+  it('stores nothing for a turn that was never signed', async () => {
+    // Gemini 2.5 and earlier, and any gemini turn with thinking off.
+    const replay = await replayOf([
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{},"id":"call_1"}}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    expect(replay).toBeUndefined()
+  })
+
+  it('sends the signature back on the call it was issued for', () => {
+    // The upstream refuses a replayed call without it: 400 "Function call is
+    // missing a thought_signature in functionCall parts".
+    expect(modelParts(signedBatch(envelope([
+      { type: 'tool-call', signature: SIGNATURE },
+      { type: 'tool-call' },
+    ])))).toEqual([
+      { functionCall: { name: 'read', args: {}, id: 'call_1' }, thoughtSignature: SIGNATURE },
+      { functionCall: { name: 'read', args: {}, id: 'call_2' } },
+    ])
+  })
+
+  it('pairs a signed turn that also reasoned, which is the shape live turns take', () => {
+    const options = signedBatch()
+    const signed = {
+      ...options,
+      messages: options.messages.map(message => message.role !== 'assistant' ? message : createAssistantMessage({
+        content: [{ type: 'reasoning', text: 'thinking' }, ...message.content],
+        source: {
+          provider: 'NearToken',
+          model: 'gemini-4-argon',
+          replayState: envelope([{ type: 'reasoning' }, { type: 'tool-call', signature: SIGNATURE }, { type: 'tool-call' }]),
+        },
+      })),
+    } as GenerateOptions
+    expect(modelParts(signed)).toEqual([
+      { functionCall: { name: 'read', args: {}, id: 'call_1' }, thoughtSignature: SIGNATURE },
+      { functionCall: { name: 'read', args: {}, id: 'call_2' } },
+    ])
+  })
+
+  it('never invents a signature for a turn that stored none', () => {
+    // Forging one would make the plugin vouch for a call the upstream never
+    // signed; the refusal has to stay visible instead.
+    expect(JSON.stringify(modelParts(signedBatch()))).not.toContain('thoughtSignature')
+  })
+
+  it('ignores an envelope whose entries do not line up with its blocks', () => {
+    const short = envelope([{ type: 'tool-call', signature: SIGNATURE }])
+    expect(JSON.stringify(modelParts(signedBatch(short)))).not.toContain('thoughtSignature')
+  })
+
+  it('ignores an envelope another wire wrote', () => {
+    const foreign = { response: { kind: 'neartoken-anthropic', version: 1 }, blocks: [{ type: 'reasoning', signature: SIGNATURE }, { type: 'tool-call' }] }
+    expect(JSON.stringify(modelParts(signedBatch(foreign)))).not.toContain('thoughtSignature')
+  })
+})
+
 describe('responses wire', () => {
   it('reads text, tool arguments, and usage from typed events', async () => {
     const response = streamed([

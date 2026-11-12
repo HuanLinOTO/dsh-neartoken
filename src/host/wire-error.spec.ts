@@ -52,6 +52,18 @@ describe('gateway refusals', () => {
     expect(gatewayError('unknown group reference #58', 400).code).toBe('INVALID_REQUEST')
   })
 
+  it('says why a replayed Gemini turn was rejected for a missing signature', () => {
+    // The plugin sends only signatures the upstream issued, so this refusal
+    // means the turn stored none — and no retry of the same history clears it.
+    const error = gatewayError(
+      '{"error":{"code":"INVALID_REQUEST","message":"Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly","status":400}}',
+      400,
+    )
+    expect(error.code).toBe('INVALID_REQUEST')
+    expect(error.message).toContain('thought_signature')
+    expect(error.message).toContain('新开会话')
+  })
+
   it('recognizes the context-window wording providers use', () => {
     const error = gatewayError('{"error":{"message":"maximum context length of 100000 tokens exceeded","type":"invalid_request_error"}}', 400)
     expect(error.code).toBe('CONTEXT_WINDOW_EXCEEDED')
