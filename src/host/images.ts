@@ -10,8 +10,10 @@
  * nothing claims the model as a task, and a site too old to know it answers 404
  * — the synchronous `POST /v1/images/generations` is then used once. The
  * Gemini-shaped ones (nano-banana, `*-image`) answer a chat completion whose
- * text embeds the picture. All paths end here as encoded bytes, which is what a
- * tool result can carry.
+ * text embeds the picture. A call that starts from reference pictures goes to
+ * the edit surface (`POST /v1/images/edits`) instead, which is where the site
+ * runs its edit-capable route and checks that a picture was given. All paths end
+ * here as encoded bytes, which is what a tool result can carry.
  *
  * @module
  */
@@ -36,6 +38,20 @@ const TASKS_PATH = '/v1/images/tasks'
 
 /** The synchronous picture surface: a site without tasks, and a site that answers one here anyway. */
 const GENERATIONS_PATH = '/v1/images/generations'
+
+/** The site's edit surface: a picture to start from and what to change about it. */
+const EDITS_PATH = '/v1/images/edits'
+
+/**
+ * Statuses that mean this site has no usable edit route for the request as it
+ * was shaped: the route does not exist (404/405) or the site will only take a
+ * multipart edit body (415). The reference pictures then ride the generation
+ * submit instead, as they did before the route existed.
+ *
+ * A 400 is deliberately absent: that is a rejected request, not a missing
+ * route, and replaying it on another endpoint would bill a second generation.
+ */
+const EDIT_UNSUPPORTED_STATUS: ReadonlySet<number> = new Set([404, 405, 415])
 
 /** First poll interval, and the ceiling it backs off to (HANDOFF-new-api.md part 7). */
 const POLL_FIRST_MS = 3_000
@@ -360,8 +376,14 @@ export class NearTokenImageClient {
    */
   private async attempt(request: ImageAttempt): Promise<NearTokenGeneratedImage> {
     const pictures = request.images ?? []
+    // A reference picture is an edit, and the site has an edit surface of its
+    // own: it checks that a picture was given, runs the edit-capable upstream
+    // route, and (for a model a task plugin claims) polls the task inside the
+    // request. Rides the generation submit only when there is no edit route.
     const reply = request.channel === 'images'
-      ? await this.imagesReply(request, pictures)
+      ? pictures.length === 0
+        ? await this.imagesReply(request, pictures)
+        : await this.editReply(request, pictures)
       : await this.chatReply(request, pictures)
     if (reply === undefined) {
       throw new Error(`${request.model} answered without an image; the model may not generate pictures on this site`)
@@ -416,9 +438,9 @@ export class NearTokenImageClient {
         ...request.size === undefined ? {} : { size: request.size },
         ...request.quality === undefined ? {} : { quality: request.quality },
         ...request.background === undefined ? {} : { background: request.background },
-        // The site's own field for reference pictures is `image`; the edit
-        // route is not usable here, so a picture to start from rides the
-        // generation call instead.
+        // Only the fallback path gets here with pictures: the site's submit
+        // route decodes a generate body, and `image` is the member a plugin
+        // reads as "start from this". A site with an edit route never sends it.
         ...pictures.length === 0
           ? {}
           : { image: pictures.map(picture => `data:${picture.mediaType};base64,${picture.data}`) },
@@ -452,6 +474,28 @@ export class NearTokenImageClient {
   }
 
   /**
+   * The serialized body of an edit: what to change, and the pictures to change.
+   *
+   * `images` is the OpenAI Images edit member (a JSON body, so each picture is
+   * a data URL rather than a file part); `size`, `quality`, and `background`
+   * mean the same thing here as on a generation.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded.
+   * @returns the JSON body.
+   */
+  private editBody(request: ImageAttempt, pictures: readonly ImagePayload[]): string {
+    return JSON.stringify({
+      model: request.model,
+      prompt: request.prompt,
+      n: 1,
+      ...request.size === undefined ? {} : { size: request.size },
+      ...request.quality === undefined ? {} : { quality: request.quality },
+      ...request.background === undefined ? {} : { background: request.background },
+      images: pictures.map(picture => `data:${picture.mediaType};base64,${picture.data}`),
+    })
+  }
+
+  /**
    * One refusal, carrying the status and the site's own words.
    * @param request - the attempt that was refused.
    * @param response - the site's answer.
@@ -481,6 +525,36 @@ export class NearTokenImageClient {
     })
     if (!response.ok) throw await this.refusal(request, response)
     return extractImageReply(await response.json())
+  }
+
+  /**
+   * The edit route: reference pictures on the surface the site checks for them.
+   *
+   * The answer is read the same way as a generation's — a picture now, or a
+   * task id to poll when the model is one a task plugin claims — because the
+   * route differs, not the currency of the reply.
+   * @param request - the attempt.
+   * @param pictures - reference pictures, already encoded; never empty here.
+   * @returns the picture reference the answer carries.
+   */
+  private async editReply(request: ImageAttempt, pictures: readonly ImagePayload[]): Promise<ImageReply | undefined> {
+    const response = await postJson(request.send, `${this.deps.baseURL()}${EDITS_PATH}`, {
+      headers: this.requestHeaders(request),
+      json: this.editBody(request, pictures),
+      signal: request.signal,
+    })
+    // A site that predates the route (404/405) or only takes a multipart edit
+    // body (415) cannot serve this request, and no generation was billed: the
+    // same pictures ride the generation submit instead.
+    if (EDIT_UNSUPPORTED_STATUS.has(response.status)) {
+      await response.body?.cancel().catch(() => {})
+      return this.imagesReply(request, pictures)
+    }
+    if (!response.ok) throw await this.refusal(request, response)
+    const body: unknown = await response.json()
+    const taskId = taskIdOf(body)
+    if (taskId === undefined) return extractImageReply(body)
+    return this.settleTask(request, taskId)
   }
 
   /**

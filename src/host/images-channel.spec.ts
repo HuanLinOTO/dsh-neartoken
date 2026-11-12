@@ -41,10 +41,10 @@ function clientOver(send: typeof fetch, channel: 'images' | 'genai' | 'chat' = '
 }
 
 describe('the request each channel sends', () => {
-  it('carries reference pictures and the images-only members on the images endpoint', async () => {
-    const bodies: unknown[] = []
-    const send = ((_url: string, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)))
+  it('sends reference pictures to the edit route with the images-only members', async () => {
+    const calls: { url: string; body: unknown }[] = []
+    const send = ((url: string, init?: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init?.body)) })
       const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
       return Promise.resolve(answer({ data: [{ b64_json: png.toString('base64') }] }))
     }) as unknown as typeof fetch
@@ -57,15 +57,39 @@ describe('the request each channel sends', () => {
       background: 'transparent',
       images: [{ mediaType: 'image/png', data: 'AAAA' }],
     })
-    expect(bodies[0]).toEqual({
+    expect(calls[0]?.url).toBe('https://site.example/v1/images/edits')
+    expect(calls[0]?.body).toEqual({
       model: 'gpt-image-2.5-flare',
       prompt: 'add a red hat',
       n: 1,
       size: '1024x1024',
       quality: 'high',
       background: 'transparent',
-      image: ['data:image/png;base64,AAAA'],
+      images: ['data:image/png;base64,AAAA'],
     })
+  })
+
+  it('falls back to the generation submit when the site has no edit route', async () => {
+    const calls: { url: string; body: { image?: string[] } }[] = []
+    const send = ((url: string, init?: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init?.body)) })
+      if (url === 'https://site.example/v1/images/edits') {
+        return Promise.resolve(answer('{"error":{"message":"not found"}}', 404))
+      }
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1])
+      return Promise.resolve(answer({ data: [{ b64_json: png.toString('base64') }] }))
+    }) as unknown as typeof fetch
+    await clientOver(send).generate({
+      model: 'gpt-image-2.5-flare',
+      group: 'promo',
+      prompt: 'add a red hat',
+      images: [{ mediaType: 'image/png', data: 'AAAA' }],
+    })
+    expect(calls.map(call => call.url)).toEqual([
+      'https://site.example/v1/images/edits',
+      'https://site.example/v1/images/tasks',
+    ])
+    expect(calls[1]?.body.image).toEqual(['data:image/png;base64,AAAA'])
   })
 
   it('sends reference pictures as chat content parts', async () => {

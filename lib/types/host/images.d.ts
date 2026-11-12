@@ -10,8 +10,10 @@
  * nothing claims the model as a task, and a site too old to know it answers 404
  * — the synchronous `POST /v1/images/generations` is then used once. The
  * Gemini-shaped ones (nano-banana, `*-image`) answer a chat completion whose
- * text embeds the picture. All paths end here as encoded bytes, which is what a
- * tool result can carry.
+ * text embeds the picture. A call that starts from reference pictures goes to
+ * the edit surface (`POST /v1/images/edits`) instead, which is where the site
+ * runs its edit-capable route and checks that a picture was given. All paths end
+ * here as encoded bytes, which is what a tool result can carry.
  *
  * @module
  */
@@ -143,6 +145,17 @@ export declare class NearTokenImageClient {
      */
     private requestBody;
     /**
+     * The serialized body of an edit: what to change, and the pictures to change.
+     *
+     * `images` is the OpenAI Images edit member (a JSON body, so each picture is
+     * a data URL rather than a file part); `size`, `quality`, and `background`
+     * mean the same thing here as on a generation.
+     * @param request - the attempt.
+     * @param pictures - reference pictures, already encoded.
+     * @returns the JSON body.
+     */
+    private editBody;
+    /**
      * One refusal, carrying the status and the site's own words.
      * @param request - the attempt that was refused.
      * @param response - the site's answer.
@@ -156,6 +169,17 @@ export declare class NearTokenImageClient {
      * @returns the picture reference, or undefined when the answer carries none.
      */
     private chatReply;
+    /**
+     * The edit route: reference pictures on the surface the site checks for them.
+     *
+     * The answer is read the same way as a generation's — a picture now, or a
+     * task id to poll when the model is one a task plugin claims — because the
+     * route differs, not the currency of the reply.
+     * @param request - the attempt.
+     * @param pictures - reference pictures, already encoded; never empty here.
+     * @returns the picture reference the answer carries.
+     */
+    private editReply;
     /**
      * The `images` channel: a durable task when the site runs one, the picture
      * itself when it does not.

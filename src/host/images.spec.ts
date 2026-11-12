@@ -292,6 +292,46 @@ describe('NearTokenImageClient durable tasks', () => {
     expect(calls.filter(call => call === 'https://site.example/v1/images/tasks')).toHaveLength(1)
   })
 
+  it('polls an edit the site answered as a task, exactly like a generation', async () => {
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      if (url === 'https://site.example/v1/images/edits') {
+        return Promise.resolve(answer({ task_id: 'task_6', status: 'SUBMITTED' }, 202))
+      }
+      const polls = calls.filter(call => call.endsWith('/task_6')).length
+      return Promise.resolve(polls === 1
+        ? answer({ task_id: 'task_6', status: 'IN_PROGRESS' })
+        : answer({ task_id: 'task_6', status: 'SUCCESS', data: [{ b64_json: PNG_BASE64 }] }))
+    }) as unknown as typeof fetch
+
+    const image = await clientOver(send).generate({
+      model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'add a red hat',
+      images: [{ mediaType: 'image/png', data: 'AAAA' }],
+    })
+
+    expect(image.mediaType).toBe('image/png')
+    expect(calls).toEqual([
+      'https://site.example/v1/images/edits',
+      'https://site.example/v1/images/tasks/task_6',
+      'https://site.example/v1/images/tasks/task_6',
+    ])
+  })
+
+  it('reports a refused edit instead of resubmitting it as a generation', async () => {
+    const calls: string[] = []
+    const send = ((url: string) => {
+      calls.push(url)
+      return Promise.resolve(answer('{"error":{"message":"prompt was rejected"}}', 400))
+    }) as unknown as typeof fetch
+
+    await expect(clientOver(send).generate({
+      model: 'gpt-image-2.5-flare', group: 'promo', prompt: 'add a red hat',
+      images: [{ mediaType: 'image/png', data: 'AAAA' }],
+    })).rejects.toThrow(/refused gpt-image-2.5-flare with HTTP 400: .*prompt was rejected/)
+    expect(calls).toEqual(['https://site.example/v1/images/edits'])
+  })
+
   it('stops polling when the caller cancels, leaving the task to the site', async () => {
     const controller = new AbortController()
     const calls: string[] = []

@@ -502,7 +502,7 @@ Authorization: Bearer <relay key>
 3. `imageTimeoutMs` 语义从「一次 HTTP 的预算」改成「提交到终态的总预算」；工具 deadline 仍加 30 s 余量。
 4. 轮询遇 5xx/网络错误退避重试，不重复提交；进程退出不取消任务，重启后可用同一 `task_id` 继续。
 5. 工具被中止（`exec.signal`）时停止轮询即可，站点任务会跑完并结算。
-6. 参考图（`image` 字段）沿用现在的 data URL 数组；站点按 `generate` 语义解码，插件自判图生图。
+6. 参考图：0.20.0 交付时是把 data URL 放进 `image` 字段随任务提交（站点按 `generate` 语义解码）。此后站点有了编辑面，插件已改为 `POST /v1/images/edits`（JSON 体，`images` 是 data URL 数组），站点在这里做"必须有参考图"的校验并走改图渠道；该路由由 `openai_image.edit` 协议承载，对客户端是同步语义（任务插件认领时站点在请求内轮询到终态）。站点回 404/405/415 时插件退回本节第 1 条的任务通道，参考图仍按旧做法放进 `image` 数组。
 7. 旧站点（`POST /v1/images/tasks` 404）回落到现有同步 `/v1/images/generations`。
 
 > 0.20.0 已按此清单实现（`src/host/images.ts` 的 `imagesReply` / `settleTask`），轮询节奏 3 s 起、每次 +1 s 退避到 5 s。实现取舍：不做第 4 条后半句的「重启后用同一 `task_id` 继续」—— 插件没有跨进程的任务表，进程没了就是这次工具调用结束，任务由站点跑完结算。
@@ -516,5 +516,5 @@ Authorization: Bearer <relay key>
 ## 11.5 已知风险
 
 1. 未认领回落同步时，`Distribute` 的路径过滤仍用真实路径，限制端点的 advanced-custom 渠道可能选不到渠道而 503；task-plugin 渠道与普通渠道不受影响。
-2. 提交端点固定按 `generate` 解码；编辑专用校验（缺参考图即拒）只在 `/v1/images/edits` 生效。
+2. 提交端点固定按 `generate` 解码；编辑专用校验（缺参考图即拒）只在 `/v1/images/edits` 生效。因此 DSH 插件对有参考图的调用已改走 `/v1/images/edits`，`/v1/images/tasks` 只承担纯文生图与老站点回落。
 3. 无幂等键：网络抖动后重试提交会重复建任务、重复计费。DSH 侧需自行避免盲目重提（只在连 `202` 都没拿到时才重试）。

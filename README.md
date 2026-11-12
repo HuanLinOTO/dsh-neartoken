@@ -202,7 +202,7 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 
 | 通道 | 判定 | 请求 | 响应 |
 |---|---|---|---|
-| `images` | 声明含 `image-generation`（gpt-image 系） | `POST /v1/images/tasks` 提交 → `GET /v1/images/tasks/<id>` 轮询 | 任务 `SUCCESS` 的 `data[0].url` / `b64_json`；站点回落同步时直接是 `data[0]` |
+| `images` | 声明含 `image-generation`（gpt-image 系） | 无参考图：`POST /v1/images/tasks` 提交 → `GET /v1/images/tasks/<id>` 轮询；有参考图：`POST /v1/images/edits` | 任务 `SUCCESS` 的 `data[0].url` / `b64_json`；站点回落同步时直接是 `data[0]` |
 | `genai` | 声明含 `gemini`（nano-banana、`gemini-*-image`） | `POST /v1beta/models/<model>:generateContent` | `candidates[0].content.parts[].inlineData`（结构化） |
 | `chat` | 其余（只有 `openai` 的，如 grok-imagine） | `POST /v1/chat/completions` | 回复文本里的 `data:image/...;base64,` 或图片链接 |
 
@@ -216,7 +216,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 
 `images` 传工作区里的图片路径，工具读成 data URL 后按通道发送：
 
-- **images 通道**：作为 `image` 数组（data URL）随任务提交发给 `/v1/images/tasks`（站点 DTO 里没有可用的 `edits` 路由，参考图只能搭生成请求）
+- **images 通道**：作为 `images` 数组（data URL）发给 `POST /v1/images/edits` —— 站点自己的编辑面，会在这里校验"必须有参考图"并走改图渠道；模型被任务插件认领时站点在请求内轮询到终态再回图。站点没有该路由（404/405）或只收 multipart 编辑体（415）时，退回到 `/v1/images/tasks` 并把参考图作为 `image` 数组随生成请求带上；400 是请求被拒（内容审查等），直接报错，不会换端点重打一次
 - **genai 通道**：作为 `inlineData` part 与提示词一起进 `contents[0].parts`
 - **chat 通道**：作为 `image_url` content part 与提示词一起进 `messages`
 
@@ -241,6 +241,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 - **取消只停轮询**：`exec.signal` 中止后本地不再查询，站点上的任务照常跑完并按站点规则计费。
 - **失败带站点原话**：`FAILURE` 的 `fail_reason`（例如 `DataInspectionFailed: …`）直接进错误消息，不用去站点后台翻。
 - **两种回落都能接**：站点没把该模型认领成任务时，同一端点直接回 `200 + data[]`；不认这个端点的老站点回 404，插件改用 `POST /v1/images/generations` 同步等一次。
+- **改图不走这条**：`/v1/images/edits` 对客户端是同步的（站点在请求内轮询到终态，最长 600 秒），所以改图那次调用是一条长连接；预算仍是 `imageTimeoutMs`，预算耗尽后站点任务照常跑完计费，重试用同一个提示词会再开一个任务。
 
 ### 超时
 
@@ -268,7 +269,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 - **anthropic 线显式打缓存断点**：Anthropic 只在 `cache_control` 断点处写缓存，没有断点就整段 prompt 按新输入计价（亲和键只保证落在同一上游账号，不产生缓存）。每个请求打 4 个断点：`tools` 末项、`system` 末块、最后两条消息各自末块 —— harness 每轮全量重放历史，尾部双断点保证下一轮几乎全命中，每轮只写新增片段。实测（Claude Max 超惠分组，~6.3k token 前缀）：无断点连发两次 `cache_read` 全 0；打点后第 2 次起 `in=4, cr=6316`，三轮增长历史 `cr` 累积到 10811、`in` 恒为个位数。断点也覆盖 `tool_result` 结尾的轮次（DSH 会话的常态形态）。
 - 推理等级按各协议自己的词汇发送：**anthropic 发 `thinking.type=adaptive` + `thinking.display=summarized` + `output_config.effort`**（不能再用 `thinking.type=enabled` + `budget_tokens`：Claude 5 代直接 400 `requires adaptive thinking`，而 adaptive 在老代际上同样可用，所以统一用它；`minimal` 收敛成 `low`；`display` 不是装饰：不带它，Claude 5 代的 thinking 块正文为空、只填 signature，而不带正文的块回放不出去（回放要与签名配对送出），界面上就表现为「这个模型从不思考」——Claude Opus 5.5 实测不带 `display` 正文 0 字符、带 `display=summarized` 正文 55~132 字符）；genai 发 `thinkingConfig` 且带 `includeThoughts`（不带你拿不到思维链）；chat 与 responses 发 `reasoning_effort` / `reasoning.effort`。
 - **Gemini 4 换成 `thinkingLevel`**：这一代不再接受 token 预算（发 budget 会 400 `Use thinking level instead`），按 `gemini-<主版本>` ≥ 4 自动切换字段，等级名用 `low` / `medium` / `high` / `max`。
-- **思考历史回传**：harness 的 `message.source.replayState` 就是这个槽位。anthropic 线把每个 thinking 块的 `signature_delta` 存进信封，下一轮把 thinking 块带签名放在 assistant 轮最前；responses 线存 reasoning item 的 `encrypted_content`，同在最前发出。两条线都按「provider + 裸模型名」比对，换模型或换 provider 就不回放（密文不通用）；签名/密文缺一个就整轮不回放，宁可没有也不发半截。gemini 的 `thoughtSignature` 仍未接。
+- **思考历史回传**：harness 的 `message.source.replayState` 就是这个槽位。anthropic 线把每个 thinking 块的 `signature_delta` 存进信封，下一轮把 thinking 块带签名放在 assistant 轮最前；responses 线存 reasoning item 的 `encrypted_content`，同在最前发出。两条线都按「provider + 裸模型名」比对，换模型或换 provider 就不回放（密文不通用）；签名/密文缺一个就整轮不回放，宁可没有也不发半截。
 - **responses 线发 `store:false` 并主动要密文**：`include: ["reasoning.encrypted_content"]` 只在选了推理档位时带上。上游对这两项都不敏感（实测带与不带、两个模型三次组合全部 200），但无状态模式是密文随响应回来的前提，而回放靠的正是那份密文。另有一处曾经的坑：上游有时只在收尾事件里给 reasoning item、不推 `reasoning_summary_text.delta`，早先要求「必须流式出现过思维块」才存信封，把这类轮的密文整个丢了 —— 现在只要拿到 item 就存，放在最前。
 - 文本与思维块由**第一个非空 delta** 打开，思维块为空时不产生空块；工具调用块在 `content_block_start` 打开，因为 id 与函数名只在那里出现。
 - anthropic 线不硬编码 `max_tokens`：只在调用方给了上限、或开了 thinking 需要余量时才发。给死值会截断长回答。
