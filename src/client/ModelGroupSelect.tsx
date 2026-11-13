@@ -320,10 +320,10 @@ export function ModelGroupSelect(
     }
   }
 
-  // Only this plugin's own provider gets the rewritten name: every other
-  // provider's models are the application's own catalog entries, so the seat
-  // must keep showing them exactly as the built-in seat does. The group is a
-  // routing dimension and is never spelled out here.
+  // The seat names the provider for every row, so the trigger always says
+  // which route the model is served from. A model name is not rewritten: a
+  // grouped provider's own catalog name still drops its group suffix, and
+  // every other provider's name is shown as the application spells it.
   const ownProvider = located !== undefined && isGroupedProvider(located.provider.id)
   const modelLabel = waiting
     ? t('trigger.loading')
@@ -331,7 +331,7 @@ export function ModelGroupSelect(
       ? t('trigger.fallback')
       : ownProvider
         ? `${displayModelName(located.option.label)} @ ${located.provider.name}`
-        : located.option.label
+        : `${located.provider.name}-${located.option.label}`
   const triggerParts = [modelLabel, effortLabel].filter(part => part !== undefined && part !== '')
   const triggerLabel = triggerParts.join(' · ')
   const triggerAria = waiting
