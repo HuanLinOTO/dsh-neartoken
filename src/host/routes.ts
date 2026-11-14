@@ -85,9 +85,29 @@ export interface NearTokenRouteDeps {
   saveImages: (body: unknown) => Promise<{ readonly message: string } | undefined>
 }
 
+/** The facts a trust check reads off one request. */
+interface TrustRequest {
+  readonly headers: IncomingMessage['headers']
+}
+
 /** Trust surface consumed here; the browser-side connection package owns the full type. */
 interface RouteConnection {
-  requestRejection(request: { readonly headers: IncomingMessage['headers'] }): 401 | 403 | undefined
+  /**
+   * Admit the request against its credential and live Peer. The current
+   * contract: a Host that has this decides both the fence and the principal.
+   * @param request - the request under test.
+   * @returns the admitted Peer, the refusal status, or undefined when the
+   *   service has not decided.
+   */
+  admit?(request: TrustRequest): { readonly peer: unknown } | { readonly rejection: 401 | 403 | 409 } | undefined
+  /**
+   * The older contract: only the Host/Origin fence, no Peer. Kept so a Host
+   * that predates {@link RouteConnection.admit} still refuses hostile callers
+   * instead of serving them.
+   * @param request - the request under test.
+   * @returns the refusal status, or undefined when the request may proceed.
+   */
+  requestRejection?(request: TrustRequest): 401 | 403 | undefined
 }
 
 /**
@@ -455,7 +475,18 @@ function jsonBody(req: IncomingMessage): boolean {
  */
 function rejected(ctx: Context, req: IncomingMessage, res: ServerResponse): boolean {
   const connection = ctx.get('connection') as RouteConnection | undefined
-  const rejection = connection?.requestRejection(req)
+  // `admit` answers both questions at once — is this caller trusted, and whose
+  // Peer does it speak for — so it is the one asked first. A Host that predates
+  // it only fences the origin; asking that instead keeps the page refused to
+  // hostile callers rather than open to them.
+  const admission = connection?.admit?.(req)
+  if (admission !== undefined) {
+    if ('peer' in admission) return false
+    res.statusCode = admission.rejection
+    res.end()
+    return true
+  }
+  const rejection = connection?.requestRejection?.(req)
   if (rejection === undefined) return false
   res.statusCode = rejection
   res.end()

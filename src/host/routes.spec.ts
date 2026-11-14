@@ -417,11 +417,19 @@ describe('the guard route', () => {
 })
 
 describe('the same-origin fence', () => {
-  it('refuses every request the connection service rejects, before any route work', async () => {
+  /**
+   * Register the routes over a Host whose connection service answers one face.
+   * @param connection - what `ctx.get('connection')` hands back.
+   * @returns the registered handlers and the whitelist writes they made.
+   */
+  function fenced(connection: unknown): {
+    handlers: Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>
+    saves: { enabled: readonly string[]; meta: unknown }[]
+  } {
     const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
     const ctx = {
       effect: (register: () => unknown) => register(),
-      get: () => ({ requestRejection: () => 403 }),
+      get: () => connection,
       webServer: {
         register(route: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }) {
           handlers.set(route.path, route.handler)
@@ -447,11 +455,32 @@ describe('the same-origin fence', () => {
       baseURL: () => 'https://site.example',
       openInBrowser: async () => {},
     })
-    let status = 0
-    const res = { statusCode: 0, setHeader() {}, end() { status = res.statusCode } } as unknown as ServerResponse
+    return { handlers, saves }
+  }
+
+  /** Drive one whitelist write and report the status it was answered with. */
+  async function writeStatus(handlers: Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>): Promise<number> {
+    const res = { statusCode: 0, setHeader() {}, end() {} } as unknown as ServerResponse
     await handlers.get(MODELS_PATH)?.(request('POST', JSON.stringify({ enabled: [] })), res)
-    expect(status).toBe(403)
+    return res.statusCode
+  }
+
+  it('refuses every request the admitted connection refuses', async () => {
+    const { handlers, saves } = fenced({ admit: () => ({ rejection: 403 }) })
+    expect(await writeStatus(handlers)).toBe(403)
     expect(handlers.has(STATUS_PATH)).toBe(true)
+    expect(saves).toEqual([])
+  })
+
+  it('serves the request the admitted connection assigns a Peer', async () => {
+    const { handlers, saves } = fenced({ admit: () => ({ peer: {} }), requestRejection: () => 403 })
+    expect(await writeStatus(handlers)).toBe(200)
+    expect(saves).toEqual([{ enabled: [], meta: undefined }])
+  })
+
+  it('falls back to the origin fence on a Host that has no admit', async () => {
+    const { handlers, saves } = fenced({ requestRejection: () => 401 })
+    expect(await writeStatus(handlers)).toBe(401)
     expect(saves).toEqual([])
   })
 })

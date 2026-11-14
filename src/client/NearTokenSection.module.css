@@ -15,6 +15,22 @@
   font-weight: 500;
 }
 
+/* The page top: the section name beside the origin its model requests use. */
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+/* A switch write the Host refused; the menu itself stays where it was. */
+.endpointError {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-label);
+}
+
 .intro {
   margin: 0;
   font-size: 14px;
@@ -716,10 +732,17 @@
   background: transparent;
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
+  /* The endpoint menu: the filled cell moves on the click, not on the answer. */
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .segment:hover {
   color: var(--dsw-alias-label-primary);
+}
+
+.segment:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .segmentOn,

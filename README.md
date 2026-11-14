@@ -33,7 +33,7 @@
 | `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
 | `src/host/session-key.ts` | 从 `GenerateOptions.sessionId` 取会话亲和键，四条 wire 用它让站点把会话粘在同一渠道 |
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
-| `src/host/relay.ts` | 模型接口走哪个域名：站点根或长连接端点，由模型选择器里的开关决定 |
+| `src/host/relay.ts` | 模型接口走哪个域名：站点根或长连接端点，由设置页顶部的端点菜单（模型选择器里的开关写同一字段）决定 |
 | `src/host/topup.ts` | 站点充值面：读 amount 档位与渠道、下单，把 403 `DSH_TOKEN_REQUIRED` 翻成「是否 DSH 密钥」的原因 |
 | `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
 | `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
@@ -60,7 +60,9 @@
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
 
-模型选择器的根菜单里，「分组」下面一行是**长连接端点**开关：打开后所有**模型接口**（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/images/*`、Gemini 的 `/v1beta/*`）改走 `https://direct.neartoken.cc`，站点控制台的 `/api/*`（目录、用量、钱包、充值、设备授权）仍走 `baseURL`。开关写进插件配置的 `directLink`（volatile），点完立刻对下一次请求生效，不需要重启。它只出现在本插件自己的 provider 上。
+设置页**最顶端**（「NearToken」标题右侧）是**端点菜单**：两个按钮就是两个域名（`neartoken.cc` / `direct.neartoken.cc`），选哪个模型接口就走哪个。切换只写 `directLink`，页面自己的 carrier 始终留在站点根，所以切端点不会让设置页失去连接；点击立刻移动高亮，写入被站点拒绝时回滚并给出原因。
+
+模型选择器的根菜单里，「分组」下面一行是同一件事的**长连接端点**开关（两处写同一个 `directLink`）：打开后所有**模型接口**（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/images/*`、Gemini 的 `/v1beta/*`）改走 `https://direct.neartoken.cc`，站点控制台的 `/api/*`（目录、用量、钱包、充值、设备授权）仍走 `baseURL`。开关写进插件配置的 `directLink`（volatile），点完立刻对下一次请求生效，不需要重启。它只出现在本插件自己的 provider 上。
 
 紧接着是**防降智**开关，只在当前模型属于 `gemini-4` 系列时出现。打开后，该模型每次请求体里 DSH 生成的 `@` 文件引用说明（`Tokens prefixed with @ are paths the user explicitly referenced. …` 那段英文）会被换成中文，system 提示、会话消息与工具描述里出现的都换；中文版保留全部规则和其中提到的 `read` 工具名。
 

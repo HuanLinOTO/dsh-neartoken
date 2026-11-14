@@ -13,8 +13,9 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { readAffiliateCode } from '../affiliate.ts'
 import { computeAmountError, USAGE_RANGES } from '../protocol.ts'
 import type {
-  NearTokenImageModelEntry, NearTokenImagesState, NearTokenModelEntry, NearTokenModelMeta, NearTokenModelsState,
-  NearTokenStatus, NearTokenTopupInfo, NearTokenUsageModel, NearTokenUsageRange, NearTokenUsageState, NearTokenUsageWindow,
+  NearTokenImageModelEntry, NearTokenImagesState, NearTokenLinkState, NearTokenModelEntry, NearTokenModelMeta,
+  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageModel, NearTokenUsageRange, NearTokenUsageState,
+  NearTokenUsageWindow,
 } from '../protocol.ts'
 import { NearTokenTopupRefusal, type NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
@@ -262,7 +263,10 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
     )
   return (
     <div className={css.section}>
-      <h2 className={css.title}>{t('account.title')}</h2>
+      <div className={css.titleRow}>
+        <h2 className={css.title}>{t('account.title')}</h2>
+        <EndpointSwitch api={api} t={t} />
+      </div>
       {status === undefined
         ? <p className={css.hint}>{t('account.loading')}</p>
         : status.configured
@@ -367,6 +371,94 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
       {status?.configured === true ? <ImageGeneration api={api} t={t} /> : null}
     </div>
   )
+}
+
+/**
+ * Which origin the model-facing requests leave from: the site root, or the
+ * direct endpoint. The page's own carrier always stays on the site root — only
+ * `/v1` follows this menu — so moving it never cuts the page off.
+ *
+ * The stored side is a Host fact, so it is read once on mount rather than
+ * derived from anything on screen.
+ * @param props - the injected route carrier and translate.
+ * @returns the two-origin menu, or nothing until the Host answered.
+ */
+function EndpointSwitch({ api, t }: NearTokenSectionInjected) {
+  const [link, setLink] = useState<NearTokenLinkState | undefined>(undefined)
+  /** Whether a switch write is on the wire. */
+  const [busy, setBusy] = useState(false)
+  /** Why the last switch write was refused; cleared by the next one. */
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    let live = true
+    void api.link().then((next) => {
+      if (live) setLink(next)
+    }, () => {
+      // A route the Host does not serve leaves the menu out rather than
+      // offering a switch whose every click would be refused.
+    })
+    return () => { live = false }
+  }, [api])
+
+  /**
+   * Move the model-facing origin. The menu shows the move at once and puts it
+   * back if the Host refused, so a click always answers instead of leaving the
+   * reader guessing whether it landed.
+   * @param direct - whether `/v1` should leave from the direct endpoint.
+   */
+  const choose = (direct: boolean): void => {
+    if (busy) return
+    setBusy(true)
+    setError(undefined)
+    setLink(current => current === undefined ? current : { ...current, direct })
+    void api.saveLink(direct).then(() => {
+      setBusy(false)
+    }, (failure: unknown) => {
+      // The stored switch did not move, so the menu goes back with it.
+      setBusy(false)
+      setLink(current => current === undefined ? current : { ...current, direct: !direct })
+      setError(t('link.failed', { message: messageOf(failure) }))
+    })
+  }
+
+  if (link === undefined) return null
+  const options = [
+    { direct: false, host: hostOf(link.baseURL) },
+    { direct: true, host: hostOf(link.directBaseURL) },
+  ]
+  return (
+    <>
+      <div className={css.segmented} role="group" aria-label={t('link.label')}>
+        {options.map(option => (
+          <button
+            key={String(option.direct)}
+            type="button"
+            className={link.direct === option.direct ? `${css.segment} ${css.segmentOn}` : css.segment}
+            aria-pressed={link.direct === option.direct}
+            disabled={busy}
+            onClick={() => { choose(option.direct) }}
+          >
+            {option.host}
+          </button>
+        ))}
+      </div>
+      {error === undefined ? null : <span className={css.endpointError} role="status">{error}</span>}
+    </>
+  )
+}
+
+/**
+ * The host one origin names, without its scheme.
+ * @param url - an absolute origin.
+ * @returns the host, or the URL itself when it does not parse.
+ */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch (_error) {
+    return url
+  }
 }
 
 /**
