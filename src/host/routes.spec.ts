@@ -11,10 +11,12 @@ import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  AUTHORIZE_PATH, IMAGES_PATH, LINK_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH, USAGE_PATH,
+  AUTHORIZE_PATH, GUARD_PATH, IMAGES_PATH, LINK_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH, TOPUP_PATH,
+  USAGE_PATH,
 } from '../protocol.ts'
 import type {
-  NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenUsageState,
+  NearTokenGuardState, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus,
+  NearTokenUsageState,
 } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
@@ -41,6 +43,9 @@ const LINK: NearTokenLinkState = {
   baseURL: 'https://site.example',
   directBaseURL: 'https://direct.site.example',
 }
+
+/** The anti-degradation switch the guard route answers. */
+const GUARD: NearTokenGuardState = { enabled: false }
 
 /** The usage window the usage route answers. */
 const USAGE: NearTokenUsageState = {
@@ -91,12 +96,14 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   saves: { enabled: readonly string[]; meta: unknown }[]
   imageSaves: unknown[]
   linkSaves: boolean[]
+  guardSaves: boolean[]
   opened: string[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   const saves: { enabled: readonly string[]; meta: unknown }[] = []
   const imageSaves: unknown[] = []
   const linkSaves: boolean[] = []
+  const guardSaves: boolean[] = []
   const opened: string[] = []
   const ctx = {
     effect: (register: () => unknown) => register(),
@@ -117,6 +124,8 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saveImages: async (body) => { imageSaves.push(body); return undefined },
     link: () => LINK,
     saveLink: async (direct) => { linkSaves.push(direct) },
+    guard: () => GUARD,
+    saveGuard: async (enabled) => { guardSaves.push(enabled) },
     usage: async (range) => ({ ...USAGE, range }),
     topupInfo: async () => OFFER,
     createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),
@@ -128,6 +137,7 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     saves,
     imageSaves,
     linkSaves,
+    guardSaves,
     opened,
     async answer(path, req) {
       const handler = handlers.get(path)
@@ -368,6 +378,44 @@ describe('the link route', () => {
   })
 })
 
+describe('the guard route', () => {
+  it('answers the anti-degradation switch', async () => {
+    const { answer } = routesOver()
+    const { status, body } = await answer(GUARD_PATH, request('GET'))
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual(GUARD)
+  })
+
+  it('forwards the state the picker asked for', async () => {
+    const { answer, guardSaves } = routesOver()
+    const { status } = await answer(GUARD_PATH, request('POST', JSON.stringify({ enabled: true })))
+    expect(status).toBe(200)
+    expect(guardSaves).toEqual([true])
+  })
+
+  it('refuses a body that states no boolean', async () => {
+    const { answer, guardSaves } = routesOver()
+    const { status, body } = await answer(GUARD_PATH, request('POST', JSON.stringify({ enabled: 'on' })))
+    expect(status).toBe(400)
+    expect(JSON.parse(body)).toEqual({ code: 'bad-request', message: 'enabled 必须是布尔值' })
+    expect(guardSaves).toEqual([])
+  })
+
+  it('reports a refused write instead of pretending the switch moved', async () => {
+    const { answer } = routesOver({ saveGuard: async () => { throw new Error('no settings service') } })
+    const { status, body } = await answer(GUARD_PATH, request('POST', JSON.stringify({ enabled: true })))
+    expect(status).toBe(500)
+    expect(JSON.parse(body)).toEqual({ code: 'save-failed', message: 'no settings service' })
+  })
+
+  it('serves only GET and POST', async () => {
+    const { answer } = routesOver()
+    const { status, headers } = await answer(GUARD_PATH, request('DELETE'))
+    expect(status).toBe(405)
+    expect(headers['allow']).toBe('GET, POST')
+  })
+})
+
 describe('the same-origin fence', () => {
   it('refuses every request the connection service rejects, before any route work', async () => {
     const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
@@ -391,6 +439,8 @@ describe('the same-origin fence', () => {
       saveImages: async () => undefined,
       link: () => LINK,
       saveLink: async () => undefined,
+      guard: () => GUARD,
+      saveGuard: async () => undefined,
       usage: async () => USAGE,
       topupInfo: async () => OFFER,
       createTopup: async () => ({ tradeNo: 'DSH1NOA1', payUrl: '/dsh/pay?trade_no=DSH1NOA1&sig=s' }),

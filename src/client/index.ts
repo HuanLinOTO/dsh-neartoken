@@ -88,6 +88,8 @@ export function apply(ctx: ClientContext): void {
             : Promise.resolve(undefined),
           readLink: () => api.link(),
           saveLink: (direct: boolean) => api.saveLink(direct),
+          readGuard: () => api.guard(),
+          saveGuard: (enabled: boolean) => api.saveGuard(enabled),
         }
       },
     }, ModelGroupSelect))

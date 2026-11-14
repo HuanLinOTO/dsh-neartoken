@@ -79,6 +79,8 @@ export interface Options {
   directEndpoint: string
   /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
   directLink: Volatile<boolean>
+  /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
+  antiDegrade: Volatile<boolean>
   apiKeyEnv: string
   catalogTtlMs: number
   /** The capacity every model without a better answer reports, in tokens. */
@@ -122,6 +124,12 @@ export const Config = z.object({
    * toggle reaches this running plugin without a remount.
    */
   directLink: z.boolean().default(false).volatile(),
+  /**
+   * The anti-degradation switch: whether a Gemini-4 request body carries the
+   * harness's file-reference guidance in Chinese instead of English. Volatile,
+   * so the model picker's toggle reaches this running plugin without a remount.
+   */
+  antiDegrade: z.boolean().default(false).volatile(),
   /** Credential reference the sign-in writes and the adapter resolves. */
   apiKeyEnv: z.string().default('NEARTOKEN_API_KEY'),
   /** How long one pricing load stays fresh, in milliseconds. */
@@ -270,6 +278,7 @@ export function apply(ctx: Context, config: Options): void {
     // carrying one fails loudly instead of arriving as text only.
     attachments: () => ctx.get('attachments') as ImageSource | undefined,
     imagePolicy: () => ({ maxEdge: config.imageMaxEdge, maxBytes: config.imageMaxBytes }),
+    antiDegrade: () => config.antiDegrade.get(),
   })
   // The whitelist lives in this plugin's own profile entry, so a save is an
   // ordinary Settings write: it persists in the profile patch and the Loader
@@ -417,6 +426,16 @@ export function apply(ctx: Context, config: Options): void {
           throw new Error('neartoken: the long-connection switch needs the settings service')
         }
         await settings.update(SETTINGS_NS, { directLink: direct })
+      },
+      guard: () => ({ enabled: config.antiDegrade.get() }),
+      // The same Settings write as the long-connection switch: the next Gemini-4
+      // request already carries the Chinese guidance.
+      saveGuard: async (enabled) => {
+        const settings = ctx.get('settings') as WhitelistSettings | undefined
+        if (settings === undefined) {
+          throw new Error('neartoken: the anti-degradation switch needs the settings service')
+        }
+        await settings.update(SETTINGS_NS, { antiDegrade: enabled })
       },
       images: () => imageSettings.state(),
       // The catalog is the authority on which models and groups a save may

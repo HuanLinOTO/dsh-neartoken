@@ -1,4 +1,4 @@
-import type { BeginAuthorizationOutcome, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenGuardState, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 /**
  * A top-up call the Host refused, carrying its stable code so the page can tell
  * "this key is not a device key, reconnect" from "the site said no".
@@ -71,6 +71,13 @@ export interface NearTokenApi {
      * @param direct - whether model-facing requests leave from the direct endpoint.
      */
     saveLink(direct: boolean): Promise<void>;
+    /** Read the anti-degradation switch. */
+    guard(): Promise<NearTokenGuardState>;
+    /**
+     * Store the anti-degradation switch.
+     * @param enabled - whether a Gemini-4 request body is rewritten in Chinese.
+     */
+    saveGuard(enabled: boolean): Promise<void>;
 }
 /**
  * Build the carrier.

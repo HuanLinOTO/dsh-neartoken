@@ -25,6 +25,8 @@ import {
   contextWindowOf, defaultReasoningLevel, inputModalitiesOf, maxTokensOf, reasoningLevelLabel, reasoningLevels,
 } from './model-caps.ts'
 import type { ModalitySources, ReasoningSources } from './model-caps.ts'
+import { translateGuidance } from './anti-degrade.ts'
+import { isGemini4 } from '../protocol.ts'
 import { wireFor } from './protocol-router.ts'
 import { decodeRoute } from './route-id.ts'
 import { postJson } from './request-body.ts'
@@ -109,6 +111,8 @@ export interface NearTokenDeps {
   attachments: () => ImageSource | undefined
   /** The bounds every request image is re-encoded to before it is sent. */
   imagePolicy: () => ImageRequestPolicy
+  /** Whether the anti-degradation switch is on; a Gemini-4 body is then rewritten in Chinese. */
+  antiDegrade: () => boolean
 }
 
 
@@ -222,6 +226,15 @@ export class NearTokenAdapter extends LlmAdapter {
     const images = await inlineImages(
       this.deps.attachments(), options.messages, options.signal, this.deps.imagePolicy(),
     )
+    const body = wire.serialize(options, model, images)
+    // The anti-degradation switch retells the harness's English file-reference
+    // guidance in Chinese, which only the Gemini-4 generation needs. It runs on
+    // the serialized body rather than on the object graph: the tools' parameter
+    // schemas arrive frozen, so rewriting a member there throws. Every member
+    // carrying that paragraph (system instruction, conversation, tool
+    // descriptions) is covered by the one substring swap.
+    const serialized = JSON.stringify(body)
+    const payload = this.deps.antiDegrade() && isGemini4(model) ? translateGuidance(serialized) : serialized
     let response: Response
     try {
       // The whole tool set rides on every call, so postJson packs the body when
@@ -232,7 +245,7 @@ export class NearTokenAdapter extends LlmAdapter {
           ...attributionHeaders(),
           ...wire.headers(key, groupRef, sessionId),
         },
-        json: JSON.stringify(wire.serialize(options, model, images)),
+        json: payload,
         signal: options.signal,
       })
     } catch (error) {

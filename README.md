@@ -24,7 +24,7 @@
 |---|---|
 | `src/index.ts` | 配置 schema、按凭据现状挂载 provider、装配其余模块 |
 | `src/host/account.ts` | RFC 8628 形状的设备授权：发起、按 interval 轮询、把 key 写进 credentials |
-| `src/host/routes.ts` | 设置页与模型选择器调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置 / 长连接端点） |
+| `src/host/routes.ts` | 设置页与模型选择器调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置 / 长连接端点 / 防降智） |
 | `src/host/whitelist.ts` | 白名单读写在插件自身 Config 的 `enabledModels`（volatile），存 profile patch |
 | `src/host/pricing.ts` | 拉 `/api/pricing`，展开成 `"<组>::<模型>"` 路由，过滤出能聊的模型 |
 | `src/host/model-caps.ts` | 一个模型能不能聊、上下文窗口多大、可选的推理等级（只读站点声明，不存模型表） |
@@ -61,6 +61,10 @@
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
 
 模型选择器的根菜单里，「分组」下面一行是**长连接端点**开关：打开后所有**模型接口**（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/images/*`、Gemini 的 `/v1beta/*`）改走 `https://direct.neartoken.cc`，站点控制台的 `/api/*`（目录、用量、钱包、充值、设备授权）仍走 `baseURL`。开关写进插件配置的 `directLink`（volatile），点完立刻对下一次请求生效，不需要重启。它只出现在本插件自己的 provider 上。
+
+紧接着是**防降智**开关，只在当前模型属于 `gemini-4` 系列时出现。打开后，该模型每次请求体里 DSH 生成的 `@` 文件引用说明（`Tokens prefixed with @ are paths the user explicitly referenced. …` 那段英文）会被换成中文，system 提示、会话消息与工具描述里出现的都换；中文版保留全部规则和其中提到的 `read` 工具名。
+
+替换是纯字符串替换：DSH 改了这段措辞之后就不再命中，请求照原样发出，不会留下半译的文本。开关写进插件配置的 `antiDegrade`（volatile），只作用于 `gemini-4` 模型——换成别的模型时开关不显示，请求也不改写。
 
 模型选择器里的分组是**显式选择**：换模型时先保留当前分组；新模型不在该分组时，按分组名上的档位标签（`[低价]` / `[满血]` / `[官key]` 等）就近匹配同一档位的分组，而不是落回站点目录里的第一个分组——那一个往往是倍率最高的。跨模型族（`[低价] DeepSeek` → GPT）也按标签匹配。
 
@@ -110,6 +114,7 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 | `baseURL` | `https://neartoken.cc` | 站点根地址，不带尾斜杠 |
 | `directEndpoint` | `https://direct.neartoken.cc` | 长连接端点；模型选择器打开开关后模型接口改走它，`/api/*` 不受影响 |
 | `directLink` | `false` | 长连接端点开关；volatile，模型选择器直接写它 |
+| `antiDegrade` | `false` | 防降智开关；volatile，模型选择器直接写它，只在 `gemini-4` 模型上生效 |
 | `apiKeyEnv` | `NEARTOKEN_API_KEY` | 授权写入、adapter 读取的凭据引用名 |
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
 | `defaultContextWindow` | `200000` | 没有任何来源能说明某模型上下文窗口时上报的值 |

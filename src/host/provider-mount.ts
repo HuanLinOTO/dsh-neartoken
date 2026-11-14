@@ -42,6 +42,8 @@ export interface NearTokenProviderDeps {
   attachments: () => ImageSource | undefined
   /** The bounds every request image is re-encoded to before it is sent. */
   imagePolicy: () => ImageRequestPolicy
+  /** Whether the anti-degradation switch is on; a Gemini-4 body is then rewritten in Chinese. */
+  antiDegrade: () => boolean
 }
 
 /** The NearToken provider route, mounted at most once per process. */
@@ -105,6 +107,7 @@ export class NearTokenProvider {
       modelOverride: this.deps.modelOverride,
       attachments: this.deps.attachments,
       imagePolicy: this.deps.imagePolicy,
+      antiDegrade: this.deps.antiDegrade,
     })
     this.routes = this.ctx.llm.registerAdapter([this.deps.provider], adapter)
     this.directory = this.ctx.llm.registerConfigurableProviders([{

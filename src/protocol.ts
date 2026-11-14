@@ -36,6 +36,8 @@ export const MODELS_PATH = '/neartoken/models'
 export const IMAGES_PATH = '/neartoken/images'
 /** Read the long-connection switch; POST its new state. */
 export const LINK_PATH = '/neartoken/link'
+/** Read the anti-degradation switch; POST its new state. */
+export const GUARD_PATH = '/neartoken/guard'
 /** Read the site's top-up offer; POST one order and open its checkout page. */
 export const TOPUP_PATH = '/neartoken/topup'
 
@@ -276,6 +278,40 @@ export interface NearTokenLinkState {
 export interface NearTokenLinkPatch {
   /** Whether the model-facing `/v1` family should use the direct endpoint. */
   readonly direct: boolean
+}
+
+/** The `GET /neartoken/guard` answer. */
+export interface NearTokenGuardState {
+  /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
+  readonly enabled: boolean
+}
+
+/** The `POST /neartoken/guard` request body. */
+export interface NearTokenGuardPatch {
+  /** Whether the anti-degradation switch should be on. */
+  readonly enabled: boolean
+}
+
+/** Model family the anti-degradation switch serves: the fourth Gemini generation onward. */
+const GEMINI_4_PREFIX = 'gemini-4'
+
+/** A vendor prefix in front of the family, as some routes publish it. */
+const VENDOR_PREFIX = /^(?:[a-z0-9-]+\/)+/
+
+/**
+ * Whether one model belongs to the family the anti-degradation switch serves.
+ *
+ * Both halves ask this: the model seat decides whether to offer the switch, and
+ * the Host decides whether the request body is rewritten. A bare model id and a
+ * catalog id (`"<group>::<model>"`) are both accepted, because only the ones
+ * closest to the model mean anything.
+ * @param model - a bare model id, or a catalog id carrying a `group::` prefix.
+ * @returns true for the Gemini-4 generation and later.
+ */
+export function isGemini4(model: string): boolean {
+  const at = model.lastIndexOf('::')
+  const bare = (at <= 0 ? model : model.slice(at + 2)).trim().toLowerCase()
+  return bare.replace(VENDOR_PREFIX, '').startsWith(GEMINI_4_PREFIX)
 }
 
 /** How far back the usage overview looks. */

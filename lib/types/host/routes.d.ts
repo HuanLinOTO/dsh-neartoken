@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
-import type { NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { NearTokenGuardState, NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
 /** What the routes need from the plugin. */
@@ -52,6 +52,13 @@ export interface NearTokenRouteDeps {
      * @param direct - whether model-facing requests leave from the direct endpoint.
      */
     saveLink: (direct: boolean) => Promise<void>;
+    /** The anti-degradation switch. */
+    guard: () => NearTokenGuardState;
+    /**
+     * Persist the anti-degradation switch.
+     * @param enabled - whether a Gemini-4 request body is rewritten in Chinese.
+     */
+    saveGuard: (enabled: boolean) => Promise<void>;
     /** The picture models beside the stored image-generation setting. */
     images: () => Promise<NearTokenImagesState>;
     /**

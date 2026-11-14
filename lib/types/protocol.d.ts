@@ -35,6 +35,8 @@ export declare const MODELS_PATH = "/neartoken/models";
 export declare const IMAGES_PATH = "/neartoken/images";
 /** Read the long-connection switch; POST its new state. */
 export declare const LINK_PATH = "/neartoken/link";
+/** Read the anti-degradation switch; POST its new state. */
+export declare const GUARD_PATH = "/neartoken/guard";
 /** Read the site's top-up offer; POST one order and open its checkout page. */
 export declare const TOPUP_PATH = "/neartoken/topup";
 /** One gateway method the site enabled. */
@@ -255,6 +257,27 @@ export interface NearTokenLinkPatch {
     /** Whether the model-facing `/v1` family should use the direct endpoint. */
     readonly direct: boolean;
 }
+/** The `GET /neartoken/guard` answer. */
+export interface NearTokenGuardState {
+    /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
+    readonly enabled: boolean;
+}
+/** The `POST /neartoken/guard` request body. */
+export interface NearTokenGuardPatch {
+    /** Whether the anti-degradation switch should be on. */
+    readonly enabled: boolean;
+}
+/**
+ * Whether one model belongs to the family the anti-degradation switch serves.
+ *
+ * Both halves ask this: the model seat decides whether to offer the switch, and
+ * the Host decides whether the request body is rewritten. A bare model id and a
+ * catalog id (`"<group>::<model>"`) are both accepted, because only the ones
+ * closest to the model mean anything.
+ * @param model - a bare model id, or a catalog id carrying a `group::` prefix.
+ * @returns true for the Gemini-4 generation and later.
+ */
+export declare function isGemini4(model: string): boolean;
 /** How far back the usage overview looks. */
 export declare const USAGE_RANGES: readonly ["day", "week", "month"];
 /** One selectable window of the usage overview. */

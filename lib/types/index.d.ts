@@ -19,6 +19,8 @@ export interface Options {
     directEndpoint: string;
     /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
     directLink: Volatile<boolean>;
+    /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
+    antiDegrade: Volatile<boolean>;
     apiKeyEnv: string;
     catalogTtlMs: number;
     /** The capacity every model without a better answer reports, in tokens. */
@@ -64,6 +66,12 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * toggle reaches this running plugin without a remount.
      */
     directLink: z<boolean, boolean, "volatile-defined">;
+    /**
+     * The anti-degradation switch: whether a Gemini-4 request body carries the
+     * harness's file-reference guidance in Chinese instead of English. Volatile,
+     * so the model picker's toggle reaches this running plugin without a remount.
+     */
+    antiDegrade: z<boolean, boolean, "volatile-defined">;
     /** Credential reference the sign-in writes and the adapter resolves. */
     apiKeyEnv: z<string, string, "defined">;
     /** How long one pricing load stays fresh, in milliseconds. */
@@ -198,6 +206,12 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * toggle reaches this running plugin without a remount.
      */
     directLink: z<boolean, boolean, "volatile-defined">;
+    /**
+     * The anti-degradation switch: whether a Gemini-4 request body carries the
+     * harness's file-reference guidance in Chinese instead of English. Volatile,
+     * so the model picker's toggle reaches this running plugin without a remount.
+     */
+    antiDegrade: z<boolean, boolean, "volatile-defined">;
     /** Credential reference the sign-in writes and the adapter resolves. */
     apiKeyEnv: z<string, string, "defined">;
     /** How long one pricing load stays fresh, in milliseconds. */

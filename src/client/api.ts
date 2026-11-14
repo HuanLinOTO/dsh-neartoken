@@ -5,13 +5,13 @@
  * @module
  */
 import {
-  AUTHORIZE_PATH, CANCEL_PATH, IMAGES_PATH, LINK_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH, STATUS_PATH,
-  TOPUP_PATH, USAGE_PATH,
+  AUTHORIZE_PATH, CANCEL_PATH, GUARD_PATH, IMAGES_PATH, LINK_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH,
+  STATUS_PATH, TOPUP_PATH, USAGE_PATH,
 } from '../protocol.ts'
 import type {
-  BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkPatch,
-  NearTokenLinkState, NearTokenModelsPatch, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo,
-  NearTokenUsageRange, NearTokenUsageState,
+  BeginAuthorizationOutcome, NearTokenAuthorizeRequest, NearTokenGuardPatch, NearTokenGuardState, NearTokenImagesPatch,
+  NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelsPatch, NearTokenModelsState,
+  NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState,
 } from '../protocol.ts'
 
 /**
@@ -93,6 +93,13 @@ export interface NearTokenApi {
    * @param direct - whether model-facing requests leave from the direct endpoint.
    */
   saveLink(direct: boolean): Promise<void>
+  /** Read the anti-degradation switch. */
+  guard(): Promise<NearTokenGuardState>
+  /**
+   * Store the anti-degradation switch.
+   * @param enabled - whether a Gemini-4 request body is rewritten in Chinese.
+   */
+  saveGuard(enabled: boolean): Promise<void>
 }
 
 /**
@@ -218,6 +225,20 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ direct } satisfies NearTokenLinkPatch),
+      })
+      if (!response.ok) {
+        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
+        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
+      }
+    },
+    async guard() {
+      return await jsonOf<NearTokenGuardState>(await fetcher(GUARD_PATH, { headers: { accept: 'application/json' } }))
+    },
+    async saveGuard(enabled) {
+      const response = await fetcher(GUARD_PATH, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled } satisfies NearTokenGuardPatch),
       })
       if (!response.ok) {
         const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }

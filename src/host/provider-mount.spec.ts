@@ -38,6 +38,7 @@ function providerOver() {
     modelOverride: () => undefined,
     attachments: () => undefined,
     imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    antiDegrade: () => false,
   })
   return { provider, replacements, counts: () => ({ registered, released }) }
 }

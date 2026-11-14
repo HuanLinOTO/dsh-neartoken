@@ -8,6 +8,7 @@ import { brotliDecompressSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { NearTokenAdapter, decodeRoute } from './adapter.ts'
+import { FILE_REFERENCE_GUIDANCE, FILE_REFERENCE_GUIDANCE_ZH } from './anti-degrade.ts'
 import type { NearTokenRoute } from './pricing.ts'
 import { expandRoutes, parsePricing } from './pricing.ts'
 import { DEFAULT_IMAGE_REQUEST_POLICY } from './wire-images.ts'
@@ -47,6 +48,7 @@ function adapterOver(routes: readonly NearTokenRoute[], enabled: readonly string
     modelOverride: () => undefined,
     attachments: () => undefined,
     imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    antiDegrade: () => false,
   })
 }
 
@@ -137,6 +139,7 @@ describe('resolveModel capacity', () => {
     modelOverride: (model) => model === 'grok-4.6' ? { contextWindow: 1_048_576, maxTokens: 65_536, reasoning: ['low', 'high'] } : undefined,
     attachments: () => undefined,
     imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    antiDegrade: () => false,
   })
 
   it('reports the capacity the site declared', async () => {
@@ -224,6 +227,7 @@ describe('stream', () => {
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
       attachments: () => undefined,
     imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    antiDegrade: () => false,
     })
     await dispatch(adapter, '[低价] Grok::grok-4.6')
     expect((body as { model?: string }).model).toBe('grok-4.6')
@@ -273,6 +277,7 @@ describe('stream wire selection', () => {
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
       attachments: () => undefined,
     imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+    antiDegrade: () => false,
     })
     await dispatch(adapter, id)
     return one
@@ -339,6 +344,7 @@ describe('stream body encoding', () => {
       routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
       defaultContextWindow: () => 200_000, modelOverride: () => undefined,
       attachments: () => undefined, imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+      antiDegrade: () => false,
     })
     return { adapter, posted }
   }
@@ -385,3 +391,80 @@ describe('stream body encoding', () => {
   })
 })
 
+
+describe('stream anti-degradation', () => {
+  /** One gemini-4 model and one from another family, so the switch's scope is testable. */
+  const routes = expandRoutes(parsePricing({ data: [
+    { model_name: 'gemini-4.6-pro', enable_groups: ['default'] },
+    { model_name: 'grok-4.6', enable_groups: ['default'] },
+  ] }))
+
+  /**
+   * Send one request with the switch in a given state.
+   * @param antiDegrade - the switch state the adapter reads.
+   * @param id - the catalog id to dispatch.
+   * @param extra - further request members, such as the tool set.
+   * @returns the request body the adapter posted, parsed.
+   */
+  async function postedBody(
+    antiDegrade: boolean, id: string, extra: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    let posted: Record<string, unknown> = {}
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      posted = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response('data: [DONE]\n\n', { status: 200 })
+    }) as typeof fetch
+    const adapter = new NearTokenAdapter({
+      routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+      defaultContextWindow: () => 200_000, modelOverride: () => undefined,
+      attachments: () => undefined, imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+      antiDegrade: () => antiDegrade,
+    })
+    const call = {
+      model: id,
+      system: `Rules. ${FILE_REFERENCE_GUIDANCE}`,
+      messages: [{ role: 'user', content: [{ type: 'text', text: FILE_REFERENCE_GUIDANCE }] }],
+      signal: undefined,
+      ...extra,
+    } as unknown as GenerateOptions
+    for await (const chunk of adapter.stream(call)) void chunk
+    return posted
+  }
+
+  /** The text one genai system instruction or content part carries. */
+  function systemText(body: Record<string, unknown>): string | undefined {
+    const parts = (body.systemInstruction as { parts: { text: string }[] } | undefined)?.parts
+    return parts?.[0]?.text
+  }
+
+  it('rewrites the guidance of a gemini-4 request while the switch is on', async () => {
+    const body = await postedBody(true, 'default::gemini-4.6-pro')
+    expect(systemText(body)).toBe(`Rules. ${FILE_REFERENCE_GUIDANCE_ZH}`)
+    expect(JSON.stringify(body.contents)).toContain(FILE_REFERENCE_GUIDANCE_ZH)
+    expect(JSON.stringify(body)).not.toContain('Tokens prefixed with @')
+  })
+
+  it('leaves the guidance English while the switch is off', async () => {
+    const body = await postedBody(false, 'default::gemini-4.6-pro')
+    expect(systemText(body)).toBe(`Rules. ${FILE_REFERENCE_GUIDANCE}`)
+  })
+
+  it('rewrites a body whose tool schema the harness handed over frozen', async () => {
+    // The harness freezes a tool's parameter schema, so writing a member back —
+    // even with the value it already holds — throws "Cannot assign to read only
+    // property 'type'". The swap therefore runs on the serialized body.
+    const parameters = Object.freeze({ type: 'object', properties: Object.freeze({}) })
+    const body = await postedBody(true, 'default::gemini-4.6-pro', {
+      tools: [{ name: 'read', description: FILE_REFERENCE_GUIDANCE, parameters }],
+    })
+    const declarations = (body.tools as { functionDeclarations: { description: string }[] }[])[0]?.functionDeclarations
+    expect(declarations?.[0]?.description).toBe(FILE_REFERENCE_GUIDANCE_ZH)
+  })
+
+  it('leaves another family alone even while the switch is on', async () => {
+    const body = await postedBody(true, 'default::grok-4.6')
+    const messages = JSON.stringify(body.messages)
+    expect(messages).toContain('Tokens prefixed with @')
+    expect(messages).not.toContain(FILE_REFERENCE_GUIDANCE_ZH)
+  })
+})

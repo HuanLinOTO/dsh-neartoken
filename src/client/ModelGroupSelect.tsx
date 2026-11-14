@@ -30,6 +30,7 @@ import {
   type ModelOption, type ModelVariant,
 } from './groups.ts'
 import { GroupTag, RatioChip } from './group-tags.tsx'
+import { isGemini4 } from '../protocol.ts'
 import css from './ModelGroupSelect.module.css'
 
 /** Which pane the dropdown shows: the three-row root or one drilled-in list. */
@@ -48,6 +49,15 @@ interface ProviderRows<M> {
 /** Provider display order: account first, official next, then catalog order. */
 function providerRank(id: string): number {
   return id === 'deepseek-account' ? 0 : id === 'deepseek-official' ? 1 : 2
+}
+
+/**
+ * Read one failed Host call as the text a status line shows.
+ * @param failure - whatever the call rejected with.
+ * @returns the message, or the rejection spelled out.
+ */
+function messageOf(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure)
 }
 
 /**
@@ -79,7 +89,7 @@ function effortFor(model: ModelCatalogModel, previous: string | undefined): stri
  * @returns the trigger and, while open, the three-level menu.
  */
 export function ModelGroupSelect(
-  { locked, available, directory, load, select, readLink, saveLink, t }:
+  { locked, available, directory, load, select, readLink, saveLink, readGuard, saveGuard, t }:
   ModelGroupSelectInjected & Pick<PropsRuntime<'conversation.input.model'>, 'locked'> & PropsLocale<'modelGroups'>,
 ) {
   const state = useSyncExternalStore(
@@ -102,6 +112,12 @@ export function ModelGroupSelect(
   const [linkBusy, setLinkBusy] = useState(false)
   /** Why the last switch write was refused; cleared by the next one. */
   const [linkError, setLinkError] = useState<string | null>(null)
+  /** The anti-degradation switch, once the Host answered; undefined while unread. */
+  const [guard, setGuard] = useState<boolean | undefined>(undefined)
+  /** Whether an anti-degradation write is on the wire. */
+  const [guardBusy, setGuardBusy] = useState(false)
+  /** Why the last anti-degradation write was refused; cleared by the next one. */
+  const [guardError, setGuardError] = useState<string | null>(null)
   const id = useId()
 
   const accountName = t('provider.account')
@@ -215,19 +231,26 @@ export function ModelGroupSelect(
     if (open && pane === 'model' && showSearch) searchRef.current?.focus()
   }, [open, pane, showSearch])
 
-  // The switch belongs to this plugin's own provider and describes the Host, so
-  // it is read once per open rather than carried in the catalog.
+  // The switches belong to this plugin's own provider and describe the Host, so
+  // they are read once per open rather than carried in the catalog. The
+  // anti-degradation one is offered only while a model it serves is selected.
   const ownSeat = located !== undefined && isGroupedProvider(located.provider.id)
+  const guardSeat = ownSeat && current !== null && isGemini4(current.model)
   useEffect(() => {
     if (!open || !ownSeat) return
     let live = true
     readLink().then((next) => {
       if (live) setDirect(next.direct)
     }, (failure: unknown) => {
-      if (live) setLinkError(t('link.failed', { message: failure instanceof Error ? failure.message : String(failure) }))
+      if (live) setLinkError(t('link.failed', { message: messageOf(failure) }))
+    })
+    readGuard().then((next) => {
+      if (live) setGuard(next.enabled)
+    }, (failure: unknown) => {
+      if (live) setGuardError(t('guard.failed', { message: messageOf(failure) }))
     })
     return () => { live = false }
-  }, [open, ownSeat, readLink, t])
+  }, [open, ownSeat, readLink, readGuard, t])
 
   if (!available) return null
 
@@ -301,7 +324,20 @@ export function ModelGroupSelect(
       // The stored switch did not move, so the control goes back with it.
       setDirect(!next)
       setLinkBusy(false)
-      setLinkError(t('link.failed', { message: failure instanceof Error ? failure.message : String(failure) }))
+      setLinkError(t('link.failed', { message: messageOf(failure) }))
+    })
+  }
+
+  const toggleGuard = (next: boolean): void => {
+    setGuard(next)
+    setGuardBusy(true)
+    setGuardError(null)
+    void saveGuard(next).then(() => {
+      setGuardBusy(false)
+    }, (failure: unknown) => {
+      setGuard(!next)
+      setGuardBusy(false)
+      setGuardError(t('guard.failed', { message: messageOf(failure) }))
     })
   }
 
@@ -410,7 +446,21 @@ export function ModelGroupSelect(
                   </span>
                 </div>
               )}
+              {guardSeat && (
+                <div className={css.cellSwitch}>
+                  <span className={css.cellLabel}>{t('guard.label')}</span>
+                  <span className={css.cellValue}>
+                    <Switch
+                      checked={guard === true}
+                      disabled={guardBusy || guard === undefined}
+                      label={t('guard.label')}
+                      onChange={toggleGuard}
+                    />
+                  </span>
+                </div>
+              )}
               {linkError === null ? null : <div className={css.linkError} role="status">{linkError}</div>}
+              {guardError === null ? null : <div className={css.linkError} role="status">{guardError}</div>}
               {reasoning !== undefined && (
                 <button type="button" role="menuitem" className={css.cell} onClick={() => { setPane('effort') }}>
                   <span className={css.cellLabel}>{t('menu.effort')}</span>

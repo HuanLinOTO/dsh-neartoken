@@ -17,6 +17,8 @@ export declare const zh: {
     'menu.effort': string;
     'link.label': string;
     'link.failed': string;
+    'guard.label': string;
+    'guard.failed': string;
     'effort.providerDefault': string;
     'status.loading': string;
     'error.action': string;
@@ -158,6 +160,8 @@ export declare const en: {
     'menu.effort': string;
     'link.label': string;
     'link.failed': string;
+    'guard.label': string;
+    'guard.failed': string;
     'effort.providerDefault': string;
     'status.loading': string;
     'error.action': string;

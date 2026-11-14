@@ -4,7 +4,7 @@
  * made here is what the /model popup shows next, and vice versa.
  */
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import type { NearTokenLinkState } from '../protocol.ts'
+import type { NearTokenGuardState, NearTokenLinkState } from '../protocol.ts'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
@@ -30,4 +30,11 @@ export interface ModelGroupSelectInjected {
    * @param direct - whether model-facing requests leave from the direct endpoint.
    */
   saveLink: (direct: boolean) => Promise<void>
+  /** Read the anti-degradation switch beside the model family it serves. */
+  readGuard: () => Promise<NearTokenGuardState>
+  /**
+   * Store the anti-degradation switch.
+   * @param enabled - whether a Gemini-4 request body is rewritten in Chinese.
+   */
+  saveGuard: (enabled: boolean) => Promise<void>
 }

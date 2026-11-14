@@ -62,6 +62,10 @@ describe('Config', () => {
     expect(Config.dict?.directEndpoint?.meta.volatile).toBeUndefined()
   })
 
+  it('marks the anti-degradation switch volatile, which is what lets the model picker write it', () => {
+    expect(Config.dict?.antiDegrade?.meta.volatile).toBe(true)
+  })
+
   it('resolves the switch off, so a fresh install talks to the site root', async () => {
     const config = await resolved({})
     expect(config.directLink.get()).toBe(false)
