@@ -61,11 +61,12 @@ function replayBlocksOf(message: RequestMessage): readonly unknown[] | undefined
 }
 
 /**
- * Put each turn's own signature back on the call part it was issued for.
+ * Put the turn's signature back on every call part of that turn.
  *
- * The signature belongs on a `functionCall` part of the turn it was issued
- * for — a signature parked on a part of its own is refused, while any call
- * part of the turn accepts it. Blocks pair by position, so a batch keeps its
+ * The signature has to land on a `functionCall` part — a signature parked on a
+ * part of its own is refused — and the upstream may check any call part of the
+ * turn, so each one hands it back. A call that kept a signature of its own
+ * keeps that one instead. Blocks pair by position, so a batch keeps its
  * pairing even when two calls name the same function.
  * @param message - the durable assistant turn.
  * @param content - its content blocks, in the order the turn streamed them.
@@ -81,13 +82,21 @@ function attachSignatures(
   // means this build cannot tell which call a signature belongs to, and a
   // guess would vouch for a call the upstream never signed.
   if (blocks === undefined || blocks.length !== content.length) return
+  const own = new Map<number, string>()
+  let turnSignature: string | undefined
   for (const [index, slot] of callSlot) {
     const block = asObject(blocks[index])
-    if (block?.type !== 'tool-call') continue
-    const signature = stringOf(block.signature)
+    const signature = block?.type === 'tool-call' ? stringOf(block.signature) : undefined
     if (signature === undefined || signature === '') continue
-    parts[slot].thoughtSignature = signature
+    own.set(slot, signature)
+    turnSignature ??= signature
   }
+  // A turn holds one signature, and the upstream may validate any of its call
+  // parts rather than only the first one — a live refusal named the seventh
+  // part of a batch — so every call part of the turn gets it. A call that kept
+  // a signature of its own hands that one back untouched.
+  if (turnSignature === undefined) return
+  for (const slot of callSlot.values()) parts[slot].thoughtSignature = own.get(slot) ?? turnSignature
 }
 
 /**
@@ -278,6 +287,31 @@ function thinkingConfigOf(model: string, effort: string | undefined): Record<str
   return budget === undefined ? undefined : { thinkingBudget: budget, includeThoughts: true }
 }
 
+/** JSON Schema members a Gemini function declaration refuses. */
+const UNSUPPORTED_SCHEMA_MEMBERS: ReadonlySet<string> = new Set(['additionalProperties'])
+
+/**
+ * Copy one tool parameter schema without the members Gemini rejects.
+ *
+ * Declarations are an OpenAPI subset: a live request carrying
+ * `additionalProperties` is refused with 400 'Invalid JSON payload received.
+ * Unknown name "additionalProperties"', and harness tool schemas carry it, so
+ * it is dropped here instead of at every tool author. The input schema is
+ * frozen and is never mutated.
+ * @param schema - the harness tool's `parameters` schema.
+ * @returns a fresh schema in which every level is Gemini's subset.
+ */
+function geminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(geminiSchema)
+  if (typeof schema !== 'object' || schema === null) return schema
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (UNSUPPORTED_SCHEMA_MEMBERS.has(key)) continue
+    out[key] = geminiSchema(value)
+  }
+  return out
+}
+
 /**
  * Serialize one harness request into a genai request body.
  * @param options - the harness request.
@@ -325,7 +359,7 @@ export function serializeRequest(
       functionDeclarations: options.tools.map(tool => ({
         name: tool.name,
         description: tool.description,
-        parameters: tool.parameters,
+        parameters: geminiSchema(tool.parameters),
       })),
     }]
   }
@@ -414,6 +448,10 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
     const text = stringOf(part.text)
     const thought = part.thought === true
     if (text !== undefined && text.length > 0) {
+      // A signature can ride on the turn's text or thought part instead of on
+      // a call; it signs this turn all the same, so it is parked here for the
+      // call parts that follow and would otherwise replay unsigned.
+      if (issued !== null && state.pendingSignature === null) state.pendingSignature = issued
       if (thought) {
         if (state.reasoning === null) {
           state.reasoning = open(state, 'reasoning')

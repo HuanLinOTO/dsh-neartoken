@@ -432,6 +432,29 @@ describe('genai wire', () => {
     )
     expect(body.generationConfig).toMatchObject({ thinkingConfig: { thinkingLevel: 'high', includeThoughts: true } })
   })
+
+  it('drops the schema members Gemini refuses from tool declarations', () => {
+    // A live request carrying additionalProperties is answered 400 'Invalid
+    // JSON payload received. Unknown name "additionalProperties"'; the harness
+    // tool schemas carry it and are frozen, so the declaration is rebuilt.
+    const parameters = Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        items: Object.freeze({ type: 'array', additionalProperties: false, items: { type: 'string' } }),
+      }),
+      additionalProperties: false,
+    })
+    const body = serializeGenai({
+      ...request(),
+      tools: [{ name: 'todo_write', description: 'plan', parameters }],
+    } as unknown as GenerateOptions, 'gemini-4-carbon')
+    const declaration = (body.tools as { functionDeclarations: Record<string, unknown>[] }[])[0]?.functionDeclarations[0]
+    expect(declaration?.parameters).toEqual({
+      type: 'object',
+      properties: { items: { type: 'array', items: { type: 'string' } } },
+    })
+    expect(JSON.stringify(parameters)).toContain('additionalProperties')
+  })
 })
 
 describe('genai thought signatures', () => {
@@ -511,6 +534,17 @@ describe('genai thought signatures', () => {
     ]))
   })
 
+  it('keeps a signature that arrived on the turn text', async () => {
+    // A thinking turn can carry its signature on the text part instead of on a
+    // call; reading parts by their shape dropped it, and the turn replayed
+    // unsigned.
+    const replay = await replayOf([
+      `data: {"candidates":[{"content":{"parts":[{"text":"planning","thoughtSignature":"${SIGNATURE}"}]}}]}\n\n`,
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{},"id":"call_1"}}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    expect(replay).toEqual(envelope([{ type: 'text' }, { type: 'tool-call', signature: SIGNATURE }]))
+  })
+
   it('keeps a signature that arrived on a part of its own', async () => {
     // A live stream may park the signature on an otherwise empty part instead
     // of on the call itself; reading parts by their text used to drop it.
@@ -537,15 +571,18 @@ describe('genai thought signatures', () => {
     expect(replay).toBeUndefined()
   })
 
-  it('sends the signature back on the call it was issued for', () => {
-    // The upstream refuses a replayed call without it: 400 "Function call is
-    // missing a thought_signature in functionCall parts".
+  it('sends the turn signature back on every call of the turn', () => {
+    // The upstream refuses a replayed turn whose call parts carry none: 400
+    // "Function call is missing a thought_signature in functionCall parts".
+    // It signs one part per turn but may name any of them in the refusal (a
+    // live one named the seventh part of a batch), so no call of the turn is
+    // left unsigned.
     expect(modelParts(signedBatch(envelope([
       { type: 'tool-call', signature: SIGNATURE },
       { type: 'tool-call' },
     ])))).toEqual([
       { functionCall: { name: 'read', args: {}, id: 'call_1' }, thoughtSignature: SIGNATURE },
-      { functionCall: { name: 'read', args: {}, id: 'call_2' } },
+      { functionCall: { name: 'read', args: {}, id: 'call_2' }, thoughtSignature: SIGNATURE },
     ])
   })
 
@@ -564,7 +601,7 @@ describe('genai thought signatures', () => {
     } as GenerateOptions
     expect(modelParts(signed)).toEqual([
       { functionCall: { name: 'read', args: {}, id: 'call_1' }, thoughtSignature: SIGNATURE },
-      { functionCall: { name: 'read', args: {}, id: 'call_2' } },
+      { functionCall: { name: 'read', args: {}, id: 'call_2' }, thoughtSignature: SIGNATURE },
     ])
   })
 

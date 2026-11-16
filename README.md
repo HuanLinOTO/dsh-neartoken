@@ -24,7 +24,7 @@
 |---|---|
 | `src/index.ts` | 配置 schema、按凭据现状挂载 provider、装配其余模块 |
 | `src/host/account.ts` | RFC 8628 形状的设备授权：发起、按 interval 轮询、把 key 写进 credentials |
-| `src/host/routes.ts` | 设置页与模型选择器调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置 / 长连接端点 / 防降智） |
+| `src/host/routes.ts` | 设置页与模型选择器调用的同源路由（状态 / 余额立即刷新 / 授权 / 取消 / 断开 / 模型白名单 / 生图设置 / 端点开关（长连接与自定义）/ 防降智） |
 | `src/host/whitelist.ts` | 白名单读写在插件自身 Config 的 `enabledModels`（volatile），存 profile patch |
 | `src/host/pricing.ts` | 拉 `/api/pricing`，展开成 `"<组>::<模型>"` 路由，过滤出能聊的模型 |
 | `src/host/model-caps.ts` | 一个模型能不能聊、上下文窗口多大、可选的推理等级（只读站点声明，不存模型表） |
@@ -33,7 +33,7 @@
 | `src/host/protocol-router.ts` | 按模型选上游协议（claude / gemini / gpt / 其余） |
 | `src/host/session-key.ts` | 从 `GenerateOptions.sessionId` 取会话亲和键，四条 wire 用它让站点把会话粘在同一渠道 |
 | `src/host/provider-mount.ts` | 路由挂载、撤下、白名单变更时 `replace()` 重播 |
-| `src/host/relay.ts` | 模型接口走哪个域名：站点根或长连接端点，由设置页顶部的端点菜单（模型选择器里的开关写同一字段）决定 |
+| `src/host/relay.ts` | 模型接口走哪个域名：站点根、长连接端点或自定义地址，由设置页顶部的端点菜单（模型选择器里的两个开关写同一组字段）决定 |
 | `src/host/topup.ts` | 站点充值面：读 amount 档位与渠道、下单，把 403 `DSH_TOKEN_REQUIRED` 翻成「是否 DSH 密钥」的原因 |
 | `src/host/images.ts` | 生图：挑通道、发请求、两种响应都读成 bytes |
 | `src/host/image-tool.ts` | `generate_image` 工具：选模型/分组、把图写进 attachment |
@@ -60,9 +60,11 @@
 
 分组路由按同一文档：请求头 `x-neartoken-group` 的值是 `/api/pricing` 的 `group_refs` 给出的 **`#<id>`**（纯 ASCII），分组名只用于展示；某分组没有 ref 时不发该头，按令牌自身分组路由。
 
-设置页**最顶端**（「NearToken」标题右侧）是**端点菜单**：两个按钮就是两个域名（`neartoken.cc` / `direct.neartoken.cc`），选哪个模型接口就走哪个。切换只写 `directLink`，页面自己的 carrier 始终留在站点根，所以切端点不会让设置页失去连接；点击立刻移动高亮，写入被站点拒绝时回滚并给出原因。
+设置页**最顶端**（「NearToken」标题右侧）是**端点菜单**：三个按钮是站点根、长连接端点与「自定义」（`neartoken.cc` / `direct.neartoken.cc` / 自定义），选哪个模型接口就走哪个。前两个按钮写 `directLink`；点「自定义」会展开一行地址输入框（例如 `https://api.example.com`），保存后写 `customEndpoint`（开关 + 地址），填过的地址之后一直显示在那一行，改完再点「保存」即可。自定义端点优先于另外两个按钮：开关开着、地址非空时所有模型接口都走它。页面自己的 carrier 始终留在站点根，所以切端点不会让设置页失去连接；点击立刻移动高亮，写入被站点拒绝时回滚并给出原因（地址不是 http(s) 绝对地址、或地址为空却要打开开关，都会被 Host 拒掉）。
 
 模型选择器的根菜单里，「分组」下面一行是同一件事的**长连接端点**开关（两处写同一个 `directLink`）：打开后所有**模型接口**（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/images/*`、Gemini 的 `/v1beta/*`）改走 `https://direct.neartoken.cc`，站点控制台的 `/api/*`（目录、用量、钱包、充值、设备授权）仍走 `baseURL`。开关写进插件配置的 `directLink`（volatile），点完立刻对下一次请求生效，不需要重启。它只出现在本插件自己的 provider 上。
+
+长连接开关下面一行是**使用自定义端点**开关（写 `customEndpoint.enabled`）：打开后模型接口改走设置页填的那个地址，覆盖长连接开关的选择；地址还没填时 Host 会拒绝打开并回一句「自定义端点地址还没填」，开关自己弹回去。地址只在设置页里编辑，模型选择器只负责开关。
 
 紧接着是**防降智**开关，只在当前模型属于 `gemini-4` 系列时出现。打开后，该模型每次请求体里 DSH 生成的 `@` 文件引用说明（`Tokens prefixed with @ are paths the user explicitly referenced. …` 那段英文）会被换成中文，system 提示、会话消息与工具描述里出现的都换；中文版保留全部规则和其中提到的 `read` 工具名。
 
@@ -116,6 +118,7 @@ https://<site>/dsh/device?user_code=K7QM-3XPD&aff=<code>
 | `baseURL` | `https://neartoken.cc` | 站点根地址，不带尾斜杠 |
 | `directEndpoint` | `https://direct.neartoken.cc` | 长连接端点；模型选择器打开开关后模型接口改走它，`/api/*` 不受影响 |
 | `directLink` | `false` | 长连接端点开关；volatile，模型选择器直接写它 |
+| `customEndpoint` | `{ enabled: false, url: '' }` | 自定义端点：`url` 是模型接口的完整 origin（http(s)，不带尾斜杠），`enabled` 打开后覆盖长连接开关；volatile，设置页写地址、模型选择器写开关 |
 | `antiDegrade` | `false` | 防降智开关；volatile，模型选择器直接写它，只在 `gemini-4` 模型上生效 |
 | `apiKeyEnv` | `NEARTOKEN_API_KEY` | 授权写入、adapter 读取的凭据引用名 |
 | `catalogTtlMs` | `300000` | `/api/pricing` 目录缓存时长 |
@@ -277,7 +280,7 @@ Gemini 系走原生 surface 而不是 openai 兼容层：同模型同提示词�
 - 推理等级按各协议自己的词汇发送：**anthropic 发 `thinking.type=adaptive` + `thinking.display=summarized` + `output_config.effort`**（不能再用 `thinking.type=enabled` + `budget_tokens`：Claude 5 代直接 400 `requires adaptive thinking`，而 adaptive 在老代际上同样可用，所以统一用它；`minimal` 收敛成 `low`；`display` 不是装饰：不带它，Claude 5 代的 thinking 块正文为空、只填 signature，而不带正文的块回放不出去（回放要与签名配对送出），界面上就表现为「这个模型从不思考」——Claude Opus 5.5 实测不带 `display` 正文 0 字符、带 `display=summarized` 正文 55~132 字符）；genai 发 `thinkingConfig` 且带 `includeThoughts`（不带你拿不到思维链）；chat 与 responses 发 `reasoning_effort` / `reasoning.effort`。
 - **Gemini 4 换成 `thinkingLevel`**：这一代不再接受 token 预算（发 budget 会 400 `Use thinking level instead`），按 `gemini-<主版本>` ≥ 4 自动切换字段，等级名用 `low` / `medium` / `high` / `max`。
 - **思考历史回传**：harness 的 `message.source.replayState` 就是这个槽位。anthropic 线把每个 thinking 块的 `signature_delta` 存进信封，下一轮把 thinking 块带签名放在 assistant 轮最前；responses 线存 reasoning item 的 `encrypted_content`，同在最前发出。两条线都按「provider + 裸模型名」比对，换模型或换 provider 就不回放（密文不通用）；签名/密文缺一个就整轮不回放，宁可没有也不发半截。
-- **genai 线的 `thoughtSignature`**：Gemini 3 起强制——工具轮里没有签名的 `functionCall` part 会被 400 `Function call is missing a thought_signature in functionCall parts` 挡下，**每个** model 轮都单独校验（实测：两轮里只签第一轮，同样 400）。签名是上游签发的不可推导密文，插件只透传真值：解析时连"落在空 part 上的签名""晚于最后一个 call 才到的签名"一起收，回放时挂回该轮对应的 `functionCall`（实测挂在自带签名之外的空 part 上无效，必须挂 call）。信封的 `blocks` 必须与 harness 拼出的 block **逐条对齐、长度相等**，否则整个信封被丢弃——早先按"整轮一条元数据"写过，正是这个契约让它静默失效，签名等于没存。它**不**按 provider/模型比对（与另两条线不同）：实测同一签名跨请求、跨 Gemini 模型都可复用，比对了只会把有效签名判掉、反而制造 400。也不合成签名（gemini-cli 的 `SYNTHETIC_THOUGHT_SIGNATURE` 与网关侧的 `context_engineering_is_the_way_to_go` 这类绕过值都没采用），拿不到真签名就让上游拒——错误消息里带中文处置提示。
+- **genai 线的 `thoughtSignature`**：Gemini 3 起强制——工具轮里没有签名的 `functionCall` part 会被 400 `Function call is missing a thought_signature in functionCall parts` 挡下，**每个** model 轮都单独校验（实测：两轮里只签第一轮，同样 400）。签名是上游签发的不可推导密文，插件只透传真值：解析时连"落在空 part 上的签名""落在 text/thinking part 上的签名""晚于最后一个 call 才到的签名"一起收，回放时把这一轮的签名写到该轮**每一个** `functionCall` 上（实测挂在自带签名之外的空 part 上无效，必须挂 call；而上游一轮只签一个 part、拒绝时却可能点名批里任意一个——生产上见过 position 7，所以不把其余 call 留空，同一签名复制到全部 call part 实测 200）。信封的 `blocks` 必须与 harness 拼出的 block **逐条对齐、长度相等**，否则整个信封被丢弃——早先按"整轮一条元数据"写过，正是这个契约让它静默失效，签名等于没存。它**不**按 provider/模型比对（与另两条线不同）：实测同一签名跨请求、跨 Gemini 模型都可复用，比对了只会把有效签名判掉、反而制造 400。也不合成签名（gemini-cli 的 `SYNTHETIC_THOUGHT_SIGNATURE` 与网关侧的 `context_engineering_is_the_way_to_go` 这类绕过值都没采用），拿不到真签名就让上游拒——错误消息里带中文处置提示。
 - **responses 线发 `store:false` 并主动要密文**：`include: ["reasoning.encrypted_content"]` 只在选了推理档位时带上。上游对这两项都不敏感（实测带与不带、两个模型三次组合全部 200），但无状态模式是密文随响应回来的前提，而回放靠的正是那份密文。另有一处曾经的坑：上游有时只在收尾事件里给 reasoning item、不推 `reasoning_summary_text.delta`，早先要求「必须流式出现过思维块」才存信封，把这类轮的密文整个丢了 —— 现在只要拿到 item 就存，放在最前。
 - 文本与思维块由**第一个非空 delta** 打开，思维块为空时不产生空块；工具调用块在 `content_block_start` 打开，因为 id 与函数名只在那里出现。
 - anthropic 线不硬编码 `max_tokens`：只在调用方给了上限、或开了 thinking 需要余量时才发。给死值会截断长回答。
