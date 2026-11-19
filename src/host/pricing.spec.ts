@@ -146,6 +146,98 @@ describe('declared wire and stateful responses', () => {
   })
 })
 
+describe('per-group client overrides', () => {
+  it('reads the declarations a model carries per group', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['default', '内部'],
+      client_endpoints: { 内部: { api_style: 'chat', responses_stateful: true } },
+    }] })
+    expect(pricing.models[0]?.client).toEqual({ 内部: { apiStyle: 'chat', statefulResponses: true } })
+  })
+
+  it('normalizes an override member exactly like the global field', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['g'], client_endpoints: { g: { api_style: 'gemini' } },
+    }] })
+    expect(pricing.models[0]?.client?.g).toEqual({ apiStyle: 'genai' })
+  })
+
+  it('drops an override that states nothing this plugin dispatches through', () => {
+    const pricing = parsePricing({ data: [{
+      model_name: 'm',
+      enable_groups: ['g'],
+      client_endpoints: { g: { api_style: 'openai', responses_stateful: 'true' }, '  ': { api_style: 'chat' }, h: null },
+    }] })
+    expect(pricing.models[0]?.client).toBeUndefined()
+  })
+
+  it('treats a payload without the overrides as a model declaring none', () => {
+    for (const value of [undefined, '', [], ['g'], 3]) {
+      const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], client_endpoints: value }] })
+      expect(pricing.models[0]?.client).toBeUndefined()
+    }
+  })
+})
+
+describe('a group override outranks the global declaration', () => {
+  /**
+   * Expand one model served by two groups.
+   * @param row - the model's own declarations.
+   * @returns the group, wire and state of each route.
+   */
+  function routes(row: Record<string, unknown>): (string | boolean | undefined)[][] {
+    return expandRoutes(parsePricing({
+      data: [{ model_name: 'm', enable_groups: ['plain', 'special'], ...row }],
+    })).map(route => [route.group, route.apiStyle, route.statefulResponses])
+  }
+
+  it('routes a group that pins chat while the model globally answers Responses', () => {
+    expect(routes({ api_style: 'responses', client_endpoints: { special: { api_style: 'chat' } } })).toEqual([
+      ['plain', 'responses', undefined],
+      ['special', 'chat', undefined],
+    ])
+  })
+
+  it('turns Responses storing on for one group of a globally stateless model', () => {
+    expect(routes({ api_style: 'responses', client_endpoints: { special: { responses_stateful: true } } })).toEqual([
+      ['plain', 'responses', undefined],
+      ['special', 'responses', true],
+    ])
+  })
+
+  it('turns Responses storing off for one group of a globally stateful model', () => {
+    const declared = { api_style: 'responses', responses_stateful: true, client_endpoints: { special: { responses_stateful: false } } }
+    expect(routes(declared)).toEqual([
+      ['plain', 'responses', true],
+      ['special', 'responses', undefined],
+    ])
+  })
+
+  it('leaves a group the model never listed on the global declaration', () => {
+    const declared = { api_style: 'anthropic', responses_stateful: true, client_endpoints: { other: { api_style: 'chat' } } }
+    expect(routes(declared)).toEqual([
+      ['plain', 'anthropic', true],
+      ['special', 'anthropic', true],
+    ])
+  })
+
+  it('ignores an override it cannot dispatch through and keeps the global one', () => {
+    expect(routes({ api_style: 'responses', client_endpoints: { special: { api_style: 'openai' } } })).toEqual([
+      ['plain', 'responses', undefined],
+      ['special', 'responses', undefined],
+    ])
+  })
+
+  it('states a group wire even when the model declares no global one', () => {
+    // The site's own spelling of the Gemini wire, which the route names differently.
+    const declared = { client_endpoints: { special: { api_style: 'gemini', responses_stateful: true } } }
+    expect(routes(declared)).toEqual([
+      ['plain', undefined, undefined],
+      ['special', 'genai', true],
+    ])
+  })
+})
+
 describe('expandRoutes', () => {
   it('carries the group reference on the routes whose group published one', () => {
     const routes = expandRoutes(parsePricing(payload))

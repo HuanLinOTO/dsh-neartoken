@@ -10,7 +10,8 @@
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
  * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
- * facts. Group names carry their own badge
+ * facts, plus the per-group `client_endpoints` overrides of those last two
+ * wire facts. Group names carry their own badge
  * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
  *
@@ -23,6 +24,16 @@
  * wire `genai`. The other three names are the same on both sides.
  */
 export type NearTokenApiStyle = 'chat' | 'responses' | 'anthropic' | 'genai';
+/**
+ * What one group states about the wire, overriding the model's global default.
+ *
+ * A member left out keeps the model's global value; `statefulResponses: false`
+ * is a real override that turns off a globally stateful model.
+ */
+export interface NearTokenGroupClient {
+    readonly apiStyle?: NearTokenApiStyle;
+    readonly statefulResponses?: boolean;
+}
 /** One model row from `/api/pricing`. */
 interface PricingModel {
     readonly model_name: string;
@@ -40,6 +51,11 @@ interface PricingModel {
     readonly apiStyle?: NearTokenApiStyle;
     /** `true` when the site holds this model's Responses turn server-side. */
     readonly statefulResponses?: boolean;
+    /**
+     * Per-group wire overrides keyed by group name; absent when the model
+     * declares none. A group missing here follows the global values above.
+     */
+    readonly client?: Readonly<Record<string, NearTokenGroupClient>>;
 }
 /** The parts of `/api/pricing` this adapter consumes. */
 export interface NearTokenPricing {

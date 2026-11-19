@@ -10,7 +10,8 @@
  * multiplier table, the `group_refs` routing references, the declared
  * `supported_endpoint_types`, and — on a deployment that maintains them — the
  * `context_window` / `max_tokens` / `input_modalities` / `reasoning_levels`
- * facts. Group names carry their own badge
+ * facts, plus the per-group `client_endpoints` overrides of those last two
+ * wire facts. Group names carry their own badge
  * prefix convention (`[低价][反重力] Claude`), which the browser half parses for
  * display; here they stay opaque strings.
  *
@@ -42,6 +43,17 @@ const API_STYLE_WIRES = new Map<string, NearTokenApiStyle>([
   ['gemini', 'genai'],
 ])
 
+/**
+ * What one group states about the wire, overriding the model's global default.
+ *
+ * A member left out keeps the model's global value; `statefulResponses: false`
+ * is a real override that turns off a globally stateful model.
+ */
+export interface NearTokenGroupClient {
+  readonly apiStyle?: NearTokenApiStyle
+  readonly statefulResponses?: boolean
+}
+
 /** One model row from `/api/pricing`. */
 interface PricingModel {
   readonly model_name: string
@@ -59,6 +71,11 @@ interface PricingModel {
   readonly apiStyle?: NearTokenApiStyle
   /** `true` when the site holds this model's Responses turn server-side. */
   readonly statefulResponses?: boolean
+  /**
+   * Per-group wire overrides keyed by group name; absent when the model
+   * declares none. A group missing here follows the global values above.
+   */
+  readonly client?: Readonly<Record<string, NearTokenGroupClient>>
 }
 
 /** The parts of `/api/pricing` this adapter consumes. */
@@ -158,6 +175,37 @@ function apiStyleOf(value: unknown): NearTokenApiStyle | undefined {
 }
 
 /**
+ * Read one model's per-group wire overrides.
+ *
+ * Both members are normalized exactly like their global counterparts, but here
+ * an explicit `false` states something: it turns off a globally stateful
+ * model for one group.
+ *
+ * @param value - the raw `client_endpoints` member.
+ * @returns the overrides whose members this plugin understands, or undefined
+ * when the model declares none.
+ */
+function clientOverrides(value: unknown): Readonly<Record<string, NearTokenGroupClient>> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const overrides: Record<string, NearTokenGroupClient> = {}
+  for (const [group, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (group.trim().length === 0) continue
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const row = entry as Record<string, unknown>
+    const apiStyle = apiStyleOf(row.api_style)
+    const statefulResponses = typeof row.responses_stateful === 'boolean' ? row.responses_stateful : undefined
+    // A group stating nothing this plugin understands keeps the global values,
+    // exactly like a group the model never listed.
+    if (apiStyle === undefined && statefulResponses === undefined) continue
+    overrides[group] = {
+      ...apiStyle === undefined ? {} : { apiStyle },
+      ...statefulResponses === undefined ? {} : { statefulResponses },
+    }
+  }
+  return Object.keys(overrides).length === 0 ? undefined : overrides
+}
+
+/**
  * Expand one pricing payload into one route per (group, model) pair.
  * @param pricing - the loaded endpoint payload.
  * @returns routes in endpoint order, group order preserved per model.
@@ -168,6 +216,11 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
     for (const group of model.enable_groups) {
       const ratio = pricing.groupRatio[group]
       const groupRef = pricing.groupRefs[group]
+      // A group's own declaration outranks the model's global one, which in
+      // turn outranks the inference the router makes from the model name.
+      const client = model.client?.[group]
+      const apiStyle = client?.apiStyle ?? model.apiStyle
+      const statefulResponses = (client?.statefulResponses ?? model.statefulResponses) === true ? true : undefined
       routes.push({
         id: `${group}::${model.model_name}`,
         name: `${model.model_name} @ ${group}`,
@@ -180,8 +233,8 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
         ...model.endpoints === undefined ? {} : { endpoints: model.endpoints },
         ...model.input === undefined ? {} : { input: model.input },
         ...model.reasoning === undefined ? {} : { reasoning: model.reasoning },
-        ...model.apiStyle === undefined ? {} : { apiStyle: model.apiStyle },
-        ...model.statefulResponses === undefined ? {} : { statefulResponses: model.statefulResponses },
+        ...apiStyle === undefined ? {} : { apiStyle },
+        ...statefulResponses === undefined ? {} : { statefulResponses },
       })
     }
   }
@@ -213,6 +266,7 @@ export function parsePricing(value: unknown): NearTokenPricing {
     // Only an explicit `true` states anything: an absent field is the ordinary
     // stateless model, which is also what a site older than this field answers.
     const statefulResponses = row.responses_stateful === true ? true : undefined
+    const client = clientOverrides(row.client_endpoints)
     models.push({
       model_name: name,
       enable_groups: groups.filter((group): group is string => typeof group === 'string'),
@@ -223,6 +277,7 @@ export function parsePricing(value: unknown): NearTokenPricing {
       ...reasoning === undefined ? {} : { reasoning },
       ...apiStyle === undefined ? {} : { apiStyle },
       ...statefulResponses === undefined ? {} : { statefulResponses },
+      ...client === undefined ? {} : { client },
     })
   }
   const ratio: Record<string, number> = {}
