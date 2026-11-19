@@ -251,12 +251,34 @@ export interface NearTokenLinkState {
     readonly baseURL: string;
     /** The endpoint `/v1` requests use while the switch is on. */
     readonly directBaseURL: string;
+    /** Whether the custom endpoint replaces both origins above. */
+    readonly custom: boolean;
+    /** The stored custom endpoint; empty until the reader fills one in. */
+    readonly customBaseURL: string;
 }
-/** The `POST /neartoken/link` request body. */
+/**
+ * The `POST /neartoken/link` request body: any subset of the three facts the
+ * page may move. A field left out keeps what is stored, so the model seat's
+ * custom-endpoint toggle never rewrites the address the settings page typed.
+ */
 export interface NearTokenLinkPatch {
     /** Whether the model-facing `/v1` family should use the direct endpoint. */
-    readonly direct: boolean;
+    readonly direct?: boolean;
+    /** Whether the stored custom endpoint should replace both origins. */
+    readonly custom?: boolean;
+    /** The custom endpoint address; an empty string clears it. */
+    readonly endpoint?: string;
 }
+/**
+ * Whether one address may be stored as the custom endpoint.
+ *
+ * Empty is allowed — it means "no address yet" — and otherwise the value must
+ * be an absolute http(s) URL, because that origin is where every chat request
+ * goes: another scheme would fail on the first message rather than here.
+ * @param value - any value, typically an untrusted request field.
+ * @returns true when the value may be stored.
+ */
+export declare function isEndpointAddress(value: string): boolean;
 /** The `GET /neartoken/guard` answer. */
 export interface NearTokenGuardState {
     /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */

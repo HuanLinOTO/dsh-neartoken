@@ -10,6 +10,7 @@ import type {
   FinishReason, GenerateOptions, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId, TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import { asArray, asObject, numberOf, parseJsonObject, sseData, stringOf } from './sse.ts'
+import { decodeRoute } from './route-id.ts'
 import { sessionKeyOf } from './session-key.ts'
 import { wireCallId } from './wire-call-id.ts'
 import { dataUrlOf, imageOf, imagesIn } from './wire-images.ts'
@@ -34,6 +35,34 @@ function textOf(content: readonly unknown[]): string {
 }
 
 /**
+ * The reasoning one assistant turn carries back onto the wire.
+ *
+ * Reasoning models behind this gateway are recorded in the request history:
+ * an assistant message that already answered keeps its thinking blocks as
+ * `reasoning` content, and the harness stores the message's producer identity
+ * in `source`. A chat-completions model replays that history by re-sending
+ * the reasoning text as `reasoning_content`; a model that never sees its own
+ * past thinking stops thinking from the second tool round on. The gate keeps
+ * this to a message this same provider/model pair produced — another model's
+ * reasoning would be sent in that model's shape, which is worse than none.
+ * @param message - one conversation message.
+ * @param gate - the provider route and model this request asks for.
+ * @returns the reasoning text to send, or undefined when the turn has none.
+ */
+function reasoningOf(message: RequestMessage, gate: { provider: string; model: string }): string | undefined {
+  const source = (message as { source?: { kind?: string; provider?: string; model?: string } }).source
+  if (source?.kind !== 'model' || source.provider !== gate.provider) return undefined
+  if (source.model === undefined || decodeRoute(source.model).model !== gate.model) return undefined
+  let text = ''
+  for (const block of message.content as readonly unknown[]) {
+    if (typeof block === 'object' && block !== null && (block as { type?: string }).type === 'reasoning') {
+      text += (block as { text?: string }).text ?? ''
+    }
+  }
+  return text === '' ? undefined : text
+}
+
+/**
  * Serialize one fully-assembled request into an OpenAI chat-completions body.
  * @param options - the harness request.
  * @param model - the real model id the provider should route to.
@@ -42,6 +71,7 @@ function textOf(content: readonly unknown[]): string {
 export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
+  const gate = { provider: options.provider, model }
   const messages: WireMessage[] = []
   if (options.system !== undefined && options.system.length > 0) {
     messages.push({ role: 'system', content: options.system })
@@ -56,7 +86,7 @@ export function serializeRequest(
       pending.length = 0
     }
     if (message.role === 'tool') pending.push(...imagesIn(message.content as readonly unknown[], images))
-    const wire = serializeMessage(message, images)
+    const wire = serializeMessage(message, gate, images)
     if (wire !== undefined) messages.push(wire)
   }
   if (pending.length > 0) messages.push(toolImagesTurn(pending))
@@ -123,7 +153,7 @@ function toolImagesTurn(pictures: readonly WireImage[]): WireMessage {
  * @param images - the request's inlined images.
  * @returns the wire message, or undefined for a message with nothing to send.
  */
-function serializeMessage(message: RequestMessage, images: WireImages): WireMessage | undefined {
+function serializeMessage(message: RequestMessage, gate: { provider: string; model: string }, images: WireImages): WireMessage | undefined {
   const content = message.content as readonly unknown[]
   switch (message.role) {
     case 'system':
@@ -144,6 +174,8 @@ function serializeMessage(message: RequestMessage, images: WireImages): WireMess
         }))
       const text = textOf(content)
       const wire: WireMessage = { role: 'assistant', content: text === '' && toolCalls.length > 0 ? null : text }
+      const reasoning = reasoningOf(message, gate)
+      if (reasoning !== undefined) wire.reasoning_content = reasoning
       if (toolCalls.length > 0) wire.tool_calls = toolCalls
       return wire
     }

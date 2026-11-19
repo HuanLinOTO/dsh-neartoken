@@ -715,6 +715,31 @@
   transform: rotate(180deg);
 }
 
+/* The custom-endpoint address: a row of its own under the origin switch, so the
+   address has the width a URL needs instead of squeezing the switch. */
+.endpointRow {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 8px;
+}
+
+.endpointInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+}
+
+.endpointInput::placeholder {
+  color: var(--dsw-alias-label-dimmed);
+}
+
 /* The usage window switch: three labels, the one on screen filled. */
 .segmented {
   display: inline-flex;

@@ -135,6 +135,52 @@ describe('chat completions wire', () => {
     const chunks = await drain(parseChat(response, undefined))
     expect((usageOf(chunks) as { usage: unknown }).usage).toMatchObject({ inputTokens: 20, cacheReadTokens: 80 })
   })
+
+  it("re-sends the turn's reasoning when the same model asks again", () => {
+    const body = serializeChat({
+      ...request(),
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'reasoning', text: 'pondering' }, { type: 'tool-call', id: brandString<ToolCallId>('c1'), name: 'calc', arguments: '{}' }],
+          source: { provider: 'NearToken', model: 'swe-2' },
+        }),
+        createToolResultMessage({ callId: brandString<ToolCallId>('c1'), content: [{ type: 'text', text: 'done' }], isError: false }),
+      ],
+    }, 'swe-2')
+    const assistant = (body.messages as Record<string, unknown>[]).find(m => m.role === 'assistant')
+    expect(assistant?.reasoning_content).toBe('pondering')
+  })
+
+  it("keeps another model's reasoning off the wire", () => {
+    const body = serializeChat({
+      ...request(),
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'reasoning', text: 'pondering' }, { type: 'text', text: 'done' }],
+          source: { provider: 'NearToken', model: 'gpt-6.1-sol' },
+        }),
+      ],
+    }, 'swe-2')
+    const assistant = (body.messages as Record<string, unknown>[]).find(m => m.role === 'assistant')
+    expect(assistant?.reasoning_content).toBeUndefined()
+  })
+
+  it('decodes a catalog id before comparing producer and request', () => {
+    const body = serializeChat({
+      ...request(),
+      messages: [
+        createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'reasoning', text: 'pondering' }],
+          source: { provider: 'NearToken', model: '[低价] Devin::swe-2' },
+        }),
+      ],
+    }, 'swe-2')
+    const assistant = (body.messages as Record<string, unknown>[]).find(m => m.role === 'assistant')
+    expect(assistant?.reasoning_content).toBe('pondering')
+  })
 })
 
 describe('anthropic messages wire', () => {

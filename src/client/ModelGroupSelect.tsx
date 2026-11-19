@@ -108,6 +108,10 @@ export function ModelGroupSelect(
   const [menuPos, setMenuPos] = useState<CSSProperties | null>(null)
   /** The long-connection switch, once the Host answered; undefined while unread. */
   const [direct, setDirect] = useState<boolean | undefined>(undefined)
+  /** The custom-endpoint switch, once the Host answered; undefined while unread. */
+  const [custom, setCustom] = useState<boolean | undefined>(undefined)
+  /** Whether a custom-endpoint write is on the wire. */
+  const [customBusy, setCustomBusy] = useState(false)
   /** Whether a switch write is on the wire. */
   const [linkBusy, setLinkBusy] = useState(false)
   /** Why the last switch write was refused; cleared by the next one. */
@@ -240,7 +244,9 @@ export function ModelGroupSelect(
     if (!open || !ownSeat) return
     let live = true
     readLink().then((next) => {
-      if (live) setDirect(next.direct)
+      if (!live) return
+      setDirect(next.direct)
+      setCustom(next.custom)
     }, (failure: unknown) => {
       if (live) setLinkError(t('link.failed', { message: messageOf(failure) }))
     })
@@ -318,13 +324,28 @@ export function ModelGroupSelect(
     setDirect(next)
     setLinkBusy(true)
     setLinkError(null)
-    void saveLink(next).then(() => {
+    void saveLink({ direct: next }).then(() => {
       setLinkBusy(false)
     }, (failure: unknown) => {
       // The stored switch did not move, so the control goes back with it.
       setDirect(!next)
       setLinkBusy(false)
       setLinkError(t('link.failed', { message: messageOf(failure) }))
+    })
+  }
+
+  const toggleCustom = (next: boolean): void => {
+    setCustom(next)
+    setCustomBusy(true)
+    setLinkError(null)
+    void saveLink({ custom: next }).then(() => {
+      setCustomBusy(false)
+    }, (failure: unknown) => {
+      // The stored switch did not move — an unset address is refused the same
+      // way — so the control goes back with it.
+      setCustom(!next)
+      setCustomBusy(false)
+      setLinkError(t('custom.failed', { message: messageOf(failure) }))
     })
   }
 
@@ -442,6 +463,19 @@ export function ModelGroupSelect(
                       disabled={linkBusy || direct === undefined}
                       label={t('link.label')}
                       onChange={toggleDirect}
+                    />
+                  </span>
+                </div>
+              )}
+              {ownSeat && (
+                <div className={css.cellSwitch}>
+                  <span className={css.cellLabel}>{t('custom.label')}</span>
+                  <span className={css.cellValue}>
+                    <Switch
+                      checked={custom === true}
+                      disabled={customBusy || custom === undefined}
+                      label={t('custom.label')}
+                      onChange={toggleCustom}
                     />
                   </span>
                 </div>

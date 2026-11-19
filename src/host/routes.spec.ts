@@ -15,8 +15,8 @@ import {
   USAGE_PATH,
 } from '../protocol.ts'
 import type {
-  NearTokenGuardState, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus,
-  NearTokenUsageState,
+  NearTokenGuardState, NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelsState,
+  NearTokenStatus, NearTokenUsageState,
 } from '../protocol.ts'
 import { registerNearTokenRoutes } from './routes.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo } from './topup.ts'
@@ -37,11 +37,13 @@ const IMAGES: NearTokenImagesState = {
   selection: { 'gpt-image-2.5-flare': 'promo' },
 }
 
-/** The long-connection switch the link route answers. */
+/** The endpoint switches the link route answers. */
 const LINK: NearTokenLinkState = {
   direct: false,
   baseURL: 'https://site.example',
   directBaseURL: 'https://direct.site.example',
+  custom: false,
+  customBaseURL: '',
 }
 
 /** The anti-degradation switch the guard route answers. */
@@ -95,14 +97,14 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
   answer: (path: string, req: IncomingMessage) => Promise<Answer>
   saves: { enabled: readonly string[]; meta: unknown }[]
   imageSaves: unknown[]
-  linkSaves: boolean[]
+  linkSaves: NearTokenLinkPatch[]
   guardSaves: boolean[]
   opened: string[]
 } {
   const handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   const saves: { enabled: readonly string[]; meta: unknown }[] = []
   const imageSaves: unknown[] = []
-  const linkSaves: boolean[] = []
+  const linkSaves: NearTokenLinkPatch[] = []
   const guardSaves: boolean[] = []
   const opened: string[] = []
   const ctx = {
@@ -123,7 +125,7 @@ function routesOver(deps: Partial<NearTokenRouteDeps> = {}): {
     images: async () => IMAGES,
     saveImages: async (body) => { imageSaves.push(body); return undefined },
     link: () => LINK,
-    saveLink: async (direct) => { linkSaves.push(direct) },
+    saveLink: async (patch) => { linkSaves.push(patch) },
     guard: () => GUARD,
     saveGuard: async (enabled) => { guardSaves.push(enabled) },
     usage: async (range) => ({ ...USAGE, range }),
@@ -352,7 +354,40 @@ describe('the link route', () => {
     const { answer, linkSaves } = routesOver()
     const { status } = await answer(LINK_PATH, request('POST', JSON.stringify({ direct: true })))
     expect(status).toBe(200)
-    expect(linkSaves).toEqual([true])
+    expect(linkSaves).toEqual([{ direct: true }])
+  })
+
+  it('forwards a custom endpoint beside the switch, trimmed', async () => {
+    const { answer, linkSaves } = routesOver()
+    const { status } = await answer(LINK_PATH, request('POST', JSON.stringify({
+      custom: true, endpoint: ' https://api.example/v1 ',
+    })))
+    expect(status).toBe(200)
+    expect(linkSaves).toEqual([{ custom: true, endpoint: 'https://api.example/v1' }])
+  })
+
+  it('keeps the fields a patch leaves out untouched', async () => {
+    const { answer, linkSaves } = routesOver()
+    await answer(LINK_PATH, request('POST', JSON.stringify({ custom: false })))
+    expect(linkSaves).toEqual([{ custom: false }])
+  })
+
+  it('refuses an address that is not an http(s) origin', async () => {
+    const { answer, linkSaves } = routesOver()
+    for (const endpoint of ['ftp://api.example', 'api.example', 'https://']) {
+      const { status, body } = await answer(LINK_PATH, request('POST', JSON.stringify({ endpoint })))
+      expect(status).toBe(400)
+      expect(JSON.parse(body)).toEqual({ code: 'bad-request', message: '自定义端点必须是 http(s) 地址' })
+    }
+    expect(linkSaves).toEqual([])
+  })
+
+  it('refuses a body that names nothing to store', async () => {
+    const { answer, linkSaves } = routesOver()
+    const { status, body } = await answer(LINK_PATH, request('POST', JSON.stringify({})))
+    expect(status).toBe(400)
+    expect(JSON.parse(body)).toEqual({ code: 'bad-request', message: '请求里没有要保存的字段' })
+    expect(linkSaves).toEqual([])
   })
 
   it('refuses a body that states no boolean', async () => {

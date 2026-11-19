@@ -1,4 +1,4 @@
-import type { BeginAuthorizationOutcome, NearTokenGuardState, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { BeginAuthorizationOutcome, NearTokenGuardState, NearTokenImagesPatch, NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 /**
  * A top-up call the Host refused, carrying its stable code so the page can tell
  * "this key is not a device key, reconnect" from "the site said no".
@@ -64,13 +64,13 @@ export interface NearTokenApi {
     images(): Promise<NearTokenImagesState>;
     /** Save the image-generation setting: the tool's switch and one group per enabled model. */
     saveImages(patch: NearTokenImagesPatch): Promise<void>;
-    /** Read the long-connection switch, the site root, and the endpoint it moves to. */
+    /** Read the long-connection switch, the custom endpoint, and the origins they choose between. */
     link(): Promise<NearTokenLinkState>;
     /**
-     * Store the long-connection switch.
-     * @param direct - whether model-facing requests leave from the direct endpoint.
+     * Store the endpoint fields the page moved; a field left out keeps what is stored.
+     * @param patch - the fields to store.
      */
-    saveLink(direct: boolean): Promise<void>;
+    saveLink(patch: NearTokenLinkPatch): Promise<void>;
     /** Read the anti-degradation switch. */
     guard(): Promise<NearTokenGuardState>;
     /**

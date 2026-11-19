@@ -79,6 +79,8 @@ export interface Options {
   directEndpoint: string
   /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
   directLink: Volatile<boolean>
+  /** The custom endpoint the settings page stored, and whether it overrides both origins above. */
+  customEndpoint: Volatile<{ enabled: boolean; url: string }>
   /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
   antiDegrade: Volatile<boolean>
   apiKeyEnv: string
@@ -124,6 +126,18 @@ export const Config = z.object({
    * toggle reaches this running plugin without a remount.
    */
   directLink: z.boolean().default(false).volatile(),
+  /**
+   * The custom endpoint: the address the settings page stores, and whether the
+   * model-facing `/v1` family should use it instead of the site root or
+   * `directEndpoint`. One record so a save stores the switch and the address
+   * together; volatile, so the switch takes effect without a remount.
+   */
+  customEndpoint: z.object({
+    /** Whether the stored address overrides both of the other origins. */
+    enabled: z.boolean().default(false),
+    /** The address, without a trailing slash; empty until the reader fills one in. */
+    url: z.string().default(''),
+  }).volatile(),
   /**
    * The anti-degradation switch: whether a Gemini-4 request body carries the
    * harness's file-reference guidance in Chinese instead of English. Volatile,
@@ -254,8 +268,12 @@ export function apply(ctx: Context, config: Options): void {
   // The model-facing origin follows the picker's switch; the dashboard routes
   // below keep talking to the site root, which is the only origin serving
   // `/api/*`.
-  const relayBaseURL = (): string =>
-    resolveRelayBaseURL(config.baseURL, config.directLink.get(), config.directEndpoint)
+  const relayBaseURL = (): string => {
+    const custom = config.customEndpoint.get()
+    return resolveRelayBaseURL(
+      config.baseURL, config.directLink.get(), config.directEndpoint, custom.enabled ? custom.url : '',
+    )
+  }
   const provider = new NearTokenProvider(ctx, {
     provider: PROVIDER,
     displayName: DISPLAY_NAME,
@@ -416,16 +434,31 @@ export function apply(ctx: Context, config: Options): void {
         direct: config.directLink.get(),
         baseURL: config.baseURL,
         directBaseURL: config.directEndpoint,
+        custom: config.customEndpoint.get().enabled,
+        customBaseURL: config.customEndpoint.get().url,
       }),
-      // The switch is an ordinary Settings write of the volatile field, exactly
-      // like the whitelist: the Loader commits it into this running fiber, so
-      // the next `/v1` request already leaves from the chosen origin.
-      saveLink: async (direct) => {
+      // The switches are ordinary Settings writes of the volatile fields, exactly
+      // like the whitelist: the Loader commits them into this running fiber, so
+      // the next `/v1` request already leaves from the chosen origin. A patch
+      // naming only one field leaves the other's stored value alone.
+      saveLink: async (patch) => {
         const settings = ctx.get('settings') as WhitelistSettings | undefined
         if (settings === undefined) {
-          throw new Error('neartoken: the long-connection switch needs the settings service')
+          throw new Error('neartoken: the endpoint switches need the settings service')
         }
-        await settings.update(SETTINGS_NS, { directLink: direct })
+        const update: Record<string, unknown> = {}
+        if (patch.direct !== undefined) update.directLink = patch.direct
+        if (patch.custom !== undefined || patch.endpoint !== undefined) {
+          const stored = config.customEndpoint.get()
+          const next = { enabled: patch.custom ?? stored.enabled, url: (patch.endpoint ?? stored.url).trim() }
+          // A switch onto an address nobody typed would send every request to no
+          // origin at all, so it is refused here where the reader can fix it.
+          if (next.enabled && next.url === '') {
+            throw new Error('自定义端点地址还没填，请先在 NearToken 设置页填写地址')
+          }
+          update.customEndpoint = next
+        }
+        await settings.update(SETTINGS_NS, update)
       },
       guard: () => ({ enabled: config.antiDegrade.get() }),
       // The same Settings write as the long-connection switch: the next Gemini-4

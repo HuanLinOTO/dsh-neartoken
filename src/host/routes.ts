@@ -13,13 +13,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   AUTHORIZE_PATH, CANCEL_PATH, GUARD_PATH, IMAGES_PATH, LINK_PATH, LOGOUT_PATH, MODELS_PATH, OPEN_PATH, REFRESH_PATH,
-  STATUS_PATH, TOPUP_PATH, USAGE_PATH, isUsageRange,
+  STATUS_PATH, TOPUP_PATH, USAGE_PATH, isEndpointAddress, isUsageRange,
 } from '../protocol.ts'
 import { NearTokenTopupError, type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts'
 import { normalizeAffiliateCode } from '../affiliate.ts'
 import type {
-  NearTokenGuardState, NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState,
-  NearTokenUsageRange, NearTokenUsageState,
+  NearTokenGuardState, NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelMeta,
+  NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState,
 } from '../protocol.ts'
 import type { NearTokenAccount } from './account.ts'
 import type { JsonObject } from './new-api.ts'
@@ -61,13 +61,14 @@ export interface NearTokenRouteDeps {
   createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>
   /** Site root, for turning the site-relative checkout link absolute. */
   baseURL: () => string
-  /** The long-connection switch, the site root, and the endpoint it moves the `/v1` family to. */
+  /** The long-connection switch, the custom endpoint, and the origins they choose between. */
   link: () => NearTokenLinkState
   /**
-   * Persist the long-connection switch.
-   * @param direct - whether model-facing requests leave from the direct endpoint.
+   * Persist the endpoints the page moved. A field the patch leaves out keeps
+   * what is stored, so one switch never rewrites the other's value.
+   * @param patch - the fields to store.
    */
-  saveLink: (direct: boolean) => Promise<void>
+  saveLink: (patch: NearTokenLinkPatch) => Promise<void>
   /** The anti-degradation switch. */
   guard: () => NearTokenGuardState
   /**
@@ -327,10 +328,10 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
     },
   }), `neartoken: ${IMAGES_PATH}`)
 
-  // The long-connection switch the model picker carries: on means every
-  // model-facing request leaves from the direct endpoint instead of the site
-  // root. The dashboard routes here never follow it — that endpoint serves the
-  // relay only.
+  // The origins the model picker and the settings page choose between: the
+  // long-connection switch, and the custom address that overrides both. The
+  // dashboard routes here never follow either — only the model-facing `/v1`
+  // family does.
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: LINK_PATH,
@@ -346,12 +347,13 @@ export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps):
       }
       const body = await readJsonObject(req, res, MAX_BODY_BYTES)
       if (body === undefined) return
-      if (typeof body.direct !== 'boolean') {
-        sendJson(res, 400, { code: 'bad-request', message: 'direct 必须是布尔值' })
+      const patch = parseLinkPatch(body)
+      if (typeof patch === 'string') {
+        sendJson(res, 400, { code: 'bad-request', message: patch })
         return
       }
       try {
-        await deps.saveLink(body.direct)
+        await deps.saveLink(patch)
       } catch (error: unknown) {
         // A refused write leaves the stored switch where it was; the picker puts
         // its toggle back and reports this message.
@@ -454,6 +456,30 @@ function refusalOf(error: unknown): { readonly code: string; readonly message: s
   return {
     code: reason === 'not-dsh' ? 'not-dsh' : reason,
     message: error instanceof Error ? error.message : String(error),
+  }
+}
+
+/**
+ * Read the endpoint fields out of one untrusted link body.
+ *
+ * Only the three fields the page may move are read, and each is checked here so
+ * an unusable address is refused before it reaches the stored setting.
+ * @param body - the parsed request body.
+ * @returns the patch to store, or the refusal to answer.
+ */
+function parseLinkPatch(body: JsonObject): NearTokenLinkPatch | string {
+  const { direct, custom, endpoint } = body
+  if (direct === undefined && custom === undefined && endpoint === undefined) return '请求里没有要保存的字段'
+  if (direct !== undefined && typeof direct !== 'boolean') return 'direct 必须是布尔值'
+  if (custom !== undefined && typeof custom !== 'boolean') return 'custom 必须是布尔值'
+  if (endpoint !== undefined) {
+    if (typeof endpoint !== 'string') return 'endpoint 必须是字符串'
+    if (!isEndpointAddress(endpoint)) return '自定义端点必须是 http(s) 地址'
+  }
+  return {
+    ...typeof direct === 'boolean' ? { direct } : {},
+    ...typeof custom === 'boolean' ? { custom } : {},
+    ...typeof endpoint === 'string' ? { endpoint: endpoint.trim() } : {},
   }
 }
 

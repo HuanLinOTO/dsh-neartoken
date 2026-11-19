@@ -13,9 +13,9 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { readAffiliateCode } from '../affiliate.ts'
 import { computeAmountError, USAGE_RANGES } from '../protocol.ts'
 import type {
-  NearTokenImageModelEntry, NearTokenImagesState, NearTokenLinkState, NearTokenModelEntry, NearTokenModelMeta,
-  NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageModel, NearTokenUsageRange, NearTokenUsageState,
-  NearTokenUsageWindow,
+  NearTokenImageModelEntry, NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelEntry,
+  NearTokenModelMeta, NearTokenModelsState, NearTokenStatus, NearTokenTopupInfo, NearTokenUsageModel, NearTokenUsageRange,
+  NearTokenUsageState, NearTokenUsageWindow,
 } from '../protocol.ts'
 import { NearTokenTopupRefusal, type NearTokenApi } from './api.ts'
 import { parseGroupLabel } from './groups.ts'
@@ -374,26 +374,35 @@ export function NearTokenSection({ api, t }: NearTokenSectionProps) {
 }
 
 /**
- * Which origin the model-facing requests leave from: the site root, or the
- * direct endpoint. The page's own carrier always stays on the site root — only
- * `/v1` follows this menu — so moving it never cuts the page off.
+ * Which origin the model-facing requests leave from: the site root, the direct
+ * endpoint, or an address the reader types. The page's own carrier always stays
+ * on the site root — only `/v1` follows this switch — so moving it never cuts
+ * the page off.
  *
  * The stored side is a Host fact, so it is read once on mount rather than
  * derived from anything on screen.
  * @param props - the injected route carrier and translate.
- * @returns the two-origin menu, or nothing until the Host answered.
+ * @returns the origin switch, with the address row while a custom one is in use.
  */
 function EndpointSwitch({ api, t }: NearTokenSectionInjected) {
   const [link, setLink] = useState<NearTokenLinkState | undefined>(undefined)
   /** Whether a switch write is on the wire. */
   const [busy, setBusy] = useState(false)
-  /** Why the last switch write was refused; cleared by the next one. */
+  /** Why the last write was refused; cleared by the next one. */
   const [error, setError] = useState<string | undefined>(undefined)
+  /** Whether the address row is open without a custom endpoint being in use yet. */
+  const [editing, setEditing] = useState(false)
+  /** What the address row holds while it is open. */
+  const [draft, setDraft] = useState('')
 
   useEffect(() => {
     let live = true
     void api.link().then((next) => {
-      if (live) setLink(next)
+      if (!live) return
+      setLink(next)
+      // A Host that predates the custom endpoint answers neither field, so the
+      // row starts empty instead of holding undefined.
+      setDraft(next.customBaseURL ?? '')
     }, () => {
       // A route the Host does not serve leaves the menu out rather than
       // offering a switch whose every click would be refused.
@@ -402,47 +411,103 @@ function EndpointSwitch({ api, t }: NearTokenSectionInjected) {
   }, [api])
 
   /**
-   * Move the model-facing origin. The menu shows the move at once and puts it
-   * back if the Host refused, so a click always answers instead of leaving the
-   * reader guessing whether it landed.
-   * @param direct - whether `/v1` should leave from the direct endpoint.
+   * Store one move. The switch shows it at once and takes it back if the Host
+   * refused, so a click always answers instead of leaving the reader guessing
+   * whether it landed.
+   * @param patch - the endpoint fields to store.
+   * @param done - runs once the Host accepted the write.
    */
-  const choose = (direct: boolean): void => {
+  const save = (patch: NearTokenLinkPatch, done?: () => void): void => {
     if (busy) return
     setBusy(true)
     setError(undefined)
-    setLink(current => current === undefined ? current : { ...current, direct })
-    void api.saveLink(direct).then(() => {
+    void api.saveLink(patch).then(() => {
       setBusy(false)
+      if (patch.endpoint !== undefined) setDraft(patch.endpoint)
+      setLink(current => current === undefined ? current : {
+        ...current,
+        ...patch.direct === undefined ? {} : { direct: patch.direct },
+        ...patch.custom === undefined ? {} : { custom: patch.custom },
+        ...patch.endpoint === undefined ? {} : { customBaseURL: patch.endpoint },
+      })
+      done?.()
     }, (failure: unknown) => {
       // The stored switch did not move, so the menu goes back with it.
       setBusy(false)
-      setLink(current => current === undefined ? current : { ...current, direct: !direct })
       setError(t('link.failed', { message: messageOf(failure) }))
     })
   }
 
+  /** Store what the address row holds as the custom endpoint. */
+  const submitCustom = (): void => {
+    const address = draft.trim()
+    if (address === '') {
+      setError(t('link.customEmpty'))
+      return
+    }
+    save({ endpoint: address, custom: true }, () => { setEditing(false) })
+  }
+
   if (link === undefined) return null
+  const custom = link.custom === true
+  const customAddress = link.customBaseURL ?? ''
   const options = [
-    { direct: false, host: hostOf(link.baseURL) },
-    { direct: true, host: hostOf(link.directBaseURL) },
-  ]
+    { key: 'site', label: hostOf(link.baseURL), on: !custom && !link.direct, patch: { direct: false, custom: false } },
+    { key: 'direct', label: hostOf(link.directBaseURL), on: !custom && link.direct, patch: { direct: true, custom: false } },
+    { key: 'custom', label: t('link.custom'), on: custom, patch: { custom: true } },
+  ] satisfies { key: string; label: string; on: boolean; patch: NearTokenLinkPatch }[]
   return (
     <>
       <div className={css.segmented} role="group" aria-label={t('link.label')}>
         {options.map(option => (
           <button
-            key={String(option.direct)}
+            key={option.key}
             type="button"
-            className={link.direct === option.direct ? `${css.segment} ${css.segmentOn}` : css.segment}
-            aria-pressed={link.direct === option.direct}
+            className={option.on ? `${css.segment} ${css.segmentOn}` : css.segment}
+            aria-pressed={option.on}
             disabled={busy}
-            onClick={() => { choose(option.direct) }}
+            onClick={() => {
+              if (option.key !== 'custom') {
+                setEditing(false)
+                setDraft(customAddress)
+                save(option.patch)
+                return
+              }
+              // A stored address switches straight on; without one the address
+              // row opens instead of storing a switch that points nowhere.
+              setEditing(true)
+              if (customAddress.trim() !== '') save(option.patch)
+            }}
           >
-            {option.host}
+            {option.label}
           </button>
         ))}
       </div>
+      {editing || custom
+        ? (
+          <div className={css.endpointRow}>
+            <input
+              className={css.endpointInput}
+              type="url"
+              inputMode="url"
+              value={draft}
+              placeholder={t('link.customPlaceholder')}
+              aria-label={t('link.custom')}
+              disabled={busy}
+              onChange={(event) => { setDraft(event.target.value) }}
+              onKeyDown={(event) => { if (event.key === 'Enter') submitCustom() }}
+            />
+            <button
+              type="button"
+              className={`${css.button} ${css.buttonSmall}`}
+              disabled={busy}
+              onClick={submitCustom}
+            >
+              {t('link.save')}
+            </button>
+          </div>
+        )
+        : null}
       {error === undefined ? null : <span className={css.endpointError} role="status">{error}</span>}
     </>
   )

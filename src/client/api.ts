@@ -86,13 +86,13 @@ export interface NearTokenApi {
   images(): Promise<NearTokenImagesState>
   /** Save the image-generation setting: the tool's switch and one group per enabled model. */
   saveImages(patch: NearTokenImagesPatch): Promise<void>
-  /** Read the long-connection switch, the site root, and the endpoint it moves to. */
+  /** Read the long-connection switch, the custom endpoint, and the origins they choose between. */
   link(): Promise<NearTokenLinkState>
   /**
-   * Store the long-connection switch.
-   * @param direct - whether model-facing requests leave from the direct endpoint.
+   * Store the endpoint fields the page moved; a field left out keeps what is stored.
+   * @param patch - the fields to store.
    */
-  saveLink(direct: boolean): Promise<void>
+  saveLink(patch: NearTokenLinkPatch): Promise<void>
   /** Read the anti-degradation switch. */
   guard(): Promise<NearTokenGuardState>
   /**
@@ -220,11 +220,11 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
     async link() {
       return await jsonOf<NearTokenLinkState>(await fetcher(LINK_PATH, { headers: { accept: 'application/json' } }))
     },
-    async saveLink(direct) {
+    async saveLink(patch) {
       const response = await fetcher(LINK_PATH, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ direct } satisfies NearTokenLinkPatch),
+        body: JSON.stringify(patch satisfies NearTokenLinkPatch),
       })
       if (!response.ok) {
         const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }

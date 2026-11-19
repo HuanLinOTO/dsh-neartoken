@@ -4,7 +4,7 @@
  * made here is what the /model popup shows next, and vice versa.
  */
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
-import type { NearTokenGuardState, NearTokenLinkState } from '../protocol.ts';
+import type { NearTokenGuardState, NearTokenLinkPatch, NearTokenLinkState } from '../protocol.ts';
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client';
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store';
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client';
@@ -22,13 +22,13 @@ export interface ModelGroupSelectInjected {
      * @returns the Host outcome, or undefined when this Session cannot select a model.
      */
     select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>;
-    /** Read the long-connection switch beside the endpoint it moves the `/v1` family to. */
+    /** Read the long-connection switch and the custom endpoint beside the origins they choose between. */
     readLink: () => Promise<NearTokenLinkState>;
     /**
-     * Store the long-connection switch.
-     * @param direct - whether model-facing requests leave from the direct endpoint.
+     * Store the endpoint fields this seat moved; a field left out keeps what is stored.
+     * @param patch - the fields to store.
      */
-    saveLink: (direct: boolean) => Promise<void>;
+    saveLink: (patch: NearTokenLinkPatch) => Promise<void>;
     /** Read the anti-degradation switch beside the model family it serves. */
     readGuard: () => Promise<NearTokenGuardState>;
     /**

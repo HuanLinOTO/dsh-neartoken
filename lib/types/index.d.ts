@@ -19,6 +19,11 @@ export interface Options {
     directEndpoint: string;
     /** Whether the model-facing `/v1` family leaves from `directEndpoint`. */
     directLink: Volatile<boolean>;
+    /** The custom endpoint the settings page stored, and whether it overrides both origins above. */
+    customEndpoint: Volatile<{
+        enabled: boolean;
+        url: string;
+    }>;
     /** Whether a Gemini-4 request body has its file-reference guidance rewritten in Chinese. */
     antiDegrade: Volatile<boolean>;
     apiKeyEnv: string;
@@ -66,6 +71,23 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * toggle reaches this running plugin without a remount.
      */
     directLink: z<boolean, boolean, "volatile-defined">;
+    /**
+     * The custom endpoint: the address the settings page stores, and whether the
+     * model-facing `/v1` family should use it instead of the site root or
+     * `directEndpoint`. One record so a save stores the switch and the address
+     * together; volatile, so the switch takes effect without a remount.
+     */
+    customEndpoint: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the stored address overrides both of the other origins. */
+        enabled: z<boolean, boolean, "defined">;
+        /** The address, without a trailing slash; empty until the reader fills one in. */
+        url: z<string, string, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the stored address overrides both of the other origins. */
+        enabled: z<boolean, boolean, "defined">;
+        /** The address, without a trailing slash; empty until the reader fills one in. */
+        url: z<string, string, "defined">;
+    }>>>, "volatile">;
     /**
      * The anti-degradation switch: whether a Gemini-4 request body carries the
      * harness's file-reference guidance in Chinese instead of English. Volatile,
@@ -206,6 +228,23 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * toggle reaches this running plugin without a remount.
      */
     directLink: z<boolean, boolean, "volatile-defined">;
+    /**
+     * The custom endpoint: the address the settings page stores, and whether the
+     * model-facing `/v1` family should use it instead of the site root or
+     * `directEndpoint`. One record so a save stores the switch and the address
+     * together; volatile, so the switch takes effect without a remount.
+     */
+    customEndpoint: z<NoInfer<Schemastery.ObjectS<NoInfer<{
+        /** Whether the stored address overrides both of the other origins. */
+        enabled: z<boolean, boolean, "defined">;
+        /** The address, without a trailing slash; empty until the reader fills one in. */
+        url: z<string, string, "defined">;
+    }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        /** Whether the stored address overrides both of the other origins. */
+        enabled: z<boolean, boolean, "defined">;
+        /** The address, without a trailing slash; empty until the reader fills one in. */
+        url: z<string, string, "defined">;
+    }>>>, "volatile">;
     /**
      * The anti-degradation switch: whether a Gemini-4 request body carries the
      * harness's file-reference guidance in Chinese instead of English. Volatile,

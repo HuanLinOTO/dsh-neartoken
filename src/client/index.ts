@@ -29,6 +29,7 @@ import { createNearTokenApi } from './api.ts'
 import { ModelGroupSelect } from './ModelGroupSelect.tsx'
 import { NearTokenSection, type NearTokenSectionInjected } from './NearTokenSection.tsx'
 import { en, zh, type GroupKey } from './locales.ts'
+import type { NearTokenLinkPatch } from '../protocol.ts'
 import type { ModelGroupSelectInjected } from './slots.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -87,7 +88,7 @@ export function apply(ctx: ClientContext): void {
             ? directory.select(selection)
             : Promise.resolve(undefined),
           readLink: () => api.link(),
-          saveLink: (direct: boolean) => api.saveLink(direct),
+          saveLink: (patch: NearTokenLinkPatch) => api.saveLink(patch),
           readGuard: () => api.guard(),
           saveGuard: (enabled: boolean) => api.saveGuard(enabled),
         }

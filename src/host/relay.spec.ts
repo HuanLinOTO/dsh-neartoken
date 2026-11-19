@@ -17,4 +17,16 @@ describe('relayBaseURL', () => {
   it('uses a configured endpoint and drops its trailing slash', () => {
     expect(relayBaseURL('https://neartoken.cc', true, 'https://direct.example/')).toBe('https://direct.example')
   })
+
+  it('puts the custom address above both origins the switch picks between', () => {
+    expect(relayBaseURL('https://neartoken.cc', false, DEFAULT_DIRECT_ENDPOINT, 'https://api.example/'))
+      .toBe('https://api.example')
+    expect(relayBaseURL('https://neartoken.cc', true, DEFAULT_DIRECT_ENDPOINT, 'https://api.example'))
+      .toBe('https://api.example')
+  })
+
+  it('falls back to the switch while the custom address is empty', () => {
+    expect(relayBaseURL('https://neartoken.cc', false, DEFAULT_DIRECT_ENDPOINT, '   ')).toBe('https://neartoken.cc')
+    expect(relayBaseURL('https://neartoken.cc', true, DEFAULT_DIRECT_ENDPOINT, '')).toBe(DEFAULT_DIRECT_ENDPOINT)
+  })
 })

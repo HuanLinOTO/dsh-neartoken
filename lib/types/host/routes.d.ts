@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type NearTokenTopupInfo, type NearTokenTopupOrder } from './topup.ts';
-import type { NearTokenGuardState, NearTokenImagesState, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
+import type { NearTokenGuardState, NearTokenImagesState, NearTokenLinkPatch, NearTokenLinkState, NearTokenModelMeta, NearTokenModelsState, NearTokenUsageRange, NearTokenUsageState } from '../protocol.ts';
 import type { NearTokenAccount } from './account.ts';
 import type { JsonObject } from './new-api.ts';
 /** What the routes need from the plugin. */
@@ -45,13 +45,14 @@ export interface NearTokenRouteDeps {
     createTopup: (amount: number, paymentMethod: string) => Promise<NearTokenTopupOrder>;
     /** Site root, for turning the site-relative checkout link absolute. */
     baseURL: () => string;
-    /** The long-connection switch, the site root, and the endpoint it moves the `/v1` family to. */
+    /** The long-connection switch, the custom endpoint, and the origins they choose between. */
     link: () => NearTokenLinkState;
     /**
-     * Persist the long-connection switch.
-     * @param direct - whether model-facing requests leave from the direct endpoint.
+     * Persist the endpoints the page moved. A field the patch leaves out keeps
+     * what is stored, so one switch never rewrites the other's value.
+     * @param patch - the fields to store.
      */
-    saveLink: (direct: boolean) => Promise<void>;
+    saveLink: (patch: NearTokenLinkPatch) => Promise<void>;
     /** The anti-degradation switch. */
     guard: () => NearTokenGuardState;
     /**

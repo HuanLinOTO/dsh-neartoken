@@ -12,9 +12,13 @@
 export declare const DEFAULT_DIRECT_ENDPOINT = "https://direct.neartoken.cc";
 /**
  * Pick the origin one `/v1` request is sent to.
+ *
+ * A custom address the reader stored wins over both origins the switch picks
+ * between: it is what they typed, so nothing else may override it.
  * @param siteRoot - the configured site root, without a trailing slash.
  * @param direct - whether the long-connection switch is on.
  * @param endpoint - the configured direct endpoint, without a trailing slash.
+ * @param custom - the stored custom endpoint; empty while the reader set none.
  * @returns the origin for the model-facing endpoints.
  */
-export declare function relayBaseURL(siteRoot: string, direct: boolean, endpoint?: string): string;
+export declare function relayBaseURL(siteRoot: string, direct: boolean, endpoint?: string, custom?: string): string;
