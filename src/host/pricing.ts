@@ -26,6 +26,22 @@ import { isChatOffering } from './model-caps.ts'
  */
 const GROUP_REF_PATTERN = /^#[0-9]+$/
 
+/**
+ * The wire the site declares for one model, in this plugin's own vocabulary.
+ *
+ * The site's `api_style` spells Gemini's wire `gemini`; this plugin calls that
+ * wire `genai`. The other three names are the same on both sides.
+ */
+export type NearTokenApiStyle = 'chat' | 'responses' | 'anthropic' | 'genai'
+
+/** The site's `api_style` vocabulary, mapped onto this plugin's wire names. */
+const API_STYLE_WIRES = new Map<string, NearTokenApiStyle>([
+  ['chat', 'chat'],
+  ['responses', 'responses'],
+  ['anthropic', 'anthropic'],
+  ['gemini', 'genai'],
+])
+
 /** One model row from `/api/pricing`. */
 interface PricingModel {
   readonly model_name: string
@@ -39,6 +55,10 @@ interface PricingModel {
   readonly input?: readonly string[]
   /** Thinking-effort names the console states for this model; absent when unmaintained. */
   readonly reasoning?: readonly string[]
+  /** Wire the console states for this model; absent when unmaintained. */
+  readonly apiStyle?: NearTokenApiStyle
+  /** `true` when the site holds this model's Responses turn server-side. */
+  readonly statefulResponses?: boolean
 }
 
 /** The parts of `/api/pricing` this adapter consumes. */
@@ -76,6 +96,13 @@ export interface NearTokenRoute {
   readonly input?: readonly string[]
   /** Thinking-effort names the site declared for this model. */
   readonly reasoning?: readonly string[]
+  /** Wire the site declared for this model; absent when it declared none. */
+  readonly apiStyle?: NearTokenApiStyle
+  /**
+   * Whether the site stores this model's Responses turn and accepts
+   * `previous_response_id` for it.
+   */
+  readonly statefulResponses?: boolean
 }
 
 /**
@@ -121,6 +148,16 @@ function reasoningLevelNames(value: unknown): readonly string[] | undefined {
 }
 
 /**
+ * Read one model's declared wire.
+ * @param value - the raw `api_style` member.
+ * @returns the wire to dispatch through, or undefined when the site declared
+ * none this plugin knows.
+ */
+function apiStyleOf(value: unknown): NearTokenApiStyle | undefined {
+  return typeof value === 'string' ? API_STYLE_WIRES.get(value) : undefined
+}
+
+/**
  * Expand one pricing payload into one route per (group, model) pair.
  * @param pricing - the loaded endpoint payload.
  * @returns routes in endpoint order, group order preserved per model.
@@ -143,6 +180,8 @@ export function expandRoutes(pricing: NearTokenPricing): readonly NearTokenRoute
         ...model.endpoints === undefined ? {} : { endpoints: model.endpoints },
         ...model.input === undefined ? {} : { input: model.input },
         ...model.reasoning === undefined ? {} : { reasoning: model.reasoning },
+        ...model.apiStyle === undefined ? {} : { apiStyle: model.apiStyle },
+        ...model.statefulResponses === undefined ? {} : { statefulResponses: model.statefulResponses },
       })
     }
   }
@@ -170,6 +209,10 @@ export function parsePricing(value: unknown): NearTokenPricing {
     const endpoints = endpointTypes(row.supported_endpoint_types)
     const input = inputModalities(row.input_modalities)
     const reasoning = reasoningLevelNames(row.reasoning_levels)
+    const apiStyle = apiStyleOf(row.api_style)
+    // Only an explicit `true` states anything: an absent field is the ordinary
+    // stateless model, which is also what a site older than this field answers.
+    const statefulResponses = row.responses_stateful === true ? true : undefined
     models.push({
       model_name: name,
       enable_groups: groups.filter((group): group is string => typeof group === 'string'),
@@ -178,6 +221,8 @@ export function parsePricing(value: unknown): NearTokenPricing {
       ...endpoints === undefined ? {} : { endpoints },
       ...input === undefined ? {} : { input },
       ...reasoning === undefined ? {} : { reasoning },
+      ...apiStyle === undefined ? {} : { apiStyle },
+      ...statefulResponses === undefined ? {} : { statefulResponses },
     })
   }
   const ratio: Record<string, number> = {}

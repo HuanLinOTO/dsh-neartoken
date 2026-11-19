@@ -27,7 +27,7 @@ import {
 import type { ModalitySources, ReasoningSources } from './model-caps.ts'
 import { translateGuidance } from './anti-degrade.ts'
 import { isGemini4 } from '../protocol.ts'
-import { wireFor } from './protocol-router.ts'
+import { RESPONSES_STATELESS, wireFor } from './protocol-router.ts'
 import { decodeRoute } from './route-id.ts'
 import { postJson } from './request-body.ts'
 import { transportFailure } from './wire-error.ts'
@@ -39,6 +39,33 @@ import { selectedRoutes } from './whitelist.ts'
 
 // Re-exported for callers that decode a catalog id without holding an adapter.
 export { decodeRoute } from './route-id.ts'
+
+/** One request to post: where it goes, what it carries, and how it is signed. */
+interface Post {
+  readonly url: string
+  readonly headers: Record<string, string>
+  readonly payload: string
+  readonly signal: AbortSignal | undefined
+}
+
+/**
+ * Post one encoded body and report a transport failure as one.
+ * @param post - the request to send.
+ * @returns the streaming response, whatever its status.
+ */
+async function send(post: Post): Promise<Response> {
+  try {
+    return await postJson(fetch, post.url, {
+      headers: post.headers,
+      json: post.payload,
+      signal: post.signal,
+    })
+  } catch (error) {
+    // A caller cancellation is not a transport failure; surface it unchanged.
+    if (post.signal?.aborted) throw error
+    throw transportFailure(error)
+  }
+}
 
 /** Display name of the single provider route this adapter owns. */
 export const NEARTOKEN_PROVIDER_NAME = 'NearToken'
@@ -217,7 +244,9 @@ export class NearTokenAdapter extends LlmAdapter {
     // The session travels as a header too, so a sticky-session rule can pin the
     // conversation to one upstream channel.
     const sessionId = sessionKeyOf(options)
-    const wire = wireFor(model)
+    // What the site declared for this route wins over the model's family name,
+    // and a route it declared stateful continues the turn it stored.
+    const wire = wireFor(model, route)
     // Images are inlined before the body is built: a wire that cannot see them
     // must not quietly send text only, which is exactly what a dropped
     // screenshot looks like to the model on the other end. The store re-encodes
@@ -235,26 +264,41 @@ export class NearTokenAdapter extends LlmAdapter {
     // descriptions) is covered by the one substring swap.
     const serialized = JSON.stringify(body)
     const payload = this.deps.antiDegrade() && isGemini4(model) ? translateGuidance(serialized) : serialized
-    let response: Response
-    try {
-      // The whole tool set rides on every call, so postJson packs the body when
-      // it is big enough to pay for itself, and re-sends it in the clear if the
-      // gateway rejects the encoding (see request-body.ts).
-      response = await postJson(fetch, wire.url(this.deps.baseURL(), model), {
+    // The whole tool set rides on every call, so postJson packs the body when
+    // it is big enough to pay for itself, and re-sends it in the clear if the
+    // gateway rejects the encoding (see request-body.ts).
+    let attempt = wire
+    let response = await send({
+      url: wire.url(this.deps.baseURL(), model),
+      headers: {
+        ...attributionHeaders(),
+        ...wire.headers(key, groupRef, sessionId),
+      },
+      payload,
+      signal: options.signal,
+    })
+    if (!response.ok && body.previous_response_id !== undefined) {
+      // A stateful request names a turn the site stored. An upstream that holds
+      // no such turn refuses it — another channel served it, it expired, or the
+      // model never stored one — and the same conversation is always acceptable
+      // as a full history, so one refusal falls back to the stateless form.
+      await response.body?.cancel().catch(() => {})
+      attempt = RESPONSES_STATELESS
+      response = await send({
+        url: attempt.url(this.deps.baseURL(), model),
         headers: {
           ...attributionHeaders(),
-          ...wire.headers(key, groupRef, sessionId),
+          ...attempt.headers(key, groupRef, sessionId),
         },
-        json: payload,
+        // The stateless body states the whole conversation itself. The
+        // anti-degradation swap is not applied here: it rewrites only a Gemini
+        // body, and only the Responses wire reaches this fallback.
+        payload: JSON.stringify(attempt.serialize(options, model, images)),
         signal: options.signal,
       })
-    } catch (error) {
-      // A caller cancellation is not a transport failure; surface it unchanged.
-      if (options.signal?.aborted) throw error
-      throw transportFailure(error)
     }
     try {
-      yield* wire.parse(response, options.signal)
+      yield* attempt.parse(response, options.signal)
     } catch (error) {
       // A body read that dies after a healthy start is the transport's own
       // failure (undici reports the dropped socket as a bare

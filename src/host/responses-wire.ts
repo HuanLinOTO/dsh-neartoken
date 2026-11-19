@@ -23,8 +23,15 @@ type InputItem = Record<string, unknown>
 /** The replay envelope kind this wire writes and reads. */
 const REPLAY_KIND = 'neartoken-responses'
 
-/** The only envelope version this build understands. */
+/** The envelope version a turn kept on the client records. */
 const REPLAY_VERSION = 1
+
+/**
+ * The envelope version a turn kept upstream records: nothing but the response
+ * id the next request names, because the reasoning items and the calls live on
+ * the site.
+ */
+const STATEFUL_VERSION = 2
 
 /**
  * One reasoning item, reduced to what a later request sends back.
@@ -42,8 +49,13 @@ interface ReasoningItem {
   encryptedContent: string
 }
 
-/** Per-block replay metadata, index-aligned with the blocks the stream emitted. */
-type ReplayBlock = { type: 'text' | 'tool-call' } | ({ type: 'reasoning' } & ReasoningItem)
+/**
+ * Per-block replay metadata, index-aligned with the blocks the stream emitted.
+ *
+ * A block whose payload this build does not store — every block of a turn the
+ * site kept — is recorded as its kind alone.
+ */
+type ReplayBlock = { type: 'text' | 'tool-call' | 'reasoning' } | ({ type: 'reasoning' } & ReasoningItem)
 
 /** What a stored envelope must match before this request may replay it. */
 interface ReplayGate {
@@ -206,18 +218,16 @@ function toolImagesItem(pictures: readonly WireImage[]): InputItem {
 }
 
 /**
- * Serialize one harness request into a responses body.
- * @param options - the harness request.
- * @param model - the real model id the provider should route to.
- * @returns the ready-to-JSON body object.
+ * Serialize one run of messages into responses input items.
+ * @param messages - the messages to send, in order.
+ * @param gate - the provider route and model this request asks for.
+ * @param images - the images this request inlined, keyed by attachment id.
+ * @returns the items, in order.
  */
-export function serializeRequest(
-  options: GenerateOptions, model: string, images: WireImages = new Map(),
-): Record<string, unknown> {
+function inputItems(messages: readonly RequestMessage[], gate: ReplayGate, images: WireImages): InputItem[] {
   const input: InputItem[] = []
   const pending: WireImage[] = []
-  const gate: ReplayGate = { provider: options.provider, model }
-  for (const message of options.messages) {
+  for (const message of messages) {
     // A function_call_output is a string. The pictures an uninterrupted run of
     // tool results returned follow the last one, so a parallel batch keeps its
     // tool items together instead of splitting them with a user item.
@@ -229,6 +239,85 @@ export function serializeRequest(
     input.push(...serializeMessage(message, gate, images))
   }
   if (pending.length > 0) input.push(toolImagesItem(pending))
+  return input
+}
+
+/**
+ * The members every responses body carries, other than its input.
+ * @param options - the harness request.
+ * @returns the optional members this request states.
+ */
+function requestMembers(options: GenerateOptions): Record<string, unknown> {
+  const members: Record<string, unknown> = {}
+  if (options.system !== undefined && options.system.length > 0) members.instructions = options.system
+  if (options.tools !== undefined && options.tools.length > 0) {
+    members.tools = options.tools.map(tool => ({
+      type: 'function',
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }))
+  }
+  if (options.temperature !== undefined) members.temperature = options.temperature
+  if (options.maxTokens !== undefined) members.max_output_tokens = options.maxTokens
+  if (options.reasoningEffort !== undefined) {
+    // concise rather than auto: auto lets the model pick, and on this site it
+    // picks a summary that is a wall of headings with almost no prose, while
+    // concise streams the reasoning as text a reader can follow.
+    members.reasoning = { effort: options.reasoningEffort, summary: 'concise' }
+  }
+  return members
+}
+
+/** The stored turn a stateful request continues. */
+interface PreviousTurn {
+  /** The upstream's own id for the response it stored. */
+  readonly id: string
+  /** Where that turn's assistant message sits in the conversation. */
+  readonly index: number
+}
+
+/**
+ * Find the response a stateful request continues.
+ *
+ * Only the latest assistant turn can be it: the request sends what came after
+ * that turn, and everything older already sits inside the stored one. A turn
+ * with nothing after it continues nothing either — there would be no input.
+ * @param messages - the request's conversation.
+ * @param gate - the provider route and model this request asks for.
+ * @returns the stored id and its position, or undefined when this request has
+ * to send the whole history.
+ */
+function previousTurn(messages: readonly RequestMessage[], gate: ReplayGate): PreviousTurn | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'assistant') continue
+    if (index === messages.length - 1) return undefined
+    const source = (message as {
+      source?: { kind?: string; provider?: string; model?: string; replayState?: unknown }
+    }).source
+    if (source?.kind !== 'model' || source.replayState === undefined) return undefined
+    const recorded = decodeRoute(source.model ?? '').model
+    if (source.provider !== gate.provider || recorded !== gate.model) return undefined
+    const response = asObject(asObject(source.replayState)?.response)
+    if (response?.kind !== REPLAY_KIND || response.version !== STATEFUL_VERSION) return undefined
+    const id = stringOf(response.id)
+    return id === undefined || id === '' ? undefined : { id, index }
+  }
+  return undefined
+}
+
+/**
+ * Serialize one harness request into a stateless responses body.
+ * @param options - the harness request.
+ * @param model - the real model id the provider should route to.
+ * @param images - the images this request inlined, keyed by attachment id.
+ * @returns the ready-to-JSON body object.
+ */
+export function serializeRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
+  const gate: ReplayGate = { provider: options.provider, model }
   // store:false keeps the turn on the client, and `include` is what makes the
   // upstream emit the ciphertext at all: an upstream that was not asked may
   // answer with no reasoning item, and a turn without ciphertext cannot be
@@ -237,31 +326,48 @@ export function serializeRequest(
   // reasoning field an unasked model has nothing to put in.
   const body: Record<string, unknown> = {
     model,
-    input,
+    input: inputItems(options.messages, gate, images),
     stream: true,
     store: false,
     ...options.reasoningEffort === undefined ? {} : { include: ['reasoning.encrypted_content'] },
   }
   const affinityKey = sessionKeyOf(options)
   if (affinityKey !== undefined) body.prompt_cache_key = affinityKey
-  if (options.system !== undefined && options.system.length > 0) body.instructions = options.system
-  if (options.tools !== undefined && options.tools.length > 0) {
-    body.tools = options.tools.map(tool => ({
-      type: 'function',
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    }))
+  return { ...body, ...requestMembers(options) }
+}
+
+/**
+ * Serialize one harness request into a stateful responses body.
+ *
+ * The site holds the conversation, so a request that follows a turn it stored
+ * names that turn and sends only what came after it. The reasoning items the
+ * stateless path replays are not sent: they live on the site with everything
+ * else, and the ciphertext that makes them replayable is never requested here.
+ * @param options - the harness request.
+ * @param model - the real model id the provider should route to.
+ * @param images - the images this request inlined, keyed by attachment id.
+ * @returns the ready-to-JSON body object.
+ */
+export function serializeStatefulRequest(
+  options: GenerateOptions, model: string, images: WireImages = new Map(),
+): Record<string, unknown> {
+  const gate: ReplayGate = { provider: options.provider, model }
+  const previous = previousTurn(options.messages, gate)
+  const body: Record<string, unknown> = {
+    model,
+    input: inputItems(
+      previous === undefined ? options.messages : options.messages.slice(previous.index + 1), gate, images,
+    ),
+    stream: true,
+    // store:true is what makes the next request able to name this turn; it is
+    // sent on every stateful request, the first one included, because the turn
+    // this request produces is the one the following request continues.
+    store: true,
+    ...previous === undefined ? {} : { previous_response_id: previous.id },
   }
-  if (options.temperature !== undefined) body.temperature = options.temperature
-  if (options.maxTokens !== undefined) body.max_output_tokens = options.maxTokens
-  if (options.reasoningEffort !== undefined) {
-    // concise rather than auto: auto lets the model pick, and on this site it
-    // picks a summary that is a wall of headings with almost no prose, while
-    // concise streams the reasoning as text a reader can follow.
-    body.reasoning = { effort: options.reasoningEffort, summary: 'concise' }
-  }
-  return body
+  const affinityKey = sessionKeyOf(options)
+  if (affinityKey !== undefined) body.prompt_cache_key = affinityKey
+  return { ...body, ...requestMembers(options) }
 }
 
 /** One block being assembled, keyed by the wire's item id. */
@@ -285,6 +391,8 @@ interface Assembly {
   toolBlocks: Map<string, OpenBlock>
   nextIndex: number
   usage: TokenUsage | null
+  /** The upstream's id for this response, as the terminal event reported it. */
+  responseId: string | null
   status: string | null
   incomplete: boolean
 }
@@ -357,6 +465,29 @@ function replayOf(state: Assembly, item: ReasoningItem): ReplayEnvelope {
   if (state.reasoning === null) entries.unshift([-1, { type: 'reasoning', ...item }])
   return {
     response: { kind: REPLAY_KIND, version: REPLAY_VERSION },
+    blocks: entries.map(([, block]) => block),
+  }
+}
+
+/**
+ * The envelope a turn kept upstream stores for the next request.
+ *
+ * One entry per emitted block, in the same order and at the same positions as
+ * {@link replayOf} writes them, so assembly prunes this envelope in step with
+ * the blocks it describes. The entries carry no payload: everything the turn
+ * produced is on the site, and the id is the whole of what comes back.
+ * @param state - the finished assembly state.
+ * @param id - the upstream's id for the response it stored.
+ * @returns the versioned envelope.
+ */
+function statefulReplayOf(state: Assembly, id: string): ReplayEnvelope {
+  const blocks = new Map<number, ReplayBlock>()
+  if (state.text !== null) blocks.set(state.text.index, { type: 'text' })
+  if (state.reasoning !== null) blocks.set(state.reasoning.index, { type: 'reasoning' })
+  for (const block of state.toolBlocks.values()) blocks.set(block.index, { type: 'tool-call' })
+  const entries = [...blocks.entries()].sort(([left], [right]) => left - right)
+  return {
+    response: { kind: REPLAY_KIND, version: STATEFUL_VERSION, id },
     blocks: entries.map(([, block]) => block),
   }
 }
@@ -475,6 +606,10 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
           if (state.reasoningItem !== null) break
         }
       }
+      // A stateful turn is continued by naming this response, so its id is
+      // what the stored envelope is for.
+      const id = stringOf(response.id)
+      if (id !== undefined && id !== '') state.responseId = id
       if (type === 'response.incomplete') state.incomplete = true
       const status = stringOf(response.status)
       if (status !== undefined) state.status = status
@@ -507,13 +642,25 @@ function finishOf(state: Assembly): FinishReason {
   return { kind: 'stop' }
 }
 
+/** What the request that produced this stream asked the upstream for. */
+export interface ParseOptions {
+  /**
+   * Whether the request asked the upstream to store the turn. A stored turn is
+   * replayed by its id, not by the reasoning ciphertext.
+   */
+  readonly stateful?: boolean
+}
+
 /**
  * Parse one streamed responses response into harness chunks.
  * @param response - the streaming fetch response.
  * @param signal - cancellation passthrough for the read loop.
+ * @param options - what the request asked the upstream for.
  * @returns the chunk stream.
  */
-export async function* parseSse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk> {
+export async function* parseSse(
+  response: Response, signal: AbortSignal | undefined, options: ParseOptions = {},
+): AsyncGenerator<StreamChunk> {
   if (!response.ok || response.body === null) {
     const detail = await response.text().catch(() => '')
     throw gatewayError(detail, response.status, response.headers)
@@ -526,6 +673,7 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
     toolBlocks: new Map(),
     nextIndex: 0,
     usage: null,
+    responseId: null,
     status: null,
     incomplete: false,
   }
@@ -558,6 +706,11 @@ export async function* parseSse(response: Response, signal: AbortSignal | undefi
   // hand back. A visible summary is not the test: an upstream may stream the
   // item only with its terminal events, and requiring the streamed block threw
   // away exactly those turns — the ones whose ciphertext was still good.
-  const replay = state.reasoningItem === null ? undefined : replayOf(state, state.reasoningItem)
+  //
+  // A turn the site stored needs no item: its id is enough to continue it, and
+  // a stored turn without an id is one nothing can continue.
+  const replay = options.stateful === true
+    ? state.responseId === null ? undefined : statefulReplayOf(state, state.responseId)
+    : state.reasoningItem === null ? undefined : replayOf(state, state.reasoningItem)
   yield replay === undefined ? { type: 'finish', reason } : { type: 'finish', reason, replayState: replay }
 }

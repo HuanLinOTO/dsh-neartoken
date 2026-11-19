@@ -9,9 +9,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { BlockAssembler, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, ReasoningEffortId, ReplayEnvelope, StreamChunk, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { parseSse, serializeRequest } from './responses-wire.ts'
+import { parseSse, serializeRequest, serializeStatefulRequest } from './responses-wire.ts'
 
 /** The ciphertext one turn was issued; it must come back byte for byte. */
 const ENCRYPTED = 'gAAAAABq0b83Zk9uYWdlbnQtc2VjcmV0'
@@ -384,5 +384,163 @@ describe('responses reasoning replay', () => {
   it('sends the plain turn when the history carries no replay state', () => {
     const input = inputOf('gpt-5.5', { provider: 'neartoken', model: 'gpt-5.5' })
     expect(input.map(item => item.type ?? item.role)).toEqual(['user', 'assistant', 'function_call'])
+  })
+})
+
+/** The id a site that stores the turn answers with. */
+const RESPONSE_ID = 'resp_01J8ZQ9m2Q'
+
+/** One turn the site kept: reasoning, visible text, and the id it stored it under. */
+const STATEFUL_TURN = [
+  frame({ type: 'response.reasoning_summary_text.delta', delta: SUMMARY_TEXT }),
+  frame({ type: 'response.output_text.delta', delta: 'done' }),
+  frame({ type: 'response.completed', response: { id: RESPONSE_ID, status: 'completed', output: [] } }),
+]
+
+/**
+ * The envelope one stateful stream finishes with.
+ * @param pieces - the response body fragments.
+ * @returns the envelope from the terminal chunk, if the turn stored one.
+ */
+async function storedOf(pieces: readonly string[]): Promise<ReplayEnvelope | undefined> {
+  const finish = (await drain(parseSse(streamed(pieces), undefined, { stateful: true }))).at(-1)
+  return finish?.type === 'finish' ? finish.replayState : undefined
+}
+
+/** The envelope a stored turn is continued by. */
+const STORED: ReplayEnvelope = {
+  response: { kind: 'neartoken-responses', version: 2, id: RESPONSE_ID },
+  blocks: [{ type: 'text' }],
+}
+
+/**
+ * One conversation that continues a stored turn: that turn, its tool result,
+ * and the question that follows.
+ * @param source - the stored provider, model, and replay state of the turn.
+ * @returns the harness request.
+ */
+function continued(source: { provider: string; model: string; replayState?: unknown }): GenerateOptions {
+  return {
+    provider: 'neartoken',
+    model: 'gpt-5.5',
+    messages: [
+      createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }),
+      createAssistantMessage({
+        content: [
+          { type: 'text', text: 'done' },
+          { type: 'tool-call', id: brandString<ToolCallId>('call_1'), name: 'read', arguments: '{"a":1}' },
+        ],
+        source,
+      }),
+      createToolResultMessage({
+        callId: brandString<ToolCallId>('call_1'), content: [{ type: 'text', text: 'ok' }], isError: false,
+      }),
+      createUserMessage({ content: [{ type: 'text', text: 'and?' }], source: { kind: 'user' } }),
+    ],
+  }
+}
+
+describe('responses stateful replay', () => {
+  it('records the id the site stored the turn under', async () => {
+    const envelope = await storedOf(STATEFUL_TURN)
+    expect(envelope?.response).toEqual({ kind: 'neartoken-responses', version: 2, id: RESPONSE_ID })
+    // One entry per emitted block, so assembly prunes the envelope with them.
+    expect(envelope?.blocks).toHaveLength(2)
+  })
+
+  it('records nothing for a turn the site gave no id', async () => {
+    expect(await storedOf([
+      frame({ type: 'response.output_text.delta', delta: 'done' }),
+      frame({ type: 'response.completed', response: { status: 'completed' } }),
+    ])).toBeUndefined()
+  })
+
+  it('reads the same turn as a client-held envelope when nothing said stateful', async () => {
+    // The version is the only difference: a stream that carries both the
+    // reasoning item and the stored id records the client-held envelope with
+    // the ciphertext, and the stored one with the id — so a turn recorded by
+    // either path is still understood by the path that recorded it.
+    const turn = [
+      frame({ type: 'response.output_item.done', item: REASONING_ITEM }),
+      frame({ type: 'response.output_text.delta', delta: 'done' }),
+      frame({ type: 'response.completed', response: { id: RESPONSE_ID, status: 'completed', output: [] } }),
+    ]
+    expect((await replayOf(turn))?.response).toEqual({ kind: 'neartoken-responses', version: 1 })
+    expect((await replayOf(turn))?.blocks).toContainEqual({ type: 'reasoning', ...{
+      id: 'rs_0b83',
+      summary: [{ type: 'summary_text', text: SUMMARY_TEXT }],
+      encryptedContent: ENCRYPTED,
+    } })
+    expect((await storedOf(turn))?.response).toEqual({ kind: 'neartoken-responses', version: 2, id: RESPONSE_ID })
+  })
+
+  it('asks the site to keep the first turn and never for the ciphertext', () => {
+    const body = serializeStatefulRequest({
+      provider: 'neartoken',
+      model: 'gpt-5.5',
+      reasoningEffort: brandString<ReasoningEffortId>('high'),
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } })],
+    }, 'gpt-5.5')
+    expect(body.store).toBe(true)
+    expect(body.input).toEqual([{ role: 'user', content: 'go' }])
+    expect(Object.hasOwn(body, 'include')).toBe(false)
+    expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
+  })
+
+  it('continues the stored turn with only the messages after it', () => {
+    const body = serializeStatefulRequest(
+      continued({ provider: 'neartoken', model: 'gpt-5.5', replayState: STORED }), 'gpt-5.5',
+    )
+    expect(body.previous_response_id).toBe(RESPONSE_ID)
+    expect(body.store).toBe(true)
+    expect(body.input).toEqual([
+      { type: 'function_call_output', call_id: 'call_1', output: 'ok' },
+      { role: 'user', content: 'and?' },
+    ])
+  })
+
+  it('sends the whole history when nothing follows the stored turn', () => {
+    const body = serializeStatefulRequest(
+      withTurn('gpt-5.5', { provider: 'neartoken', model: 'gpt-5.5', replayState: STORED }), 'gpt-5.5',
+    )
+    expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
+    expect(body.input).toHaveLength(3)
+  })
+
+  it('continues nothing another model or another provider stored', () => {
+    for (const source of [
+      { provider: 'neartoken', model: 'gpt-5.4', replayState: STORED },
+      { provider: 'deepseek', model: 'gpt-5.5', replayState: STORED },
+    ]) {
+      expect(Object.hasOwn(serializeStatefulRequest(continued(source), 'gpt-5.5'), 'previous_response_id'))
+        .toBe(false)
+    }
+  })
+
+  it('continues nothing from a client-held envelope', () => {
+    const body = serializeStatefulRequest(continued({
+      provider: 'neartoken', model: 'gpt-5.5',
+      replayState: { response: { kind: 'neartoken-responses', version: 1 }, blocks: [] },
+    }), 'gpt-5.5')
+    expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
+    // The stateful path replays no reasoning item: the site holds that turn.
+    expect(JSON.stringify(body.input)).not.toContain('reasoning')
+  })
+
+  it('reaches the next request through the real assembler', async () => {
+    const assembler = new BlockAssembler()
+    for (const chunk of await drain(parseSse(streamed(STATEFUL_TURN), undefined, { stateful: true }))) {
+      assembler.push(chunk)
+    }
+    const message = assembler.message({
+      provider: 'neartoken', model: 'gpt-5.5', replayState: assembler.replayState,
+    })
+    const body = serializeStatefulRequest({
+      provider: 'neartoken',
+      model: 'gpt-5.5',
+      messages: [message, createUserMessage({ content: [{ type: 'text', text: 'and?' }], source: { kind: 'user' } })],
+    }, 'gpt-5.5')
+    expect(body.previous_response_id).toBe(RESPONSE_ID)
+    expect(body.input).toEqual([{ role: 'user', content: 'and?' }])
   })
 })

@@ -15,6 +15,19 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { WireImages } from './wire-images.ts';
 /** The four wires the gateway may be asked in. */
 export type WireProtocol = 'chat' | 'anthropic' | 'genai' | 'responses';
+/**
+ * What the site declares about one catalog route's wire.
+ *
+ * A declaration wins over the model's family name, because the site is the one
+ * that knows how it forwards a model; a route that declares nothing keeps the
+ * name-based choice.
+ */
+export interface WireDeclaration {
+    /** The wire the site declared for this route, if it declared one. */
+    readonly apiStyle?: WireProtocol;
+    /** Whether the site stores the Responses turn server-side for this route. */
+    readonly statefulResponses?: boolean;
+}
 /** One wire: where a call goes, how it is signed, built, and read back. */
 export interface Wire {
     /** Which vocabulary this wire speaks. */
@@ -29,8 +42,25 @@ export interface Wire {
     parse(response: Response, signal: AbortSignal | undefined): AsyncGenerator<StreamChunk>;
 }
 /**
- * Pick the wire a bare model name speaks.
- * @param model - the real model id, without its `group::` prefix.
- * @returns the wire to dispatch through; chat completions when unknown.
+ * The stateless Responses wire: the whole history on every request.
+ *
+ * A stateful turn the upstream refuses is retried through this one, and a
+ * route that declared no stateful support uses it from the start.
  */
-export declare function wireFor(model: string): Wire;
+export declare const RESPONSES_STATELESS: Wire;
+/**
+ * Pick the wire a bare model name speaks.
+ *
+ * What the site declares for the route wins: a model it forwards to the
+ * Responses API is asked there whatever its name says, and the reverse holds
+ * for a GPT-named model it forwards to chat completions.
+ *
+ * Holding the turn is a separate declaration, and it applies to whichever wire
+ * the route resolves to: an operator who only ticked `responses_stateful` gets
+ * the stateful wire on a model whose name already resolves to Responses, and a
+ * route that resolves to any other wire is unaffected by the flag.
+ * @param model - the real model id, without its `group::` prefix.
+ * @param declared - what the site published for this route, when it published anything.
+ * @returns the wire to dispatch through; chat completions when nothing decides.
+ */
+export declare function wireFor(model: string, declared?: WireDeclaration): Wire;

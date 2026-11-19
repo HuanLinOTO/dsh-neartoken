@@ -392,6 +392,110 @@ describe('stream body encoding', () => {
 })
 
 
+describe('stream stateful responses', () => {
+  /**
+   * One route the site declared stateful without naming its wire, which is the
+   * configuration the flag is for: the name resolves to Responses on its own.
+   */
+  const routes = expandRoutes(parsePricing({ data: [{
+    model_name: 'gpt-5.2', enable_groups: ['default'], responses_stateful: true,
+  }] }))
+  const id = 'default::gpt-5.2'
+
+  /** The envelope the site stored one turn under. */
+  const stored = { response: { kind: 'neartoken-responses', version: 2, id: 'resp_01J8ZQ' }, blocks: [{ type: 'text' }] }
+
+  /** One request the adapter posted. */
+  interface Posted { readonly url: string; readonly body: Record<string, unknown> }
+
+  /**
+   * Dispatch one request against a fetch that answers the given statuses in order.
+   * @param call - the harness request.
+   * @param statuses - the status of each successive request, the last repeating.
+   * @returns every request the adapter posted, and the failure the stream raised.
+   */
+  async function dispatchStatuses(
+    call: GenerateOptions, statuses: readonly number[],
+  ): Promise<{ posted: Posted[]; failure: unknown }> {
+    const posted: Posted[] = []
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      posted.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      const status = statuses[posted.length - 1] ?? statuses[statuses.length - 1] ?? 200
+      return status === 200
+        ? new Response('data: [DONE]\n\n', { status })
+        : new Response('{"error":{"message":"previous response not found"}}', { status })
+    }) as typeof fetch
+    const adapter = new NearTokenAdapter({
+      routes: async () => routes, enabled: () => [], apiKey: async () => 'test-key', baseURL: () => 'https://example.test',
+      defaultContextWindow: () => 200_000, modelOverride: () => undefined,
+      attachments: () => undefined, imagePolicy: () => DEFAULT_IMAGE_REQUEST_POLICY,
+      antiDegrade: () => false,
+    })
+    let failure: unknown
+    try {
+      for await (const chunk of adapter.stream(call)) void chunk
+    } catch (error) {
+      failure = error
+    }
+    return { posted, failure }
+  }
+
+  /**
+   * One conversation that continues a stored turn.
+   * @returns the harness request.
+   */
+  function continuing(): GenerateOptions {
+    return {
+      provider: 'neartoken',
+      model: id,
+      signal: undefined,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'go' }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'done' }],
+          source: { kind: 'model', provider: 'neartoken', model: id, replayState: stored },
+        },
+        { role: 'user', content: [{ type: 'text', text: 'and?' }] },
+      ],
+    } as unknown as GenerateOptions
+  }
+
+  it('keeps the first turn on the site and asks for no ciphertext', async () => {
+    const { posted, failure } = await dispatchStatuses(request(id), [200])
+    expect(failure).toBeUndefined()
+    expect(posted).toHaveLength(1)
+    expect(posted[0]?.url).toBe('https://example.test/v1/responses')
+    expect(posted[0]?.body.store).toBe(true)
+    expect(Object.hasOwn(posted[0]?.body ?? {}, 'include')).toBe(false)
+  })
+
+  it('continues a stored turn with the messages after it', async () => {
+    const { posted, failure } = await dispatchStatuses(continuing(), [200])
+    expect(failure).toBeUndefined()
+    expect(posted).toHaveLength(1)
+    expect(posted[0]?.body.previous_response_id).toBe('resp_01J8ZQ')
+    expect(posted[0]?.body.input).toEqual([{ role: 'user', content: 'and?' }])
+  })
+
+  it('falls back to the whole history once when the site refuses the stored turn', async () => {
+    const { posted, failure } = await dispatchStatuses(continuing(), [400, 200])
+    expect(failure).toBeUndefined()
+    expect(posted).toHaveLength(2)
+    expect(posted[1]?.url).toBe('https://example.test/v1/responses')
+    expect(Object.hasOwn(posted[1]?.body ?? {}, 'previous_response_id')).toBe(false)
+    expect(posted[1]?.body.store).toBe(false)
+    // The retry carries the conversation itself: both turns and the question.
+    expect(posted[1]?.body.input).toHaveLength(3)
+  })
+
+  it('does not retry a stateless request the site refuses', async () => {
+    const { posted, failure } = await dispatchStatuses(request(id), [400, 200])
+    expect(posted).toHaveLength(1)
+    expect(failure).toBeDefined()
+  })
+})
+
 describe('stream anti-degradation', () => {
   /** One gemini-4 model and one from another family, so the switch's scope is testable. */
   const routes = expandRoutes(parsePricing({ data: [

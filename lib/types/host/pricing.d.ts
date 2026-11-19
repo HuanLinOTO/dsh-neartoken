@@ -16,6 +16,13 @@
  *
  * @module
  */
+/**
+ * The wire the site declares for one model, in this plugin's own vocabulary.
+ *
+ * The site's `api_style` spells Gemini's wire `gemini`; this plugin calls that
+ * wire `genai`. The other three names are the same on both sides.
+ */
+export type NearTokenApiStyle = 'chat' | 'responses' | 'anthropic' | 'genai';
 /** One model row from `/api/pricing`. */
 interface PricingModel {
     readonly model_name: string;
@@ -29,6 +36,10 @@ interface PricingModel {
     readonly input?: readonly string[];
     /** Thinking-effort names the console states for this model; absent when unmaintained. */
     readonly reasoning?: readonly string[];
+    /** Wire the console states for this model; absent when unmaintained. */
+    readonly apiStyle?: NearTokenApiStyle;
+    /** `true` when the site holds this model's Responses turn server-side. */
+    readonly statefulResponses?: boolean;
 }
 /** The parts of `/api/pricing` this adapter consumes. */
 export interface NearTokenPricing {
@@ -64,6 +75,13 @@ export interface NearTokenRoute {
     readonly input?: readonly string[];
     /** Thinking-effort names the site declared for this model. */
     readonly reasoning?: readonly string[];
+    /** Wire the site declared for this model; absent when it declared none. */
+    readonly apiStyle?: NearTokenApiStyle;
+    /**
+     * Whether the site stores this model's Responses turn and accepts
+     * `previous_response_id` for it.
+     */
+    readonly statefulResponses?: boolean;
 }
 /**
  * Expand one pricing payload into one route per (group, model) pair.

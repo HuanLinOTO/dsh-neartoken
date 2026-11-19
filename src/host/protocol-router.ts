@@ -16,11 +16,27 @@ import { clientHeaders } from '../client-identity.ts'
 import { parseSse as parseAnthropic, serializeRequest as serializeAnthropic } from './anthropic-wire.ts'
 import type { WireImages } from './wire-images.ts'
 import { parseSse as parseGenai, serializeRequest as serializeGenai } from './genai-wire.ts'
-import { parseSse as parseResponses, serializeRequest as serializeResponses } from './responses-wire.ts'
+import {
+  parseSse as parseResponses, serializeRequest as serializeResponses, serializeStatefulRequest,
+} from './responses-wire.ts'
 import { parseSse as parseChat, serializeRequest as serializeChat } from './openai-wire.ts'
 
 /** The four wires the gateway may be asked in. */
 export type WireProtocol = 'chat' | 'anthropic' | 'genai' | 'responses'
+
+/**
+ * What the site declares about one catalog route's wire.
+ *
+ * A declaration wins over the model's family name, because the site is the one
+ * that knows how it forwards a model; a route that declares nothing keeps the
+ * name-based choice.
+ */
+export interface WireDeclaration {
+  /** The wire the site declared for this route, if it declared one. */
+  readonly apiStyle?: WireProtocol
+  /** Whether the site stores the Responses turn server-side for this route. */
+  readonly statefulResponses?: boolean
+}
 
 /** One wire: where a call goes, how it is signed, built, and read back. */
 export interface Wire {
@@ -115,6 +131,29 @@ const RESPONSES: Wire = {
   parse: parseResponses,
 }
 
+/**
+ * The Responses wire with the turn held upstream.
+ *
+ * It shares the stateless wire's endpoint, headers, and event vocabulary; only
+ * the body and the replay state it records differ, which is what makes a
+ * refused stateful turn able to fall back to {@link RESPONSES_STATELESS}.
+ */
+const RESPONSES_STATEFUL: Wire = {
+  protocol: 'responses',
+  url: RESPONSES.url,
+  headers: RESPONSES.headers,
+  serialize: serializeStatefulRequest,
+  parse: (response, signal) => parseResponses(response, signal, { stateful: true }),
+}
+
+/**
+ * The stateless Responses wire: the whole history on every request.
+ *
+ * A stateful turn the upstream refuses is retried through this one, and a
+ * route that declared no stateful support uses it from the start.
+ */
+export const RESPONSES_STATELESS: Wire = RESPONSES
+
 /** Family prefixes that do not speak chat completions. */
 const ANTHROPIC_PREFIXES = ['claude', 'anthropic']
 /** Gemini's own family name and its proxied alias. */
@@ -124,15 +163,44 @@ const RESPONSES_PREFIXES = ['gpt', 'chatgpt', 'codex', 'o1', 'o3', 'o4']
 /** A vendor prefix in front of the family, as some routes publish it. */
 const VENDOR_PREFIX = /^(?:[a-z0-9-]+\/)+/
 
+/** The wire each declared style names. */
+const DECLARED_WIRES: Readonly<Record<WireProtocol, Wire>> = {
+  chat: CHAT,
+  anthropic: ANTHROPIC,
+  genai: GENAI,
+  responses: RESPONSES,
+}
+
 /**
- * Pick the wire a bare model name speaks.
+ * Pick the wire a bare model name speaks, by its family.
  * @param model - the real model id, without its `group::` prefix.
- * @returns the wire to dispatch through; chat completions when unknown.
+ * @returns the wire of that family; chat completions when nothing matches.
  */
-export function wireFor(model: string): Wire {
+function wireByName(model: string): Wire {
   const name = model.trim().toLowerCase().replace(VENDOR_PREFIX, '')
   if (ANTHROPIC_PREFIXES.some(prefix => name.startsWith(prefix))) return ANTHROPIC
   if (GENAI_PREFIXES.some(prefix => name.startsWith(prefix))) return GENAI
   if (RESPONSES_PREFIXES.some(prefix => name.startsWith(prefix))) return RESPONSES
   return CHAT
+}
+
+/**
+ * Pick the wire a bare model name speaks.
+ *
+ * What the site declares for the route wins: a model it forwards to the
+ * Responses API is asked there whatever its name says, and the reverse holds
+ * for a GPT-named model it forwards to chat completions.
+ *
+ * Holding the turn is a separate declaration, and it applies to whichever wire
+ * the route resolves to: an operator who only ticked `responses_stateful` gets
+ * the stateful wire on a model whose name already resolves to Responses, and a
+ * route that resolves to any other wire is unaffected by the flag.
+ * @param model - the real model id, without its `group::` prefix.
+ * @param declared - what the site published for this route, when it published anything.
+ * @returns the wire to dispatch through; chat completions when nothing decides.
+ */
+export function wireFor(model: string, declared?: WireDeclaration): Wire {
+  const base = declared?.apiStyle === undefined ? wireByName(model) : DECLARED_WIRES[declared.apiStyle]
+  if (base.protocol !== 'responses' || declared?.statefulResponses !== true) return base
+  return RESPONSES_STATEFUL
 }

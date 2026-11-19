@@ -108,6 +108,44 @@ describe('declared capacities and surfaces', () => {
   })
 })
 
+describe('declared wire and stateful responses', () => {
+  it('reads the api_style an operator maintained in the console', () => {
+    const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], api_style: 'responses' }] })
+    expect(pricing.models[0]?.apiStyle).toBe('responses')
+  })
+
+  it('reads the site spelling of the Gemini wire as this plugin own name', () => {
+    const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], api_style: 'gemini' }] })
+    expect(pricing.models[0]?.apiStyle).toBe('genai')
+  })
+
+  it('ignores a wire name it does not dispatch through', () => {
+    for (const value of ['openai', '', 3, null]) {
+      const pricing = parsePricing({ data: [{ model_name: 'm', enable_groups: ['g'], api_style: value }] })
+      expect(pricing.models[0]?.apiStyle).toBeUndefined()
+    }
+  })
+
+  it('treats only an explicit true as a stateful declaration', () => {
+    const read = (value: unknown) => parsePricing({
+      data: [{ model_name: 'm', enable_groups: ['g'], responses_stateful: value }],
+    }).models[0]?.statefulResponses
+    expect(read(true)).toBe(true)
+    // A site older than this field answers nothing, and nothing means stateless.
+    for (const value of [false, 'true', 1, undefined]) expect(read(value)).toBeUndefined()
+  })
+
+  it('carries the declared wire and its state onto every group route of one model', () => {
+    const routes = expandRoutes(parsePricing({ data: [{
+      model_name: 'm', enable_groups: ['a', 'b'], api_style: 'responses', responses_stateful: true,
+    }] }))
+    expect(routes.map(route => [route.apiStyle, route.statefulResponses])).toEqual([
+      ['responses', true],
+      ['responses', true],
+    ])
+  })
+})
+
 describe('expandRoutes', () => {
   it('carries the group reference on the routes whose group published one', () => {
     const routes = expandRoutes(parsePricing(payload))

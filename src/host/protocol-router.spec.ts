@@ -44,6 +44,56 @@ describe('wireFor', () => {
   })
 })
 
+describe('declared wire', () => {
+  it('follows what the site declared over the model family name', () => {
+    expect(wireFor('gpt-5.2', { apiStyle: 'chat' }).protocol).toBe('chat')
+    expect(wireFor('grok-4.6', { apiStyle: 'responses' }).protocol).toBe('responses')
+    expect(wireFor('deepseek-v4', { apiStyle: 'anthropic' }).protocol).toBe('anthropic')
+    expect(wireFor('gpt-5.2', { apiStyle: 'genai' }).protocol).toBe('genai')
+  })
+
+  it('keeps the name-based choice for a route that declared nothing', () => {
+    expect(wireFor('gpt-5.2', {}).protocol).toBe('responses')
+    expect(wireFor('grok-4.6', { statefulResponses: true }).protocol).toBe('chat')
+  })
+
+  it('makes a Responses route stateful even when the site named no wire', () => {
+    // Holding the turn is an override of its own: an operator who ticked only
+    // responses_stateful gets it on a model whose name already resolves to
+    // Responses, without having to declare api_style as well.
+    const stateful = wireFor('gpt-5.2', { statefulResponses: true })
+    expect(stateful.protocol).toBe('responses')
+    expect(stateful.serialize(request('gpt-5.2'), 'gpt-5.2', new Map())).toMatchObject({ store: true })
+    expect(Object.hasOwn(stateful.serialize(request('gpt-5.2'), 'gpt-5.2', new Map()), 'include')).toBe(false)
+  })
+
+  it('leaves a family that resolves elsewhere alone whatever the flag says', () => {
+    expect(wireFor('claude-sonnet-4.5', { statefulResponses: true }).protocol).toBe('anthropic')
+    expect(wireFor('gemini-3.8-flash', { statefulResponses: true }).protocol).toBe('genai')
+  })
+
+  it('leaves a declared non-Responses wire alone whatever the flag says', () => {
+    expect(wireFor('gpt-5.2', { apiStyle: 'chat', statefulResponses: true }).protocol).toBe('chat')
+  })
+
+  it('asks for a stored turn only when the route declared stateful support', () => {
+    const body = (declared: { apiStyle?: 'responses'; statefulResponses?: boolean }): Record<string, unknown> =>
+      wireFor('gpt-5.2', declared).serialize(request('gpt-5.2'), 'gpt-5.2', new Map())
+    expect(body({ apiStyle: 'responses' })).toMatchObject({ store: false })
+    expect(Object.hasOwn(body({ apiStyle: 'responses' }), 'include')).toBe(false)
+    // A stateful route keeps every turn on the site, so no ciphertext is asked for.
+    const stateful = body({ apiStyle: 'responses', statefulResponses: true })
+    expect(stateful).toMatchObject({ store: true })
+    expect(Object.hasOwn(stateful, 'include')).toBe(false)
+  })
+
+  it('addresses and signs the stateful wire like the stateless one', () => {
+    const stateful = wireFor('gpt-5.2', { apiStyle: 'responses', statefulResponses: true })
+    expect(stateful.url('https://site.test', 'gpt-5.2')).toBe('https://site.test/v1/responses')
+    expect(stateful.headers('k', '#7', 'sess-1')).toEqual(wireFor('gpt-5.2').headers('k', '#7', 'sess-1'))
+  })
+})
+
 describe('wire targets', () => {
   it('addresses each API at its own path', () => {
     expect(wireFor('claude-sonnet-4.5').url('https://site.test', 'claude-sonnet-4.5')).toBe('https://site.test/v1/messages')
