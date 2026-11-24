@@ -10,7 +10,9 @@
 import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { BlockAssembler, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, ReasoningEffortId, ReplayEnvelope, StreamChunk, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type {
+  GenerateOptions, MessageSource, ReasoningEffortId, ReplayEnvelope, RequestMessage, StreamChunk, ToolCallId,
+} from '@deepseek-ai/dsh-llm'
 import { parseSse, serializeRequest, serializeStatefulRequest } from './responses-wire.ts'
 
 /** The ciphertext one turn was issued; it must come back byte for byte. */
@@ -440,6 +442,19 @@ function continued(source: { provider: string; model: string; replayState?: unkn
   }
 }
 
+/**
+ * The one user message a compaction leaves in place of the span it summarized.
+ * @returns the checkpoint message, carrying the source kind the harness gives it.
+ */
+function checkpoint(): RequestMessage {
+  return createUserMessage({
+    content: [{ type: 'text', text: 'Turns 1-40, summarized.' }],
+    // The kind is declared by the compaction package, which this plugin does not
+    // depend on; the wire reads it structurally like every other source kind.
+    source: { kind: 'compact-checkpoint', compactionId: 'cmp_1' } as unknown as MessageSource,
+  })
+}
+
 describe('responses stateful replay', () => {
   it('records the id the site stored the turn under', async () => {
     const envelope = await storedOf(STATEFUL_TURN)
@@ -505,6 +520,30 @@ describe('responses stateful replay', () => {
     )
     expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
     expect(body.input).toHaveLength(3)
+  })
+
+  it('starts a new chain when the history carries a compaction checkpoint', () => {
+    // The site's chain still holds every turn the summary replaced, so naming a
+    // turn from before the checkpoint appends the compacted tail onto a history
+    // that never shrank: the reading stays high and every step compacts again.
+    const stored = continued({ provider: 'neartoken', model: 'gpt-5.5', replayState: STORED })
+    const body = serializeStatefulRequest({
+      ...stored,
+      messages: [...stored.messages.slice(0, 2), checkpoint(), ...stored.messages.slice(2)],
+    }, 'gpt-5.5')
+    expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
+    // The whole history goes out, the checkpoint included.
+    expect(body.input).toHaveLength(6)
+  })
+
+  it('starts a new chain when a checkpoint precedes the turn it would continue', () => {
+    const stored = continued({ provider: 'neartoken', model: 'gpt-5.5', replayState: STORED })
+    const body = serializeStatefulRequest({
+      ...stored,
+      messages: [checkpoint(), ...stored.messages],
+    }, 'gpt-5.5')
+    expect(Object.hasOwn(body, 'previous_response_id')).toBe(false)
+    expect(body.input).toHaveLength(6)
   })
 
   it('continues nothing another model or another provider stored', () => {

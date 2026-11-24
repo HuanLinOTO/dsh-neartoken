@@ -34,6 +34,12 @@ const REPLAY_VERSION = 1
 const STATEFUL_VERSION = 2
 
 /**
+ * The source kind the harness gives the one user message a compaction leaves
+ * behind in place of the span it summarized.
+ */
+const COMPACT_CHECKPOINT_KIND = 'compact-checkpoint'
+
+/**
  * One reasoning item, reduced to what a later request sends back.
  *
  * The upstream issues the ciphertext on every turn; a client that keeps it can
@@ -289,6 +295,17 @@ interface PreviousTurn {
  * to send the whole history.
  */
 function previousTurn(messages: readonly RequestMessage[], gate: ReplayGate): PreviousTurn | undefined {
+  // A compaction rewrites the history this request sends but not the chain the
+  // site already holds: the site still carries the turns the summary replaced,
+  // so naming a turn from before the checkpoint appends the compacted tail onto
+  // a history that never shrank. The reading that triggered the compaction then
+  // stays put, every following step compacts again, and none of them gains
+  // anything. Nothing on a stored turn records whether it predates the
+  // checkpoint, so the whole history goes out instead and the site opens a new
+  // chain — the same request the stateless path would have sent.
+  if (messages.some(message => (message as { source?: { kind?: string } }).source?.kind === COMPACT_CHECKPOINT_KIND)) {
+    return undefined
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== 'assistant') continue
