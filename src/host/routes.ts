@@ -116,334 +116,281 @@ interface RouteConnection {
  * @param deps - the account and the disconnect callback.
  */
 export function registerNearTokenRoutes(ctx: Context, deps: NearTokenRouteDeps): void {
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: STATUS_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'GET') {
-        sendMethodNotAllowed(res, 'GET')
-        return
-      }
-      sendJson(res, 200, await deps.account.status())
-    },
-  }), `neartoken: GET ${STATUS_PATH}`)
+  /**
+   * Mount one settings-page route, publishing a handler failure as JSON.
+   *
+   * A Host that receives a thrown handler has nowhere to put the reason: it logs
+   * a warning and answers 400 with an empty body, so the page can report nothing
+   * but a status code and the reader never learns what broke. Every route here
+   * therefore reports its own failure — the whole stack, cause chain included.
+   * @param path - the exact path the page calls.
+   * @param handler - the route's own work.
+   */
+  const mount = (path: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): void => {
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (req, res) => {
+        try {
+          await handler(req, res)
+        } catch (error: unknown) {
+          // A composition may mount no logger; publishing the failure must not
+          // become a second failure of its own.
+          ctx.logger?.warn?.(`neartoken: ${path} failed`, error)
+          sendFailure(res, error)
+        }
+      },
+    }), `neartoken: ${path}`)
+  }
+
+  mount(STATUS_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'GET') {
+      sendMethodNotAllowed(res, 'GET')
+      return
+    }
+    sendJson(res, 200, await deps.account.status())
+  })
 
   // The page asking for the card's money facts to be re-read now. The answer is
   // the same state the status route serves, so one round trip updates the card.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: REFRESH_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      req.resume()
-      await deps.account.refreshWallet()
-      sendJson(res, 200, await deps.account.status())
-    },
-  }), `neartoken: POST ${REFRESH_PATH}`)
+  mount(REFRESH_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'POST')
+      return
+    }
+    req.resume()
+    await deps.account.refreshWallet()
+    sendJson(res, 200, await deps.account.status())
+  })
 
   // The usage overview: one window of spending and tokens, read with the stored
   // key. A site without the endpoint, or one out of reach, still answers 200
   // with a reason the page prints — an empty chart would read as "no usage",
   // which is a different fact from "nothing to read".
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: USAGE_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'GET') {
-        sendMethodNotAllowed(res, 'GET')
-        return
-      }
-      const range = queryParam(req, 'range') ?? 'day'
-      if (!isUsageRange(range)) {
-        sendJson(res, 400, { code: 'bad-request', message: 'range 必须是 day / week / month' })
-        return
-      }
-      sendJson(res, 200, await deps.usage(range))
-    },
-  }), `neartoken: GET ${USAGE_PATH}`)
+  mount(USAGE_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'GET') {
+      sendMethodNotAllowed(res, 'GET')
+      return
+    }
+    const range = queryParam(req, 'range') ?? 'day'
+    if (!isUsageRange(range)) {
+      sendJson(res, 400, { code: 'bad-request', message: 'range 必须是 day / week / month' })
+      return
+    }
+    sendJson(res, 200, await deps.usage(range))
+  })
 
   // The start of an authorization. The optional body carries the invite code a
   // referring page left on the browser window: a hint the site's own sign-up
   // pages read off the confirmation address, not a credential, and never a
   // reason to refuse the start — a caller posting no body is authorized too.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: AUTHORIZE_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      if (!jsonBody(req)) {
-        req.resume()
-        sendJson(res, 200, await deps.account.begin())
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
-      if (body === undefined) return
-      sendJson(res, 200, await deps.account.begin(normalizeAffiliateCode(body.affCode)))
-    },
-  }), `neartoken: POST ${AUTHORIZE_PATH}`)
+  mount(AUTHORIZE_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'POST')
+      return
+    }
+    if (!jsonBody(req)) {
+      req.resume()
+      sendJson(res, 200, await deps.account.begin())
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+    if (body === undefined) return
+    sendJson(res, 200, await deps.account.begin(normalizeAffiliateCode(body.affCode)))
+  })
 
   // The confirmation page belongs in the user's own browser: a page-opened
   // window stays inside the desktop shell, so the Host hands the address to the
   // platform launcher instead. The address is the Host's own pending one — the
   // page cannot ask this route to open an arbitrary URL.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: OPEN_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      req.resume()
-      const { pending } = await deps.account.status()
-      if (pending === undefined) {
-        sendJson(res, 409, { code: 'no-authorization', message: '没有正在进行的授权' })
-        return
-      }
-      try {
-        await deps.openInBrowser(pending.verificationUriComplete)
-      } catch (error: unknown) {
-        sendJson(res, 500, { code: 'open-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: POST ${OPEN_PATH}`)
+  mount(OPEN_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'POST')
+      return
+    }
+    req.resume()
+    const { pending } = await deps.account.status()
+    if (pending === undefined) {
+      sendJson(res, 409, { code: 'no-authorization', message: '没有正在进行的授权' })
+      return
+    }
+    await deps.openInBrowser(pending.verificationUriComplete)
+    sendJson(res, 200, { ok: true })
+  })
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: CANCEL_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      await deps.account.cancel()
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: POST ${CANCEL_PATH}`)
+  mount(CANCEL_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'POST')
+      return
+    }
+    await deps.account.cancel()
+    sendJson(res, 200, { ok: true })
+  })
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: LOGOUT_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      await deps.account.signOut()
-      deps.onDisconnect()
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: POST ${LOGOUT_PATH}`)
+  mount(LOGOUT_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'POST')
+      return
+    }
+    await deps.account.signOut()
+    deps.onDisconnect()
+    sendJson(res, 200, { ok: true })
+  })
 
   // One path, two verbs: the page reads the catalog and the stored whitelist
   // together, and saves a new list back.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: MODELS_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method === 'GET') {
-        sendJson(res, 200, await deps.models())
+  mount(MODELS_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method === 'GET') {
+      sendJson(res, 200, await deps.models())
+      return
+    }
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'GET, POST')
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_WHITELIST_BODY_BYTES)
+    if (body === undefined) return
+    const enabled = parseEnabled(body.enabled)
+    if (enabled === undefined) {
+      sendJson(res, 400, { code: 'bad-request', message: 'enabled 必须是模型名数组' })
+      return
+    }
+    // Absent keeps the stored overrides: the whitelist autosaves without
+    // them, and such a save must not erase what the meta editor wrote.
+    let meta: Record<string, NearTokenModelMeta> | undefined
+    if (body.meta !== undefined) {
+      meta = parseMeta(body.meta)
+      if (meta === undefined) {
+        sendJson(res, 400, { code: 'bad-request', message: 'meta 必须是每模型的 { contextWindow?, maxTokens?, input? }' })
         return
       }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'GET, POST')
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_WHITELIST_BODY_BYTES)
-      if (body === undefined) return
-      const enabled = parseEnabled(body.enabled)
-      if (enabled === undefined) {
-        sendJson(res, 400, { code: 'bad-request', message: 'enabled 必须是模型名数组' })
-        return
-      }
-      // Absent keeps the stored overrides: the whitelist autosaves without
-      // them, and such a save must not erase what the meta editor wrote.
-      let meta: Record<string, NearTokenModelMeta> | undefined
-      if (body.meta !== undefined) {
-        meta = parseMeta(body.meta)
-        if (meta === undefined) {
-          sendJson(res, 400, { code: 'bad-request', message: 'meta 必须是每模型的 { contextWindow?, maxTokens?, input? }' })
-          return
-        }
-      }
-      // A save the settings service refused is this page's failure to report,
-      // not a request to retry silently: the whitelist did NOT move.
-      try {
-        await deps.saveModels(enabled, meta)
-      } catch (error: unknown) {
-        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: ${MODELS_PATH}`)
+    }
+    // A save the settings service refuses is this page's failure to report, not
+    // a request to retry silently: the whitelist did NOT move. The mount reports
+    // it, so the page keeps the list it had.
+    await deps.saveModels(enabled, meta)
+    sendJson(res, 200, { ok: true })
+  })
 
   // The image-generation setting: which picture models the generate_image tool
   // may call, and the group each one bills to.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: IMAGES_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method === 'GET') {
-        sendJson(res, 200, await deps.images())
-        return
-      }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'GET, POST')
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_WHITELIST_BODY_BYTES)
-      if (body === undefined) return
-      let refusal: { readonly message: string } | undefined
-      try {
-        refusal = await deps.saveImages(body)
-      } catch (error: unknown) {
-        // A save the settings service refused is this page's failure to report:
-        // the stored setting did not move.
-        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      if (refusal !== undefined) {
-        sendJson(res, 400, { code: 'bad-request', message: refusal.message })
-        return
-      }
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: ${IMAGES_PATH}`)
+  mount(IMAGES_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method === 'GET') {
+      sendJson(res, 200, await deps.images())
+      return
+    }
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'GET, POST')
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_WHITELIST_BODY_BYTES)
+    if (body === undefined) return
+    const refusal = await deps.saveImages(body)
+    if (refusal !== undefined) {
+      sendJson(res, 400, { code: 'bad-request', message: refusal.message })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+  })
 
   // The origins the model picker and the settings page choose between: the
   // long-connection switch, and the custom address that overrides both. The
   // dashboard routes here never follow either — only the model-facing `/v1`
   // family does.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: LINK_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method === 'GET') {
-        sendJson(res, 200, deps.link())
-        return
-      }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'GET, POST')
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
-      if (body === undefined) return
-      const patch = parseLinkPatch(body)
-      if (typeof patch === 'string') {
-        sendJson(res, 400, { code: 'bad-request', message: patch })
-        return
-      }
-      try {
-        await deps.saveLink(patch)
-      } catch (error: unknown) {
-        // A refused write leaves the stored switch where it was; the picker puts
-        // its toggle back and reports this message.
-        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: ${LINK_PATH}`)
+  mount(LINK_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method === 'GET') {
+      sendJson(res, 200, deps.link())
+      return
+    }
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'GET, POST')
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+    if (body === undefined) return
+    const patch = parseLinkPatch(body)
+    if (typeof patch === 'string') {
+      sendJson(res, 400, { code: 'bad-request', message: patch })
+      return
+    }
+    // A refused write leaves the stored switch where it was; the picker puts its
+    // toggle back and reports the message the mount answers.
+    await deps.saveLink(patch)
+    sendJson(res, 200, { ok: true })
+  })
 
   // The anti-degradation switch the model seat offers while a Gemini-4 model is
   // selected: on means that model's request body carries the harness's
   // file-reference guidance in Chinese.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: GUARD_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method === 'GET') {
-        sendJson(res, 200, deps.guard())
-        return
-      }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'GET, POST')
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
-      if (body === undefined) return
-      if (typeof body.enabled !== 'boolean') {
-        sendJson(res, 400, { code: 'bad-request', message: 'enabled 必须是布尔值' })
-        return
-      }
-      try {
-        await deps.saveGuard(body.enabled)
-      } catch (error: unknown) {
-        // A refused write leaves the stored switch where it was; the picker puts
-        // its toggle back and reports this message.
-        sendJson(res, 500, { code: 'save-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      sendJson(res, 200, { ok: true })
-    },
-  }), `neartoken: ${GUARD_PATH}`)
+  mount(GUARD_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method === 'GET') {
+      sendJson(res, 200, deps.guard())
+      return
+    }
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'GET, POST')
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+    if (body === undefined) return
+    if (typeof body.enabled !== 'boolean') {
+      sendJson(res, 400, { code: 'bad-request', message: 'enabled 必须是布尔值' })
+      return
+    }
+    // A refused write leaves the stored switch where it was; the picker puts its
+    // toggle back and reports the message the mount answers.
+    await deps.saveGuard(body.enabled)
+    sendJson(res, 200, { ok: true })
+  })
 
   // Top-up: GET reads what the site sells, POST starts one order and hands the
   // checkout page to the platform launcher. The page never builds the gateway
   // form itself — the site does, on a signed link — so nothing here can be
   // pointed at a gateway the site did not sign for.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: TOPUP_PATH,
-    handler: async (req, res) => {
-      if (rejected(ctx, req, res)) return
-      if (req.method === 'GET') {
-        try {
-          sendJson(res, 200, await deps.topupInfo())
-        } catch (error: unknown) {
-          sendJson(res, 409, refusalOf(error))
-        }
-        return
-      }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'GET, POST')
-        return
-      }
-      const body = await readJsonObject(req, res, MAX_BODY_BYTES)
-      if (body === undefined) return
-      const amount = typeof body.amount === 'number' ? body.amount : undefined
-      const paymentMethod = typeof body.paymentMethod === 'string' ? body.paymentMethod : undefined
-      if (amount === undefined || paymentMethod === undefined) {
-        sendJson(res, 400, { code: 'bad-request', message: 'amount 与 paymentMethod 为必填' })
-        return
-      }
-      let order: NearTokenTopupOrder
+  mount(TOPUP_PATH, async (req, res) => {
+    if (rejected(ctx, req, res)) return
+    if (req.method === 'GET') {
       try {
-        order = await deps.createTopup(amount, paymentMethod)
+        sendJson(res, 200, await deps.topupInfo())
       } catch (error: unknown) {
-        // A refusal the user can act on (reconnect) is not a server fault.
         sendJson(res, 409, refusalOf(error))
-        return
       }
-      try {
-        await deps.openInBrowser(deps.baseURL().replace(/\/$/, '') + order.payUrl)
-      } catch (error: unknown) {
-        sendJson(res, 500, { code: 'open-failed', message: error instanceof Error ? error.message : String(error) })
-        return
-      }
-      sendJson(res, 200, { ok: true, tradeNo: order.tradeNo })
-    },
-  }), `neartoken: ${TOPUP_PATH}`)
+      return
+    }
+    if (req.method !== 'POST') {
+      sendMethodNotAllowed(res, 'GET, POST')
+      return
+    }
+    const body = await readJsonObject(req, res, MAX_BODY_BYTES)
+    if (body === undefined) return
+    const amount = typeof body.amount === 'number' ? body.amount : undefined
+    const paymentMethod = typeof body.paymentMethod === 'string' ? body.paymentMethod : undefined
+    if (amount === undefined || paymentMethod === undefined) {
+      sendJson(res, 400, { code: 'bad-request', message: 'amount 与 paymentMethod 为必填' })
+      return
+    }
+    let order: NearTokenTopupOrder
+    try {
+      order = await deps.createTopup(amount, paymentMethod)
+    } catch (error: unknown) {
+      // A refusal the user can act on (reconnect) is not a server fault.
+      sendJson(res, 409, refusalOf(error))
+      return
+    }
+    await deps.openInBrowser(deps.baseURL().replace(/\/$/, '') + order.payUrl)
+    sendJson(res, 200, { ok: true, tradeNo: order.tradeNo })
+  })
 }
 
 /**
@@ -517,6 +464,63 @@ function rejected(ctx: Context, req: IncomingMessage, res: ServerResponse): bool
   res.statusCode = rejection
   res.end()
   return true
+}
+
+/** How deep a cause chain is followed before it stops explaining anything. */
+const CAUSE_DEPTH = 5
+
+/**
+ * Render one thrown value as the complete diagnostic the page shows.
+ *
+ * The stack, then every `cause` beneath it: a route failure used to reach the
+ * reader as a bare status code, and a shortened sentence would reach them as a
+ * sentence that does not say where it came from.
+ * @param error - whatever the handler threw.
+ * @returns the text to publish.
+ */
+function describeFailure(error: unknown): string {
+  const parts: string[] = []
+  let current: unknown = error
+  for (let depth = 0; depth < CAUSE_DEPTH && current !== undefined; depth += 1) {
+    if (!(current instanceof Error)) {
+      parts.push(thrownText(current))
+      break
+    }
+    parts.push(current.stack ?? `${current.name}: ${current.message}`)
+    current = current.cause
+  }
+  return parts.join('\n\ncaused by: ')
+}
+
+/**
+ * Render a thrown value that is not an `Error` as text.
+ * @param value - whatever was thrown.
+ * @returns its own text, its JSON form, or its string form.
+ */
+function thrownText(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch (_error) {
+    return String(value)
+  }
+}
+
+/**
+ * Answer a handler's thrown value with the full diagnostic.
+ *
+ * A response already on the wire cannot carry it, so the socket is closed
+ * instead — the one case where the page learns nothing new. Everything else is
+ * a 500 whose message the page prints verbatim.
+ * @param res - the response to answer on.
+ * @param error - whatever the handler threw.
+ */
+function sendFailure(res: ServerResponse, error: unknown): void {
+  if (res.headersSent) {
+    res.destroy()
+    return
+  }
+  sendJson(res, 500, { code: 'internal', message: describeFailure(error) })
 }
 
 /** JSON response (no-store: every answer here is a live fact). */

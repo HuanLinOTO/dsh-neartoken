@@ -338,7 +338,8 @@ describe('POST /neartoken/models', () => {
     const { answer } = routesOver({ saveModels: async () => { throw new Error('no profile entry') } })
     const { status, body } = await answer(MODELS_PATH, request('POST', JSON.stringify({ enabled: [] })))
     expect(status).toBe(500)
-    expect(JSON.parse(body)).toEqual({ code: 'save-failed', message: 'no profile entry' })
+    expect(JSON.parse(body).code).toBe('internal')
+    expect(JSON.parse(body).message).toContain('no profile entry')
   })
 })
 
@@ -402,7 +403,8 @@ describe('the link route', () => {
     const { answer } = routesOver({ saveLink: async () => { throw new Error('no settings service') } })
     const { status, body } = await answer(LINK_PATH, request('POST', JSON.stringify({ direct: true })))
     expect(status).toBe(500)
-    expect(JSON.parse(body)).toEqual({ code: 'save-failed', message: 'no settings service' })
+    expect(JSON.parse(body).code).toBe('internal')
+    expect(JSON.parse(body).message).toContain('no settings service')
   })
 
   it('serves only GET and POST', async () => {
@@ -440,7 +442,8 @@ describe('the guard route', () => {
     const { answer } = routesOver({ saveGuard: async () => { throw new Error('no settings service') } })
     const { status, body } = await answer(GUARD_PATH, request('POST', JSON.stringify({ enabled: true })))
     expect(status).toBe(500)
-    expect(JSON.parse(body)).toEqual({ code: 'save-failed', message: 'no settings service' })
+    expect(JSON.parse(body).code).toBe('internal')
+    expect(JSON.parse(body).message).toContain('no settings service')
   })
 
   it('serves only GET and POST', async () => {
@@ -562,7 +565,8 @@ describe('the images route', () => {
     const { answer } = routesOver({ saveImages: async () => { throw new Error('no settings service') } })
     const { status, body } = await answer(IMAGES_PATH, request('POST', JSON.stringify({ enabled: true, models: {} })))
     expect(status).toBe(500)
-    expect(JSON.parse(body).code).toBe('save-failed')
+    expect(JSON.parse(body).code).toBe('internal')
+    expect(JSON.parse(body).message).toContain('no settings service')
   })
 })
 
@@ -614,7 +618,8 @@ describe('POST /neartoken/open', () => {
     })
     const { status, body } = await answer(OPEN_PATH, request('POST'))
     expect(status).toBe(500)
-    expect(JSON.parse(body)).toEqual({ code: 'open-failed', message: '当前平台 aix 没有已知的浏览器打开方式' })
+    expect(JSON.parse(body).code).toBe('internal')
+    expect(JSON.parse(body).message).toContain('当前平台 aix 没有已知的浏览器打开方式')
   })
 
   it('refuses a method it does not serve', async () => {
@@ -707,5 +712,46 @@ describe('GET /neartoken/usage', () => {
     const { status, headers } = await answer(USAGE_PATH, request('POST'))
     expect(status).toBe(405)
     expect(headers.allow).toBe('GET')
+  })
+})
+
+describe('a route whose handler throws', () => {
+  it('answers the whole failure instead of the empty refusal the Host would send', async () => {
+    // A thrown handler reaches the page as the Host's empty 400 — a status code
+    // and nothing else. The routes publish the failure themselves so the reader
+    // can see what broke where.
+    const thrown = new TypeError("cannot read properties of undefined (reading 'configured')")
+    const { answer } = routesOver({
+      account: { status: async () => { throw thrown } } as unknown as NearTokenAccount,
+    })
+    const { status, body, headers } = await answer(STATUS_PATH, request('GET'))
+    expect(status).toBe(500)
+    expect(headers['content-type']).toContain('application/json')
+    const published = JSON.parse(body) as { code: string; message: string }
+    expect(published.code).toBe('internal')
+    expect(published.message).toContain("TypeError: cannot read properties of undefined (reading 'configured')")
+    // The stack is the part that says where it broke.
+    expect(published.message).toMatch(/\n\s+at /)
+  })
+
+  it('keeps the cause chain under the failure it explains', async () => {
+    const failure = new Error('could not read the stored key', { cause: new Error('ENOENT: no such file') })
+    const { answer } = routesOver({
+      account: { status: async () => { throw failure } } as unknown as NearTokenAccount,
+    })
+    const { status, body } = await answer(STATUS_PATH, request('GET'))
+    expect(status).toBe(500)
+    const published = JSON.parse(body) as { message: string }
+    expect(published.message).toContain('could not read the stored key')
+    expect(published.message).toContain('caused by:')
+    expect(published.message).toContain('ENOENT: no such file')
+  })
+
+  it('renders a thrown value that is not an Error', async () => {
+    const { answer } = routesOver({
+      account: { status: async () => { throw 'the account refused' } } as unknown as NearTokenAccount,
+    })
+    const { body } = await answer(STATUS_PATH, request('GET'))
+    expect(JSON.parse(body).message).toBe('the account refused')
   })
 })

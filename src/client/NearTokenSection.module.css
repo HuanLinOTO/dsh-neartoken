@@ -498,6 +498,10 @@
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-state-warn-label);
+  /* A failure arrives whole — stack and cause chain — so its line breaks are
+     part of the message, not whitespace to collapse. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .hint {

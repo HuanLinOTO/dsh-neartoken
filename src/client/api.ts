@@ -109,8 +109,27 @@ export interface NearTokenApi {
  * @throws {Error} when the route answered a non-2xx status.
  */
 async function jsonOf<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
+  if (!response.ok) throw await failureOf(response)
   return await response.json() as T
+}
+
+/**
+ * Read the reason a route refused, so the page can show it.
+ *
+ * The Host publishes a failure's whole text in `message` — its stack and cause
+ * chain included; the body's own `error` member covers a site-answered refusal.
+ * A refusal carrying neither (an empty answer from the Host's fence) leaves the
+ * status code as the only fact there is.
+ * @param response - the refused response.
+ * @returns the error to throw.
+ */
+async function failureOf(response: Response): Promise<Error> {
+  const body = await response.json()
+    .catch(() => undefined) as { readonly message?: unknown; readonly error?: unknown } | undefined
+  for (const candidate of [body?.message, body?.error]) {
+    if (typeof candidate === 'string' && candidate !== '') return new Error(candidate)
+  }
+  return new Error(`HTTP ${String(response.status)}`)
 }
 
 /**
@@ -169,12 +188,9 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
       // No body: the Host opens the page it is already waiting on, so this route
       // can never be asked to launch an arbitrary address.
       const response = await fetcher(OPEN_PATH, { method: 'POST' })
-      if (!response.ok) {
-        // The Host names why the platform launcher did not run; that reason is
-        // what the reader needs, not a status code.
-        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
-        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
-      }
+      // The Host names why the platform launcher did not run; that reason is
+      // what the reader needs, not a status code.
+      if (!response.ok) throw await failureOf(response)
     },
     async signOut() {
       await post<unknown>(LOGOUT_PATH)
@@ -210,12 +226,7 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       })
-      if (!response.ok) {
-        // The Host refuses a selection its catalog does not have; its message
-        // names the reason, so the page shows that rather than a status code.
-        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
-        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
-      }
+      if (!response.ok) throw await failureOf(response)
     },
     async link() {
       return await jsonOf<NearTokenLinkState>(await fetcher(LINK_PATH, { headers: { accept: 'application/json' } }))
@@ -226,10 +237,7 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch satisfies NearTokenLinkPatch),
       })
-      if (!response.ok) {
-        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
-        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
-      }
+      if (!response.ok) throw await failureOf(response)
     },
     async guard() {
       return await jsonOf<NearTokenGuardState>(await fetcher(GUARD_PATH, { headers: { accept: 'application/json' } }))
@@ -240,10 +248,7 @@ export function createNearTokenApi(fetcher: Fetch = (input, init) => fetch(input
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled } satisfies NearTokenGuardPatch),
       })
-      if (!response.ok) {
-        const refusal = await response.json().catch(() => ({ message: `HTTP ${String(response.status)}` })) as { message?: string }
-        throw new Error(refusal.message ?? `HTTP ${String(response.status)}`)
-      }
+      if (!response.ok) throw await failureOf(response)
     },
   }
 }
