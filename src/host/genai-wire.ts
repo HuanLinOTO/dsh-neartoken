@@ -10,6 +10,7 @@
  * @module
  */
 import { brandString } from '@deepseek-ai/dsh-brand'
+import { LlmError } from '@deepseek-ai/dsh-llm'
 import { gatewayError } from './wire-error.ts'
 import type {
   FinishReason, GenerateOptions, ReplayEnvelope, RequestMessage, StreamChunk, ToolCallBlock, ToolCallId,
@@ -115,6 +116,72 @@ function textOf(content: readonly unknown[]): string {
 }
 
 /**
+ * Whether the upstream named the function a call or result part reports.
+ *
+ * Every genai `functionCall` and `functionResponse` carries its function name,
+ * so a part without one is broken rather than a call this wire could dispatch or
+ * replay.
+ * @param name - the value read from the part.
+ * @returns true when the value is a non-blank string, narrowing it to one.
+ */
+function hasFunctionName(name: unknown): name is string {
+  return typeof name === 'string' && name.trim() !== ''
+}
+
+/**
+ * Remove a replayed tool call the upstream never named, and the result it drew.
+ *
+ * A build of this wire before the stream-side name check assembled a call whose
+ * function name was empty. Gemini validates that name on every part, so the turn
+ * answers 400 "contents[N].parts[M].name is invalid" on every later request and
+ * the conversation cannot be continued at all. A nameless call names no tool, so
+ * the harness answered it with its own rejection and nothing ran: that pair is
+ * dropped, while the turn's text and its named calls replay unchanged.
+ * @param messages - the conversation to send.
+ * @returns the conversation without those pairs, or the input when it has none.
+ * @throws {LlmError} when a nameless call drew a result that is not a rejection:
+ * this wire cannot remove it without discarding a real tool result.
+ */
+function withoutNamelessToolCalls(messages: readonly RequestMessage[]): readonly RequestMessage[] {
+  const nameless = new Set<string>()
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    for (const block of message.content as readonly unknown[]) {
+      if (typeof block !== 'object' || block === null) continue
+      const call = block as Partial<ToolCallBlock> & { type?: string }
+      if (call.type !== 'tool-call' || hasFunctionName(call.name)) continue
+      nameless.add(call.id === undefined ? '' : String(call.id))
+    }
+  }
+  if (nameless.size === 0) return messages
+  if (nameless.has('')) {
+    throw new LlmError(
+      'Gemini 会话历史里有一个既没有函数名、也没有调用 ID 的工具调用，无法安全移除。请从该工具轮之前分叉，或新开会话继续。',
+      'INVALID_REQUEST',
+    )
+  }
+  const refused = messages.some(message => message.role === 'tool'
+    && nameless.has(String(message.toolCallId))
+    && message.isError !== true)
+  if (refused) {
+    throw new LlmError(
+      'Gemini 会话历史里缺少函数名的工具调用，其结果不是执行前拒绝，无法安全移除。请从该工具轮之前分叉，或新开会话继续。',
+      'INVALID_REQUEST',
+    )
+  }
+  return messages.flatMap((message): RequestMessage[] => {
+    if (message.role === 'tool') return nameless.has(String(message.toolCallId)) ? [] : [message]
+    if (message.role !== 'assistant') return [message]
+    const content = (message.content as readonly unknown[]).filter((block) => {
+      if (typeof block !== 'object' || block === null) return true
+      const call = block as Partial<ToolCallBlock> & { type?: string }
+      return call.type !== 'tool-call' || hasFunctionName(call.name)
+    })
+    return content.length === 0 ? [] : [{ ...message, content } as RequestMessage]
+  })
+}
+
+/**
  * Collect every tool call name by its call id across the conversation.
  *
  * A genai `functionResponse` is matched to its call by function name, while the
@@ -131,7 +198,7 @@ function toolNamesOf(messages: readonly RequestMessage[]): Map<string, string> {
       if (typeof block !== 'object' || block === null) continue
       const call = block as Partial<ToolCallBlock> & { type?: string }
       if (call.type !== 'tool-call') continue
-      if (call.id !== undefined && call.name !== undefined) names.set(String(call.id), call.name)
+      if (call.id !== undefined && hasFunctionName(call.name)) names.set(String(call.id), call.name)
     }
   }
   return names
@@ -322,7 +389,10 @@ function geminiSchema(schema: unknown): unknown {
 export function serializeRequest(
   options: GenerateOptions, model: string, images: WireImages = new Map(),
 ): Record<string, unknown> {
-  const toolNames = toolNamesOf(options.messages)
+  // A nameless call cannot be replayed: every genai call and result part names
+  // its function, so the turn would be refused on every later request.
+  const messages = withoutNamelessToolCalls(options.messages)
+  const toolNames = toolNamesOf(messages)
   const callIds = usesCallIds(model)
   const contents: WireContent[] = []
   // A functionCall turn is answered by functionResponse parts in the single user
@@ -330,7 +400,7 @@ export function serializeRequest(
   // mismatched, and the gateway refuses the request with a 400 asking for as many
   // function responses as function calls.
   let batch: Record<string, unknown>[] | null = null
-  for (const message of options.messages) {
+  for (const message of messages) {
     if (message.role === 'tool') {
       if (batch === null) {
         batch = []
@@ -474,9 +544,26 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       if (issued !== null && state.pendingSignature === null) state.pendingSignature = issued
       continue
     }
-    const name = stringOf(call.name) ?? ''
+    // The upstream must name the function it called. A part without a name is
+    // either one frame of a call the upstream split apart or a broken answer;
+    // assembled either way, the harness is handed a call it cannot dispatch and
+    // the empty name replays on every later turn, which the upstream answers
+    // with 400 "...name is invalid" — so the answer is refused here instead.
+    if (call.willContinue === true || asArray(call.partialArgs).length > 0) {
+      throw new LlmError(
+        'NearToken 的 Gemini 响应把一次工具调用拆成了多帧（functionCall.partialArgs / willContinue），这个形状没有实现合并，继续会把同一次调用的参数拆成多个工具调用。请重试当前消息。',
+        'PROVIDER_ERROR',
+      )
+    }
+    const name = stringOf(call.name)
+    if (!hasFunctionName(name)) {
+      throw new LlmError(
+        'NearToken 的 Gemini 响应含有缺少函数名的工具调用（functionCall.name 缺失、为空或不是字符串）。请重试当前消息。',
+        'PROVIDER_ERROR',
+      )
+    }
     const slot = state.toolBlocks.length
-    const id = stringOf(call.id) ?? (name === '' ? `tool_${slot}` : `tool_${name}_${slot}`)
+    const id = stringOf(call.id) ?? `tool_${name}_${slot}`
     const args = call.args === undefined ? '{}' : JSON.stringify(call.args)
     const bound = issued ?? state.pendingSignature
     const block: OpenBlock = { ...open(state, 'tool-call'), id, name, body: args }
@@ -490,7 +577,7 @@ function* consume(payload: string, state: Assembly): Generator<StreamChunk> {
       type: 'tool-call-delta',
       index: block.index,
       id: brandString<ToolCallId>(block.id),
-      ...(name !== '' ? { name } : {}),
+      name,
       argumentsDelta: args,
     }
   }

@@ -407,6 +407,81 @@ describe('genai wire', () => {
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
   })
 
+  it('refuses a tool call the upstream never named', async () => {
+    // A live Gemini 4 turn answered 400 "contents[148].parts[1].***.name is
+    // invalid" on every follow-up request after one nameless call got in: the
+    // name is replayed from the turn, so accepting it here poisons the session.
+    for (const call of [{ args: {} }, { name: '', args: {} }, { name: '  ', args: {} }, { name: 7, args: {} }]) {
+      const response = streamed([
+        `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: call }] }, finishReason: 'STOP' }] })}\n\n`,
+      ])
+      const seen: StreamChunk[] = []
+      const collect = async (): Promise<void> => {
+        for await (const chunk of parseGenai(response, undefined)) seen.push(chunk)
+      }
+      await expect(collect()).rejects.toMatchObject({ code: 'PROVIDER_ERROR' })
+      expect(seen.some(chunk => chunk.type === 'block-end' || chunk.type === 'finish')).toBe(false)
+    }
+  })
+
+  it('refuses a tool call the upstream split into frames', async () => {
+    // Gemini 4 can stream one call as a name frame plus partialArgs frames; this
+    // wire assembles whole calls only, so half a call must not become a call.
+    const frames = [
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","willContinue":true}}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.path","stringValue":"a"}]}}]}}]}\n\n',
+    ]
+    for (const frame of frames) {
+      await expect(drain(parseGenai(streamed([frame]), undefined))).rejects.toMatchObject({ code: 'PROVIDER_ERROR' })
+    }
+  })
+
+  it('drops a nameless call and the rejection it drew from the replay', () => {
+    const options = {
+      provider: 'NearToken',
+      model: 'x',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'go' }] },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'calling' },
+            { type: 'tool-call', id: 'call_run', name: 'run_code', arguments: '{}' },
+            { type: 'tool-call', id: 'tool_1', name: '', arguments: '{"code":"1"}' },
+          ],
+        },
+        { role: 'tool', toolCallId: 'call_run', isError: true, content: [{ type: 'text', text: 'Error: invalid arguments' }] },
+        { role: 'tool', toolCallId: 'tool_1', isError: true, content: [{ type: 'text', text: 'Error: unknown tool ""' }] },
+        { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+      ],
+    } as unknown as GenerateOptions
+    const saved = JSON.stringify(options.messages)
+    const contents = serializeGenai(options, 'gemini-4-hydrogen').contents as Array<{ role: string, parts: Array<unknown> }>
+    expect(contents).toEqual([
+      { role: 'user', parts: [{ text: 'go' }] },
+      {
+        role: 'model',
+        parts: [{ text: 'calling' }, { functionCall: { name: 'run_code', args: {}, id: 'call_run' } }],
+      },
+      { role: 'user', parts: [{ functionResponse: { name: 'run_code', response: { result: 'Error: invalid arguments' }, id: 'call_run' } }] },
+      { role: 'user', parts: [{ text: 'continue' }] },
+    ])
+    expect(JSON.stringify(options.messages)).toBe(saved)
+  })
+
+  it('refuses a nameless call whose result is not a rejection', () => {
+    const options = {
+      provider: 'NearToken',
+      model: 'x',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'go' }] },
+        { role: 'assistant', content: [{ type: 'tool-call', id: 'tool_1', name: '', arguments: '{}' }] },
+        { role: 'tool', toolCallId: 'tool_1', isError: false, content: [{ type: 'text', text: 'done' }] },
+      ],
+    } as unknown as GenerateOptions
+    expect(() => serializeGenai(options, 'gemini-4-hydrogen')).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+  })
+
   it('names a tool result after the function that was called', () => {
     const options = {
       provider: 'NearToken',
